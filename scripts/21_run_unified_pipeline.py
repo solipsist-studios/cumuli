@@ -247,6 +247,12 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
         f_raw, f_undist, f_pkl = raw_dir / f"f{k}", undist_dir / f"f{k}", pkl_dir / f"f{k}"
         f_fmask, f_kp2d, f_poses2d = fmasks_dir / f"f{k}", kp2d_dir / f"f{k}", poses2d_dir / f"f{k}"
 
+        if f_poses2d.is_dir() and any(f_poses2d.rglob("*.json")):
+            info(f"f{k} ({tag}) already fully processed on disk -- reusing "
+                 f"(delete {f_poses2d} to force a redo)")
+            poses2d_dirs.append(f_poses2d)
+            continue
+
         run_script("04_undistort_frames.py", undistort_args(args, f_raw, f_undist, f_pkl, image_ext),
                    conda_env=args.generic_env, label=f"04 (candidates f{k}, {tag})")
 
