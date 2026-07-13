@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""
+22_render_frame_sequence.py
+
+Renders a SEQUENCE of trained Brush splats across multiple target_times from
+the same static multi-camera rig, for stop-motion/flipbook-style 4D
+playback -- independently-trained splats per frame, not a single
+temporally-aware 4D representation.
+
+Camera sync correction and pose calibration (transforms_refined.json) don't
+depend on which moment in time is being rendered -- they describe the FIXED
+physical rig, calibrated once from a representative time window. So unlike
+21_run_unified_pipeline.py (one target_time, full sync+production+poses+
+masks+branch pipeline every time), this script:
+  1. Reuses an ALREADY-COMPLETED single-frame 21_run_unified_pipeline.py
+     run's sync offsets and transforms_refined.json (--calib_run_dir)
+     instead of recomputing them.
+  2. Loops ONLY the per-frame-dependent stages (production undistortion,
+     masks, subject triangulation, training) once per --target_times entry,
+     into out_dir/frame_<NNNN>/.
+
+Reuses 21_run_unified_pipeline.py's stage_production/stage_masks/
+stage_branch_direct/stage_branch_diffuman functions directly (dynamically
+imported -- a leading-digit filename isn't a valid Python module name for a
+normal `import` statement) rather than reimplementing that orchestration:
+those functions are already tested against this exact rig.
+
+Before calling stage_masks(), manually applies 05_run_hloc.py's
+restructure_flat_to_percam() to this frame's production_undist dir --
+06_build_flat_dataset.py expects that Camera_<id>/0000.ext layout, which
+normally comes from run_hloc()'s side effect, but we're deliberately not
+re-running HLOC here (the whole point is that poses are already fixed).
+
+Training steps: pick --total_train_iters much lower than a hero-shot run
+(script default is 30000, meant for one splat) -- training that many steps
+per frame across even a short sequence multiplies out fast. A few thousand
+is usually enough to validate the sequence looks right.
+
+Usage:
+    python3 22_render_frame_sequence.py \\
+        --calib_run_dir /path/to/completed/single_frame_run \\
+        --video_dir /path/to/movies \\
+        --calib_dir /path/to/calibration_pkls \\
+        --out_dir /path/to/flipbook_run \\
+        --target_times 1.400,1.433,1.467,1.500,1.533,1.567,1.600 \\
+        --no_diffuman --total_train_iters 3000
+
+Output:
+    out_dir/frame_0000/brush_output/..., out_dir/frame_0001/brush_output/...
+    one trained splat per --target_times entry, in temporal order.
+"""
+
+import argparse
+import importlib.util
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+
+
+def _load_module(name, filename):
+    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+unified = _load_module("_unified_pipeline_22", "21_run_unified_pipeline.py")
+hloc_mod = _load_module("_run_hloc_22", "05_run_hloc.py")
+
+
+def resolve_sync_json(calib_run_dir: Path) -> Path:
+    """Same resolution order 21_run_unified_pipeline.py's own resume logic uses."""
+    resolved_path = calib_run_dir / "resolved_sync_json.txt"
+    if resolved_path.exists():
+        return Path(resolved_path.read_text().strip())
+    return calib_run_dir / "sync_offsets.json"
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--calib_run_dir", required=True, type=Path,
+                        help="A completed 21_run_unified_pipeline.py --out_dir to reuse sync + "
+                             "transforms_refined.json from (camera poses don't change per frame)")
+    parser.add_argument("--video_dir", required=True, type=Path)
+    parser.add_argument("--calib_dir", required=True, type=Path, help="Native fisheye calibration PKLs")
+    parser.add_argument("--target_pkl_dir", type=Path, default=None)
+    parser.add_argument("--out_dir", required=True, type=Path)
+    parser.add_argument("--target_times", required=True,
+                        help="Comma-separated target times, e.g. '1.4,1.433,1.467,1.5' "
+                             "(each in '1.5' / '1.5s' / '1500ms' form)")
+    parser.add_argument("--pp3_dir", type=Path, default=None)
+
+    diffuman_group = parser.add_mutually_exclusive_group(required=True)
+    diffuman_group.add_argument("--use_diffuman", dest="use_diffuman", action="store_true")
+    diffuman_group.add_argument("--no_diffuman", dest="use_diffuman", action="store_false")
+
+    parser.add_argument("--sapiens_env", default="sapiens2")
+    parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308")
+    parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None)
+    parser.add_argument("--triangulate_env", default="queen")
+    parser.add_argument("--generic_env", default="queen")
+    parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
+    parser.add_argument("--total_train_iters", type=int, default=3000,
+                        help="Per-frame step count -- keep well below a single hero-shot run's "
+                             "30000, this multiplies by the number of frames (default 3000)")
+    parser.add_argument("--export_every", type=int, default=5000)
+    parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
+                        help="See 21_run_unified_pipeline.py's --with_viewer help. On by default "
+                             "for the same reason. See --no_viewer.")
+    parser.add_argument("--no_viewer", dest="with_viewer", action="store_false",
+                        help="See 21_run_unified_pipeline.py's --no_viewer help.")
+    parser.add_argument("--display", default=":2",
+                        help="See 21_run_unified_pipeline.py's --display help.")
+    parser.add_argument("--run_name", default=None, help="Prefix for output filenames (default: out_dir's name)")
+    return parser
+
+
+def main():
+    args = build_parser().parse_args()
+    args.run_name = args.run_name or args.out_dir.name
+    image_ext = ".png" if args.pp3_dir else ".jpg"
+
+    times = [unified.parse_target_time(t) for t in args.target_times.split(",")]
+    if not times:
+        unified.fail("No --target_times given")
+        sys.exit(1)
+
+    transforms_refined = args.calib_run_dir / "transforms_refined.json"
+    if not transforms_refined.is_file():
+        unified.fail(f"{transforms_refined} not found -- is --calib_run_dir a completed "
+                     "21_run_unified_pipeline.py run?")
+        sys.exit(1)
+
+    sync_json = resolve_sync_json(args.calib_run_dir)
+    if not sync_json.is_file():
+        unified.fail(f"Could not find resolved sync offsets under {args.calib_run_dir}")
+        sys.exit(1)
+
+    if not args.video_dir.is_dir():
+        unified.fail(f"--video_dir {args.video_dir} is not a directory")
+        sys.exit(1)
+
+    videos = unified.discover_cameras(args.video_dir)
+    n_real = len(videos)
+
+    unified.banner(f"FRAME SEQUENCE RENDER -- {len(times)} frames, {n_real} cameras, "
+                   f"branch={'Diffuman4D dense ring' if args.use_diffuman else 'direct 4K masked'}")
+    unified.info(f"Reusing calibration from {args.calib_run_dir}")
+    unified.info(f"  transforms_refined: {transforms_refined}")
+    unified.info(f"  sync offsets: {sync_json}")
+
+    base_run_name = args.run_name
+    for i, t in enumerate(times):
+        frame_tag = f"frame_{i:04d}"
+        unified.banner(f"{frame_tag} (t={t:.3f}s) -- {i + 1}/{len(times)}")
+
+        frame_dir = args.out_dir / frame_tag
+        frame_dir.mkdir(parents=True, exist_ok=True)
+        L = unified.build_layout(frame_dir)
+        L["transforms_refined"] = transforms_refined  # fixed calibration, not per-frame
+
+        args.target_time_s = t
+        args.run_name = f"{base_run_name}_{frame_tag}"
+
+        try:
+            unified.stage_production(args, L, image_ext, sync_json)
+            hloc_mod.restructure_flat_to_percam(L["production_undist"], image_ext)
+            unified.stage_masks(args, L, image_ext, n_real)
+            if args.use_diffuman:
+                unified.stage_branch_diffuman(args, L, n_real)
+            else:
+                unified.stage_branch_direct(args, L)
+        except unified.StageError as e:
+            unified.fail(str(e))
+            unified.fail(f"{frame_tag} failed -- stopping sequence ({i}/{len(times)} frames "
+                         "completed before this one). Re-run with a shorter --target_times "
+                         "list to resume from here.")
+            sys.exit(1)
+
+    unified.banner("FRAME SEQUENCE COMPLETE")
+    unified.ok(f"{len(times)} trained splat(s) under {args.out_dir}/frame_*/brush_output/")
+
+
+if __name__ == "__main__":
+    main()
