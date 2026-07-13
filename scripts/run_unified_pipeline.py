@@ -230,11 +230,14 @@ def build_layout(out_dir: Path):
 # ------------------------------------------------------- candidate window prep
 def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: str,
                               raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir,
-                              tag: str):
-    """Extract a --window-frame candidate instant set around target_time using
-    sync_json, then run 04(undistort)/07(masks)/08(keypoints)/09(split) on
-    each instant. Returns the list of per-instant poses_2d dirs, in order."""
-    extract_args = [str(args.video_dir), str(sync_json), str(raw_dir), str(args.target_time_s),
+                              tag: str, start_time_s: float = None):
+    """Extract a --window-frame candidate instant set starting at start_time_s
+    (defaults to target_time_s) using sync_json, then run
+    04(undistort)/07(masks)/08(keypoints)/09(split) on each instant. Returns
+    the list of per-instant poses_2d dirs, in order."""
+    if start_time_s is None:
+        start_time_s = args.target_time_s
+    extract_args = [str(args.video_dir), str(sync_json), str(raw_dir), str(start_time_s),
                     "--window", str(window)]
     if args.pp3_dir:
         extract_args += ["--pp3_dir", str(args.pp3_dir)]
@@ -299,6 +302,9 @@ def run_hloc(args, undistorted_dir, undistorted_pkl_dir, outputs_dir, image_ext,
         "--multiframe_sfm_script", args.multiframe_sfm_script,
         "--num_timestamps", "1",
         "--image_ext", image_ext,
+        "--feature_type", args.hloc_feature_type,
+        "--resize_max", str(args.hloc_resize_max),
+        "--max_keypoints", str(args.hloc_max_keypoints),
     ], conda_env=CONDA_ENV_HLOC, label=label)
     return outputs_dir / "transforms_multiframe.json"
 
@@ -454,6 +460,7 @@ def stage_branch_direct(args, L):
         "--export_every", str(args.export_every),
         "--brush_app", args.brush_app, "--export_path", L["brush_output"],
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
+        "--display", args.display,
     ] + (["--with_viewer"] if args.with_viewer else []), label="train_brush.py (train Brush, 4K masked)")
 
 
@@ -483,6 +490,10 @@ def build_parser():
     parser.add_argument("--start_from_stage", choices=STAGE_KEYS, default=STAGE_KEYS[0],
                         help=f"Resume at one of {STAGE_KEYS} (assumes earlier stages' outputs already "
                              "exist under --out_dir)")
+    parser.add_argument("--stop_after_stage", choices=STAGE_KEYS, default=None,
+                        help="Stop once this stage completes, instead of running through 'branch'. "
+                             "Useful to checkpoint and inspect (e.g. the sync grid) before committing "
+                             "to the rest of the pipeline.")
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
@@ -504,6 +515,18 @@ def build_parser():
                              "with sys.executable. 'queen' is confirmed to have the full set on this machine.")
     parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
                         help="Path to multiframe_sfm.py (override to test local changes to it)")
+    parser.add_argument("--hloc_feature_type", default="superpoint", choices=["superpoint", "aliked"],
+                        help="Feature detector for HLOC's SfM pose solve (passed through to "
+                             "multiframe_sfm.py, matched with LightGlue either way).")
+    parser.add_argument("--hloc_resize_max", type=int, default=4096,
+                        help="Long-edge resize before HLOC feature extraction. multiframe_sfm.py's own "
+                             "default is 2048, which is low relative to this rig's ~5312px native media "
+                             "-- raised to 4096 by default here to preserve more detail for keypoint "
+                             "localization / camera pose accuracy (higher GPU memory + runtime cost "
+                             "during the HLOC stage; has headroom to coexist with a concurrent Brush "
+                             "training job on a 24GB GPU, but not with two).")
+    parser.add_argument("--hloc_max_keypoints", type=int, default=8192,
+                        help="Max keypoints per image for HLOC feature extraction.")
     parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
     parser.add_argument("--total_train_iters", type=int, default=30000)
     parser.add_argument("--export_every", type=int, default=5000,
@@ -557,9 +580,16 @@ def main():
     info(f"Working directory: {args.out_dir}")
 
     start_idx = STAGE_KEYS.index(args.start_from_stage)
+    stop_idx = STAGE_KEYS.index(args.stop_after_stage) if args.stop_after_stage else None
 
     def should_run(key):
         return STAGE_KEYS.index(key) >= start_idx
+
+    def hit_stop(key):
+        if stop_idx is not None and STAGE_KEYS.index(key) == stop_idx:
+            banner(f"STOPPED after stage {key!r} (--stop_after_stage)")
+            return True
+        return False
 
     try:
         if should_run("sync"):
@@ -572,24 +602,32 @@ def main():
             check_expected(resolved_path, "sync")
             sync_json = Path(resolved_path.read_text().strip()) if resolved_path.exists() \
                 else L["sync_offsets"]
+        if hit_stop("sync"):
+            return
 
         if should_run("production"):
             stage_production(args, L, image_ext, sync_json)
         else:
             info("Skipping stage 'production' (--start_from_stage)")
             check_expected(L["production_undist"], "production")
+        if hit_stop("production"):
+            return
 
         if should_run("poses"):
             stage_poses(args, L, image_ext, sync_json)
         else:
             info("Skipping stage 'poses' (--start_from_stage)")
             check_expected(L["transforms_refined"], "poses")
+        if hit_stop("poses"):
+            return
 
         if should_run("masks"):
             stage_masks(args, L, image_ext, n_real)
         else:
             info("Skipping stage 'masks' (--start_from_stage)")
             check_expected(L["flat_fmasks_clean"], "masks")
+        if hit_stop("masks"):
+            return
 
         if should_run("branch"):
             stage_branch_direct(args, L)
