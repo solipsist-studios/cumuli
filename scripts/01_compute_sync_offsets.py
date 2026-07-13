@@ -33,6 +33,12 @@ cameras' frame_offset by a couple of frames based on visual inspection
 with 03_make_sync_grid.py, then save the result as sync_offsets_v2.json,
 sync_offsets_v3.json, etc. Point 02_extract_synced_frames.py at whichever
 version is your current best.
+
+This script's own live-computed output has not itself been validated
+unverified end-to-end -- every real run so far has used a precomputed,
+hand-verified sync_offsets file (via 21_run_unified_pipeline.py's
+--initial_sync_json) instead of trusting this script's raw output
+directly. Always inspect the sync grid before trusting the result here.
 """
 
 import json
