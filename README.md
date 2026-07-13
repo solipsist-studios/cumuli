@@ -8,7 +8,9 @@ part of this build yet.
 
 See [docs/pipeline.md](docs/pipeline.md) for the full walkthrough with
 example commands, stage by stage, and the unified orchestrator that runs
-all of it in one command (see Quick start below).
+all of it in one command (see Quick start below). See
+[docs/environment.md](docs/environment.md) for exact conda env setup
+commands and known-good package versions.
 
 ## Layout
 
