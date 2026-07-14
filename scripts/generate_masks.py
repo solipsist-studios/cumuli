@@ -20,6 +20,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIFFUMAN4D_ROOT = REPO_ROOT / "deps" / "Diffuman4D"
 SCRIPT = DIFFUMAN4D_ROOT / "scripts" / "preprocess" / "remove_background.py"
@@ -29,7 +31,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--images_dir", required=True, type=Path)
     parser.add_argument("--out_fmasks_dir", required=True, type=Path)
-    parser.add_argument("--image_ext", default=".png")
+    parser.add_argument("--image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS)
     args = parser.parse_args()
 
     if not SCRIPT.is_file():

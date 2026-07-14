@@ -42,6 +42,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 
 def restructure_flat_to_percam(undistorted_dir: Path, image_ext: str):
     """Move <camera_id>.jpg -> Camera_<camera_id>/0000.jpg in place.
@@ -126,7 +128,7 @@ def main():
                          help="Path to multiframe_sfm.py (default: the vendored copy in scripts/vendor/)")
     parser.add_argument("--num_timestamps", type=int, default=1)
     parser.add_argument("--feature_type", default="superpoint", choices=["superpoint", "aliked"])
-    parser.add_argument("--image_ext", default=".jpg")
+    parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS)
     parser.add_argument("--skip_setup", action="store_true",
                          help="Skip restructure/init_transforms steps (if already done)")
     args = parser.parse_args()

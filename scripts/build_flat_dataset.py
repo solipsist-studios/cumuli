@@ -43,6 +43,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -51,8 +53,10 @@ def main():
                          help="Per-camera dir from run_hloc.py, e.g. undistorted/Camera_0001/0000.jpg")
     parser.add_argument("--out_images_flat", required=True, type=Path)
     parser.add_argument("--out_transforms", required=True, type=Path)
-    parser.add_argument("--image_ext", default=".jpg", help="Extension of source frames under undistorted_dir")
-    parser.add_argument("--out_image_ext", default=".png", help="Extension to save flat images as")
+    parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS,
+                         help="Extension of source frames under undistorted_dir")
+    parser.add_argument("--out_image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
+                         help="Extension to save flat images as")
     args = parser.parse_args()
 
     with open(args.transforms) as f:

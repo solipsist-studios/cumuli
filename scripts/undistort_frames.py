@@ -58,6 +58,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UNDISTORT_SCRIPT = REPO_ROOT / "deps" / "camera-calibration" / "offline_undistort.py"
 
@@ -144,7 +146,8 @@ def main():
     parser.add_argument("--out_dir", required=True, type=Path, help="Single output directory for all undistorted frames")
     parser.add_argument("--out_pkl_dir", required=True, type=Path, help="Output directory for undistorted (zero-distortion) calibration pkls")
     parser.add_argument("--model", default="OPENCV_FISHEYE", choices=["OPENCV", "OPENCV_FISHEYE"])
-    parser.add_argument("--image_ext", default=".jpg", help="Extension of frames in frames_dir (default: .jpg)")
+    parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS,
+                         help="Extension of frames in frames_dir (default: .jpg)")
     parser.add_argument("--target_pkl_dir", type=Path, default=None,
                         help="Per-camera TARGET pinhole pkls (Camera_<camera_id>.pkl): enables single-warp "
                              "mode, mapping native fisheye frames directly to that geometry in one resample.")
