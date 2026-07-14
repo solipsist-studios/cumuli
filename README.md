@@ -23,7 +23,9 @@ deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
            (conda env names, --brush_app, --display, etc.) -- see
            configs/README.md
-docs/      pipeline.md walkthrough
+envs/      environment.yml per conda env (hloc, diffuman4d, sapiens2),
+           pinning the known-good versions from docs/environment.md
+docs/      pipeline.md walkthrough, environment.md conda setup
 ```
 
 `clean_masks.py`, `build_colmap_sparse.py`, and
