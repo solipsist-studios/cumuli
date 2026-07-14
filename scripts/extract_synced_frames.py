@@ -48,6 +48,18 @@ from color_correct import apply_pp3, find_pp3, resolve_rawtherapee_cmd
 from image_formats import SUPPORTED_IMAGE_EXTS
 
 
+def ffmpeg_quality_args(ext: str):
+    """Codec-appropriate near-lossless flags. ffmpeg's -q:v scale is
+    codec-dependent -- low values mean high quality for mjpeg (.jpg/.jpeg),
+    but libwebp interprets -q:v as a 0-100 quality score where low means
+    LOW quality, so the same flag can't be reused across extensions."""
+    if ext in (".jpg", ".jpeg"):
+        return ["-q:v", "2"]
+    if ext == ".webp":
+        return ["-lossless", "1"]
+    return []  # .png is already lossless, no quality flag needed
+
+
 def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: Path, ext: str):
     """Extract `count` consecutive frames starting at timestamp_sec.
     Returns the list of written paths (f0, f1, ... order)."""
@@ -58,7 +70,7 @@ def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: 
         "-ss", f"{timestamp_sec:.6f}",
         "-i", str(video_path),
         "-frames:v", str(count),
-        "-q:v", "2",
+        *ffmpeg_quality_args(ext),
         str(pattern),
     ]
     subprocess.run(cmd, check=True)
