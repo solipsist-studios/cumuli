@@ -16,8 +16,9 @@ masks+branch pipeline every time), this script:
      run's sync offsets and transforms_refined.json (--calib_run_dir)
      instead of recomputing them.
   2. Loops ONLY the per-frame-dependent stages (production undistortion,
-     masks, subject triangulation, training) once per --target_times entry,
-     into out_dir/frame_<NNNN>/.
+     masks, subject triangulation, training) once per resolved target time
+     (--target_times, or --start_time/--stop_time/--fps), into
+     out_dir/frame_<NNNN>/.
 
 Reuses run_unified_pipeline.py's stage_production/stage_masks/
 stage_branch_direct/stage_branch_diffuman functions directly (imported as a
@@ -35,18 +36,24 @@ Training steps: pick --total_train_iters much lower than a hero-shot run
 per frame across even a short sequence multiplies out fast. A few thousand
 is usually enough to validate the sequence looks right.
 
-Usage:
+Usage (evenly-spaced range -- the common case):
     python3 render_frame_sequence.py \\
         --calib_run_dir /path/to/completed/single_frame_run \\
         --video_dir /path/to/movies \\
         --calib_dir /path/to/calibration_pkls \\
         --out_dir /path/to/flipbook_run \\
+        --start_time 1.4s --stop_time 1.6s --fps 30 \\
+        --no_diffuman --total_train_iters 3000
+
+Usage (explicit / non-uniform list -- --target_times instead of
+--start_time/--stop_time/--fps):
+    python3 render_frame_sequence.py ... \\
         --target_times 1.400,1.433,1.467,1.500,1.533,1.567,1.600 \\
         --no_diffuman --total_train_iters 3000
 
 Output:
     out_dir/frame_0000/brush_output/..., out_dir/frame_0001/brush_output/...
-    one trained splat per --target_times entry, in temporal order.
+    one trained splat per resolved target time, in temporal order.
 """
 
 import argparse
@@ -65,6 +72,43 @@ def resolve_sync_json(calib_run_dir: Path) -> Path:
     return calib_run_dir / "sync_offsets.json"
 
 
+def resolve_target_times(args):
+    """Either an explicit --target_times list, or a uniform --start_time/
+    --stop_time/--fps range -- the two are mutually exclusive."""
+    range_flags = {"start_time": args.start_time, "stop_time": args.stop_time, "fps": args.fps}
+    range_given = [v is not None for v in range_flags.values()]
+
+    if args.target_times is not None and any(range_given):
+        unified.fail("Pass either --target_times or --start_time/--stop_time/--fps, not both.")
+        sys.exit(1)
+    if args.target_times is not None:
+        return [unified.parse_target_time(t) for t in args.target_times.split(",")]
+    if not all(range_given):
+        if any(range_given):
+            missing = [k for k, v in range_flags.items() if v is None]
+            unified.fail(f"--start_time/--stop_time/--fps must all be given together (missing: {missing}).")
+        else:
+            unified.fail("Must pass either --target_times or --start_time/--stop_time/--fps.")
+        sys.exit(1)
+
+    start = unified.parse_target_time(args.start_time)
+    stop = unified.parse_target_time(args.stop_time)
+    if args.fps <= 0:
+        unified.fail("--fps must be positive")
+        sys.exit(1)
+    if stop < start:
+        unified.fail(f"--stop_time ({args.stop_time}) is before --start_time ({args.start_time})")
+        sys.exit(1)
+
+    step = 1.0 / args.fps
+    times = []
+    t = start
+    while t <= stop + step / 2:  # epsilon guards against float accumulation dropping the last frame
+        times.append(round(t, 6))
+        t += step
+    return times
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--calib_run_dir", required=True, type=Path,
@@ -74,9 +118,19 @@ def build_parser():
     parser.add_argument("--calib_dir", required=True, type=Path, help="Native fisheye calibration PKLs")
     parser.add_argument("--target_pkl_dir", type=Path, default=None)
     parser.add_argument("--out_dir", required=True, type=Path)
-    parser.add_argument("--target_times", required=True,
+    parser.add_argument("--target_times", default=None,
                         help="Comma-separated target times, e.g. '1.4,1.433,1.467,1.5' "
-                             "(each in '1.5' / '1.5s' / '1500ms' form)")
+                             "(each in '1.5' / '1.5s' / '1500ms' form). Use this for an "
+                             "explicit or non-uniform list; for an evenly-spaced range use "
+                             "--start_time/--stop_time/--fps instead. Mutually exclusive "
+                             "with those three.")
+    parser.add_argument("--start_time", default=None,
+                        help="Start of a uniform time range (requires --stop_time and --fps; "
+                             "mutually exclusive with --target_times), e.g. '1.4s'.")
+    parser.add_argument("--stop_time", default=None,
+                        help="End (inclusive) of the uniform time range -- same form as --start_time.")
+    parser.add_argument("--fps", type=float, default=None,
+                        help="Frame rate for the --start_time/--stop_time range, e.g. 30.")
     parser.add_argument("--pp3_dir", type=Path, default=None)
 
     diffuman_group = parser.add_mutually_exclusive_group(required=True)
@@ -109,9 +163,9 @@ def main():
     args.run_name = args.run_name or args.out_dir.name
     image_ext = ".png" if args.pp3_dir else ".jpg"
 
-    times = [unified.parse_target_time(t) for t in args.target_times.split(",")]
+    times = resolve_target_times(args)
     if not times:
-        unified.fail("No --target_times given")
+        unified.fail("Resolved to zero target times")
         sys.exit(1)
 
     transforms_refined = args.calib_run_dir / "transforms_refined.json"
@@ -163,7 +217,7 @@ def main():
             unified.fail(str(e))
             unified.fail(f"{frame_tag} failed -- stopping sequence ({i}/{len(times)} frames "
                          "completed before this one). Re-run with a shorter --target_times "
-                         "list to resume from here.")
+                         "list (or a narrower --start_time/--stop_time range) to resume from here.")
             sys.exit(1)
 
     unified.banner("FRAME SEQUENCE COMPLETE")
