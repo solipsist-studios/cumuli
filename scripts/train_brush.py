@@ -5,8 +5,9 @@ train_brush.py
 Thin wrapper around the Brush gaussian-splat trainer (deps/brush),
 defaulting to the flag values that produced the best confirmed results
 historically (75k steps, lr-coeffs-sh-scale 80). Trains directly off a
-transforms.json (no COLMAP sparse/0 required -- see prepare_brush_dataset.py),
-or off a COLMAP sparse/0 dataset (see build_colmap_sparse.py).
+transforms.json (no COLMAP sparse/0 required -- see prepare_brush_dataset.py,
+part of the not-yet-built Diffuman4D branch), or off a COLMAP sparse/0
+dataset (see build_colmap_sparse.py, the validated direct-4K branch).
 
 Masked (subject-only) training: this brush_app build has NO --alpha-mode
 flag (verified against `brush_app --help` -- there is no such option,

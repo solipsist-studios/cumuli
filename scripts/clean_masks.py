@@ -55,10 +55,14 @@ from image_formats import SUPPORTED_IMAGE_EXTS
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REMOVE_BG_SCRIPT = REPO_ROOT / "deps" / "Diffuman4D" / "scripts" / "preprocess" / "remove_background.py"
 
+MASK_FOREGROUND_THRESHOLD = 127  # 8-bit grayscale mask: values above this count as foreground
+MASK_WRITE_VALUE = 255           # 8-bit grayscale value written for foreground pixels
+COVERAGE_ROUND_DECIMALS = 4      # decimal places for coverage fractions in cleanup_report.json
+
 
 def find_keypoints_json(kp2d_dir: Path, cam: str):
-    """Accept either stage-08 layout (<kp2d_dir>/<subdir>/<cam>.json) or
-    stage-09 layout (<kp2d_dir>/<cam>/<tem>.json)."""
+    """Accept either predict_keypoints_2d.py's layout (<kp2d_dir>/<subdir>/<cam>.json)
+    or split_keypoints_per_camera.py's layout (<kp2d_dir>/<cam>/<tem>.json)."""
     cam_dir = kp2d_dir / cam
     if cam_dir.is_dir():
         jsons = sorted(cam_dir.glob("*.json"))
@@ -146,7 +150,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--fmasks_dir", required=True, type=Path, help="Raw BiRefNet masks (<camera>.png)")
     parser.add_argument("--kp2d_dir", required=True, type=Path,
-                        help="2D keypoints: stage-08 or stage-09 output layout")
+                        help="2D keypoints: predict_keypoints_2d.py or split_keypoints_per_camera.py output layout")
     parser.add_argument("--out_dir", required=True, type=Path)
     parser.add_argument("--images_dir", type=Path, default=None, help="Original images (needed for --retry)")
     parser.add_argument("--retry", action="store_true",
@@ -183,7 +187,7 @@ def main():
         kpts = load_keypoints(kp_json, args.score_thr)
         with Image.open(mask_path) as im:
             mask = np.asarray(im.convert("L"))
-        mask_bool = mask > 127
+        mask_bool = mask > MASK_FOREGROUND_THRESHOLD
         cov = coverage(mask_bool, kpts)
         cams[cam] = {"mask": mask_bool, "kpts": kpts, "coverage_before": cov}
         if cov < args.warn_coverage and args.retry:
@@ -206,7 +210,7 @@ def main():
         for cam, (crop_mask, box) in run_birefnet_on_crops(retries, args.image_ext).items():
             x0, y0, x1, y1 = box
             region = cams[cam]["mask"][y0:y1, x0:x1]
-            cams[cam]["mask"][y0:y1, x0:x1] = region | (crop_mask[:y1 - y0, :x1 - x0] > 127)
+            cams[cam]["mask"][y0:y1, x0:x1] = region | (crop_mask[:y1 - y0, :x1 - x0] > MASK_FOREGROUND_THRESHOLD)
             print(f"  {cam}: merged retry mask into crop region {box}")
 
     # Pass 2: component filtering + save. No dilation.
@@ -215,7 +219,7 @@ def main():
         entry = cams[cam]
         cleaned, kept, total = filter_components(entry["mask"], entry["kpts"], args.min_hits)
         cov_after = coverage(cleaned, entry["kpts"])
-        Image.fromarray((cleaned * 255).astype(np.uint8)).save(args.out_dir / f"{cam}.png")
+        Image.fromarray((cleaned * MASK_WRITE_VALUE).astype(np.uint8)).save(args.out_dir / f"{cam}.png")
         flag = ""
         if kept == 0 and total > 0:
             flag = ("  <-- MASK EMPTIED: no component had enough confident keypoint hits, "
@@ -229,8 +233,8 @@ def main():
         report[cam] = {
             "components_total": total,
             "components_kept": kept,
-            "coverage_before": round(entry["coverage_before"], 4),
-            "coverage_after": round(cov_after, 4),
+            "coverage_before": round(entry["coverage_before"], COVERAGE_ROUND_DECIMALS),
+            "coverage_after": round(cov_after, COVERAGE_ROUND_DECIMALS),
             "retried": cam in retries,
         }
 
