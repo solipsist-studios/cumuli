@@ -50,6 +50,8 @@ import numpy as np
 from PIL import Image
 from scipy import ndimage
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REMOVE_BG_SCRIPT = REPO_ROOT / "deps" / "Diffuman4D" / "scripts" / "preprocess" / "remove_background.py"
 
@@ -156,11 +158,12 @@ def main():
                         help="Warn (and trigger --retry) when keypoints-inside-mask fraction is below this")
     parser.add_argument("--crop_margin", type=float, default=0.15,
                         help="Margin around the keypoint bbox for the retry crop, as a fraction of its size")
-    parser.add_argument("--image_ext", default=".png", help="Extension for retry crops (default .png)")
+    parser.add_argument("--image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
+                         help="Extension for retry crops (default .png)")
     args = parser.parse_args()
 
     mask_paths = sorted(p for p in args.fmasks_dir.iterdir()
-                        if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"})
+                        if p.suffix.lower() in SUPPORTED_IMAGE_EXTS)
     if not mask_paths:
         print(f"Error: no masks found in {args.fmasks_dir}")
         sys.exit(1)
