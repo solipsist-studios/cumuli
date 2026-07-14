@@ -2,11 +2,11 @@
 """
 20_refine_poses_with_keypoints.py
 
-Wraps ~/4dgs-utils/refine_poses_with_keypoints.py ("human as calibration
+Wraps vendor/refine_poses_with_keypoints.py ("human as calibration
 wand"): bundle-adjusts camera poses against 2D human keypoints across
 several time instants, anchoring accuracy at the subject where background
-SfM features (HLOC, stage 05) don't reach. Background-only poses can look
-great on distant walls/windows yet disagree by tens of pixels at the
+SfM features (HLOC, run_hloc.py) don't reach. Background-only poses can
+look great on distant walls/windows yet disagree by tens of pixels at the
 capture volume center -- exactly where the subject moves.
 
 IMPORTANT: use keypoints from MANY time instants (10+), not one -- with a
@@ -27,7 +27,7 @@ Usage:
         --transforms /path/to/solipsist_out/transforms_multiframe.json \\
         --kp2d_dirs /path/f0/poses_2d,/path/f1/poses_2d,/path/f2/poses_2d,... \\
         --out_transforms /path/to/transforms_refined.json \\
-        [--refine_script ~/4dgs-utils/refine_poses_with_keypoints.py] \\
+        [--refine_script /path/to/refine_poses_with_keypoints.py] \\
         [--report_only]
 
 Output:
@@ -43,7 +43,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_REFINE_SCRIPT = Path.home() / "4dgs-utils" / "refine_poses_with_keypoints.py"
+DEFAULT_REFINE_SCRIPT = Path(__file__).parent / "vendor" / "refine_poses_with_keypoints.py"
 
 
 def merge_instants(kp2d_dirs, merged_dir: Path):
@@ -90,7 +90,7 @@ def main():
     args = parser.parse_args()
 
     if not args.refine_script.is_file():
-        print(f"Error: {args.refine_script} not found. Pass --refine_script or clone 4dgs-utils to ~/4dgs-utils.")
+        print(f"Error: {args.refine_script} not found. Pass --refine_script to point at a different copy.")
         sys.exit(1)
 
     kp2d_dirs = [Path(p) for p in args.kp2d_dirs.split(",")]
