@@ -465,8 +465,20 @@ def stage_branch_direct(args, L):
 
 
 # ------------------------------------------------------------------------ CLI
+CONFIGURABLE_DEFAULTS = {
+    "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
+    "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
+    "brush_app", "display",
+}
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="JSON file of per-rig defaults (conda env names, --brush_app, --display, "
+                             "SAPIENS_CHECKPOINT_ROOT, HLOC settings -- see configs/example_rig.json). "
+                             "Explicit CLI flags always override the config. Per-run flags like --video_dir, "
+                             "--calib_dir, --out_dir aren't configurable here -- those change every run.")
     parser.add_argument("--video_dir", required=True, type=Path, help="Root dir of raw multi-camera GoPro footage")
     parser.add_argument("--calib_dir", required=True, type=Path,
                         help="Native fisheye calibration PKLs, e.g. Dev/calibration/5k")
@@ -544,8 +556,35 @@ def build_parser():
     return parser
 
 
+def apply_config_defaults(parser):
+    """Pre-scan argv for --config (without triggering the real parser's required-arg
+    checks) and, if given, use its contents to override defaults for the flags in
+    CONFIGURABLE_DEFAULTS. Explicit CLI flags still win -- set_defaults() only changes
+    what's used when a flag isn't passed at all."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre.parse_known_args()
+    if pre_args.config is None:
+        return
+
+    if not pre_args.config.is_file():
+        fail(f"--config {pre_args.config} not found")
+        sys.exit(1)
+    with open(pre_args.config) as f:
+        config = json.load(f)
+
+    unknown = set(config) - CONFIGURABLE_DEFAULTS
+    if unknown:
+        fail(f"--config {pre_args.config} has unrecognized key(s): {sorted(unknown)} "
+             f"-- configurable keys are: {sorted(CONFIGURABLE_DEFAULTS)}")
+        sys.exit(1)
+    parser.set_defaults(**config)
+
+
 def main():
-    args = build_parser().parse_args()
+    parser = build_parser()
+    apply_config_defaults(parser)
+    args = parser.parse_args()
     args.target_time_s = parse_target_time(args.target_time)
     args.run_name = args.run_name or args.out_dir.name
     image_ext = ".png" if args.pp3_dir else ".jpg"
