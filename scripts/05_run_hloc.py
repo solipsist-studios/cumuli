@@ -3,9 +3,9 @@
 05_run_hloc.py
 
 Runs HLOC-based multi-camera pose estimation (deps/4dgs-utils not vendored
-here -- this expects multiframe_sfm.py from Heidi's ~/4dgs-utils repo,
-passed via --multiframe_sfm_script) on a set of undistorted single-frame
-images, producing camera poses in nerfstudio transforms.json format.
+here -- this expects multiframe_sfm.py, passed via --multiframe_sfm_script)
+on a set of undistorted single-frame images, producing camera poses in
+nerfstudio transforms.json format.
 
 This wraps two things that multiframe_sfm.py needs set up first:
   1. Restructuring flat undistorted images (<camera_id>.jpg) into the

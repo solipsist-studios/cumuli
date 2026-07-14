@@ -19,6 +19,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 
 def main():
     if len(sys.argv) not in (3, 4):
@@ -36,9 +38,11 @@ def main():
         print(f"Error: {frames_dir} is not a directory")
         sys.exit(1)
 
-    image_files = sorted(frames_dir.glob("*.jpg")) + sorted(frames_dir.glob("*.png"))
+    image_files = sorted(
+        p for ext in SUPPORTED_IMAGE_EXTS for p in frames_dir.glob(f"*{ext}")
+    )
     if not image_files:
-        print(f"Error: no .jpg/.png files found in {frames_dir}")
+        print(f"Error: no {'/'.join(SUPPORTED_IMAGE_EXTS)} files found in {frames_dir}")
         sys.exit(1)
 
     print(f"Found {len(image_files)} frames. Building grid...")

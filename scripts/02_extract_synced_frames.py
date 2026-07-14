@@ -27,7 +27,7 @@ f{k}/ dir goes through stages 04 and 08 independently.
 
 Usage:
     python3 02_extract_synced_frames.py /path/to/movies/dir /path/to/sync_offsets.json /path/to/output/dir [seconds_into_clip] \\
-        [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."]
+        [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."] [--output_ext .jpg|.jpeg|.png|.webp]
 
     seconds_into_clip (optional, default 2.0) -- how far into the
     reference camera's clip to grab the frame from.
@@ -35,7 +35,9 @@ Usage:
 Output:
     window=1: output_dir/0001.jpg, output_dir/0002.jpg, ...
     window=N: output_dir/f0/0001.jpg ... output_dir/f{N-1}/0001.jpg, ...
-    (.png instead of .jpg when --pp3_dir is used)
+    (.png instead of .jpg when --pp3_dir is used; override with --output_ext,
+    though --pp3_dir output can only be .png -- RawTherapee always writes PNG
+    bytes here regardless of the requested extension)
 """
 
 import argparse
@@ -45,6 +47,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from image_formats import SUPPORTED_IMAGE_EXTS
 
 
 def resolve_rawtherapee_cmd(override=None):
@@ -106,6 +110,8 @@ def main():
                         help="Directory of per-camera RawTherapee .pp3 profiles; enables color correction (PNG output).")
     parser.add_argument("--rawtherapee_cmd", default=None,
                         help="Override the rawtherapee-cli invocation (default: rawtherapee-cli on PATH, else flatpak).")
+    parser.add_argument("--output_ext", choices=SUPPORTED_IMAGE_EXTS, default=None,
+                        help="Output image extension (default: .png with --pp3_dir, else .jpg).")
     args = parser.parse_args()
 
     if not args.movies_dir.is_dir():
@@ -123,7 +129,11 @@ def main():
         rt_cmd = resolve_rawtherapee_cmd(args.rawtherapee_cmd)
         print(f"Color correction enabled: {' '.join(rt_cmd)} (~6s/frame)")
 
-    out_ext = ".png" if rt_cmd else ".jpg"
+    if rt_cmd and args.output_ext not in (None, ".png"):
+        print("Error: --output_ext other than .png isn't supported with --pp3_dir "
+              "(RawTherapee color correction always writes PNG bytes here).")
+        sys.exit(1)
+    out_ext = args.output_ext or (".png" if rt_cmd else ".jpg")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     with open(args.offsets_path) as f:
