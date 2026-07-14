@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-02_extract_synced_frames.py
+extract_synced_frames.py
 
 Extracts one frame (or a window of consecutive frames) from each camera at
 the SAME aligned moment in time, using the frame offsets computed by
-01_compute_sync_offsets.py (or corrected by 19_skeleton_sync_search.py).
-Used both to visually verify sync (via 03_make_sync_grid.py) and to pull
+compute_sync_offsets.py (or corrected by skeleton_sync_search.py).
+Used both to visually verify sync (via make_sync_grid.py) and to pull
 the actual production frame you'll run the rest of the pipeline on.
 
 Optional per-camera color correction: pass --pp3_dir pointing at a
@@ -16,12 +16,13 @@ PNG (downstream stages should pass --image_ext .png).
 Multi-frame window: --window N extracts N consecutive frames per camera
 into out_dir/f0/, out_dir/f1/, ... out_dir/f{N-1}/, each subdirectory
 being a normal single-instant frames dir (same <camera>.jpg naming). Use
-this to produce candidate instants for 19_skeleton_sync_search.py and
-multi-instant keypoints for 20_refine_poses_with_keypoints.py -- each
-f{k}/ dir goes through stages 04 and 08 independently.
+this to produce candidate instants for skeleton_sync_search.py and
+multi-instant keypoints for refine_poses_with_keypoints.py -- each
+f{k}/ dir goes through undistort_frames.py and predict_keypoints_2d.py
+independently.
 
 Usage:
-    python3 02_extract_synced_frames.py /path/to/movies/dir /path/to/sync_offsets.json /path/to/output/dir [seconds_into_clip] \\
+    python3 extract_synced_frames.py /path/to/movies/dir /path/to/sync_offsets.json /path/to/output/dir [seconds_into_clip] \\
         [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."] [--output_ext .jpg|.jpeg|.png|.webp]
 
     seconds_into_clip (optional, default 2.0) -- how far into the
@@ -123,7 +124,7 @@ def main():
             continue
 
         if "error" in data:
-            print(f"  WARNING: {name} has no sync data (failed in stage 01: {data['error']}), skipping")
+            print(f"  WARNING: {name} has no sync data (failed in compute_sync_offsets.py: {data['error']}), skipping")
             continue
 
         fps = data["fps"]
@@ -168,8 +169,9 @@ def main():
         print("Open them side by side -- if sync is correct, all frames should")
         print("show the same instant of action/pose across every camera.")
     else:
-        print(f"Per-instant subdirs f0/..f{args.window - 1}/ -- run stages 04+08 on each "
-              "to feed 19_skeleton_sync_search.py / 20_refine_poses_with_keypoints.py.")
+        print(f"Per-instant subdirs f0/..f{args.window - 1}/ -- run undistort_frames.py + "
+              "predict_keypoints_2d.py on each to feed skeleton_sync_search.py / "
+              "refine_poses_with_keypoints.py.")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-08_predict_keypoints_2d.py
+predict_keypoints_2d.py
 
 Predicts 2D human keypoints per camera. Two models are supported:
 
@@ -40,7 +40,7 @@ layout for coco_wholebody133. See --sapiens_checkpoint_root to override
 without exporting the env var.
 
 Usage:
-    conda run -n sapiens2 python3 08_predict_keypoints_2d.py \\
+    conda run -n sapiens2 python3 predict_keypoints_2d.py \\
         --images_dir /path/to/images_flat \\
         --out_kp2d_dir /path/to/poses_2d_flat \\
         --fmasks_dir /path/to/fmasks_flat
@@ -68,7 +68,7 @@ def split_combined_predictions(predictions_json: Path, out_kp2d_dir: Path, image
     <out_kp2d_dir>/<out_kp2d_dir.name>_predictions.json rather than a
     per-camera file per image. Split it into
     <out_kp2d_dir>/<images_dir_name>/<camera_label>.json to match the
-    layout 09_split_keypoints_per_camera.py already expects (same layout
+    layout split_keypoints_per_camera.py already expects (same layout
     the coco_wholebody133 lite path produces natively)."""
     with open(predictions_json) as f:
         data = json.load(f)

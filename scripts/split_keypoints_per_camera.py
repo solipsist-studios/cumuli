@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-09_split_keypoints_per_camera.py
+split_keypoints_per_camera.py
 
 Reorganizes the per-camera keypoint JSONs that
-08_predict_keypoints_2d.py's split_combined_predictions() already wrote
+predict_keypoints_2d.py's split_combined_predictions() already wrote
 to <out_kp2d_dir>/<images_dir_name>/<camera_label>.json (each in
 {"instance_info": [{"keypoints": ..., "keypoint_scores": ...}]} format,
 split there from vis_pose.py's single combined predictions file) into
@@ -11,7 +11,7 @@ the poses_2d/<camera_label>/<tem_label>.json layout
 triangulate_skeleton.py expects.
 
 Usage:
-    python3 09_split_keypoints_per_camera.py \\
+    python3 split_keypoints_per_camera.py \\
         --kp2d_flat_dir /path/to/poses_2d_flat \\
         --out_dir /path/to/poses_2d \\
         [--tem_label 000000]
@@ -25,7 +25,7 @@ from pathlib import Path
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--kp2d_flat_dir", required=True, type=Path,
-                         help="Output dir passed to 08_predict_keypoints_2d.py as --out_kp2d_dir")
+                         help="Output dir passed to predict_keypoints_2d.py as --out_kp2d_dir")
     parser.add_argument("--out_dir", required=True, type=Path)
     parser.add_argument("--tem_label", default="000000", help="6-digit frame label (default: 000000)")
     args = parser.parse_args()

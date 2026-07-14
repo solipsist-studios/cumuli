@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-06_build_flat_dataset.py
+build_flat_dataset.py
 
 Converts HLOC's output (transforms_multiframe.json + per-camera
-Camera_<id>/0000.<ext> folders from 05_run_hloc.py) into the flat,
+Camera_<id>/0000.<ext> folders from run_hloc.py) into the flat,
 sequentially-2-digit-labeled layout that Diffuman4D's own preprocessing
 scripts (remove_background.py, predict_keypoints.py) and the diffusion
 model itself expect.
@@ -18,7 +18,7 @@ single place that mapping happens; every later stage inherits the 2-digit
 labels from here.
 
 Usage:
-    python3 06_build_flat_dataset.py \\
+    python3 build_flat_dataset.py \\
         --transforms /path/to/solipsist_out/transforms_multiframe.json \\
         --undistorted_dir /path/to/undistorted \\
         --out_images_flat /path/to/images_flat \\
@@ -48,7 +48,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transforms", required=True, type=Path)
     parser.add_argument("--undistorted_dir", required=True, type=Path,
-                         help="Per-camera dir from 05_run_hloc.py, e.g. undistorted/Camera_0001/0000.jpg")
+                         help="Per-camera dir from run_hloc.py, e.g. undistorted/Camera_0001/0000.jpg")
     parser.add_argument("--out_images_flat", required=True, type=Path)
     parser.add_argument("--out_transforms", required=True, type=Path)
     parser.add_argument("--image_ext", default=".jpg", help="Extension of source frames under undistorted_dir")

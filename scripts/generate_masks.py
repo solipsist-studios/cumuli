@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-07_generate_masks.py
+generate_masks.py
 
 Thin wrapper around Diffuman4D's BiRefNet-based background removal
 (deps/Diffuman4D/scripts/preprocess/remove_background.py), producing a
@@ -9,7 +9,7 @@ foreground mask per camera.
 conda env: diffuman4d
 
 Usage:
-    conda run -n diffuman4d python3 07_generate_masks.py \\
+    conda run -n diffuman4d python3 generate_masks.py \\
         --images_dir /path/to/images_flat \\
         --out_fmasks_dir /path/to/fmasks_flat \\
         [--image_ext .png]

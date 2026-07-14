@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-05_run_hloc.py
+run_hloc.py
 
 Runs HLOC-based multi-camera pose estimation on a set of undistorted
 single-frame images, producing camera poses in nerfstudio transforms.json
@@ -24,7 +24,7 @@ This wraps two things that multiframe_sfm.py needs set up first:
 conda env: hloc (must contain hloc, pycolmap)
 
 Usage:
-    conda run -n hloc python3 05_run_hloc.py \\
+    conda run -n hloc python3 run_hloc.py \\
         --undistorted_dir /path/to/undistorted \\
         --undistorted_pkl_dir /path/to/undistorted_pkls \\
         --outputs_dir /path/to/solipsist_out \\
@@ -46,7 +46,7 @@ from pathlib import Path
 def restructure_flat_to_percam(undistorted_dir: Path, image_ext: str):
     """Move <camera_id>.jpg -> Camera_<camera_id>/0000.jpg in place.
 
-    offline_undistort.py (04_undistort_frames.py) prefixes its output
+    offline_undistort.py (undistort_frames.py) prefixes its output
     filenames with "undistorted_" (e.g. undistorted_0001.jpg) -- strip
     that back off so cam_id matches the calibration pkl naming
     (Camera_0001.pkl) rather than becoming "undistorted_0001".

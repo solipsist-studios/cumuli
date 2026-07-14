@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-03_make_sync_grid.py
+make_sync_grid.py
 
 Combines the individual sync-check frame .jpg files into a single grid
 image so you can visually compare all cameras at once, and confirm
-02_extract_synced_frames.py pulled the same real-world moment from every
+extract_synced_frames.py pulled the same real-world moment from every
 camera before moving on.
 
 Usage:
-    python3 03_make_sync_grid.py /path/to/sync_check_frames /path/to/output_grid.jpg [thumb_width]
+    python3 make_sync_grid.py /path/to/sync_check_frames /path/to/output_grid.jpg [thumb_width]
 
     thumb_width (optional, default 480) -- width in pixels to resize each
     frame to before placing in the grid.
@@ -25,7 +25,7 @@ from image_formats import SUPPORTED_IMAGE_EXTS
 def main():
     if len(sys.argv) not in (3, 4):
         print(
-            "Usage: python3 03_make_sync_grid.py "
+            "Usage: python3 make_sync_grid.py "
             "/path/to/sync_check_frames /path/to/output_grid.jpg [thumb_width]"
         )
         sys.exit(1)

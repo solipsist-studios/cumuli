@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-01_compute_sync_offsets.py
+compute_sync_offsets.py
 
 Computes sync offsets across multiple camera clips using audio
 cross-correlation (real signal matching), instead of relying on GoPro
@@ -10,7 +10,7 @@ unless camera-to-camera time sync was explicitly used during capture).
 Requires: numpy, scipy, ffmpeg (for audio extraction)
 
 Usage:
-    python3 01_compute_sync_offsets.py /path/to/movies/dir /path/to/output/dir [reference_camera_filename]
+    python3 compute_sync_offsets.py /path/to/movies/dir /path/to/output/dir [reference_camera_filename]
 
     reference_camera_filename (optional) -- which camera's audio to use
     as the reference everyone else is aligned to. If not given, the
@@ -30,13 +30,13 @@ Output:
 
 Note: after generating sync_offsets.json, it is common to hand-tune a few
 cameras' frame_offset by a couple of frames based on visual inspection
-with 03_make_sync_grid.py, then save the result as sync_offsets_v2.json,
-sync_offsets_v3.json, etc. Point 02_extract_synced_frames.py at whichever
+with make_sync_grid.py, then save the result as sync_offsets_v2.json,
+sync_offsets_v3.json, etc. Point extract_synced_frames.py at whichever
 version is your current best.
 
 This script's own live-computed output has not itself been validated
 unverified end-to-end -- every real run so far has used a precomputed,
-hand-verified sync_offsets file (via 21_run_unified_pipeline.py's
+hand-verified sync_offsets file (via run_unified_pipeline.py's
 --initial_sync_json) instead of trusting this script's raw output
 directly. Always inspect the sync grid before trusting the result here.
 """
@@ -127,7 +127,7 @@ def find_offset_seconds(reference_audio: np.ndarray, target_audio: np.ndarray, s
 def main():
     if len(sys.argv) not in (3, 4):
         print(
-            "Usage: python3 01_compute_sync_offsets.py "
+            "Usage: python3 compute_sync_offsets.py "
             "/path/to/movies/dir /path/to/output/dir [reference_camera_filename]"
         )
         sys.exit(1)

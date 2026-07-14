@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-04_undistort_frames.py
+undistort_frames.py
 
 Undistorts one extracted frame per camera using per-camera calibration
 PKLs, writing every camera's output into a single flat directory (rather
 than looping camera-by-camera in the shell). Also saves the corresponding
 undistorted-calibration PKL for each camera (zero distortion, matching
-intrinsics) -- these are required later by 05_run_hloc.py.
+intrinsics) -- these are required later by run_hloc.py.
 
 Two modes:
 
@@ -31,7 +31,7 @@ videos are 5312 wide -- a real bug that silently warped every camera by
 calibration source is being used.
 
 Usage:
-    python3 04_undistort_frames.py \\
+    python3 undistort_frames.py \\
         --frames_dir /path/to/extracted/frames \\
         --calib_dir /path/to/calibration_pkls \\
         --out_dir /path/to/undistorted \\
