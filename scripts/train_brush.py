@@ -112,7 +112,7 @@ def main():
     # --with-viewer never exits on its own after training completes -- the window
     # just stays open for continued interactive inspection. Blocking on natural
     # process exit (the old behavior) would hang forever here, which is fatal for
-    # any multi-frame sequence (e.g. 22_render_frame_sequence.py) that needs this
+    # any multi-frame sequence (e.g. render_frame_sequence.py) that needs this
     # script to return once one frame is done so it can start the next. So:
     # poll the export directory for the final checkpoint (brush_app always writes
     # one at --total-steps on completion, regardless of --export-every) and close

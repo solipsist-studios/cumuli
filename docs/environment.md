@@ -21,12 +21,12 @@ reference.
 
 ## Conda environments
 
-Three envs are wired into `scripts/21_run_unified_pipeline.py`, which
+Three envs are wired into `scripts/run_unified_pipeline.py`, which
 dispatches each stage into the right one automatically -- you don't
 need to `conda activate` manually except when running a stage's script
 directly.
 
-### `hloc` -- pose estimation (script 05)
+### `hloc` -- pose estimation (run_hloc.py)
 
 ```bash
 conda create -n hloc python=3.10 -y
@@ -40,7 +40,7 @@ Known-good combination (verified 2026-07-13): Python 3.10.20, torch
 2.12.0+cu130, torchvision 0.27.0+cu130, pycolmap 4.0.4, hloc 1.5, numpy
 2.2.6, scipy 1.15.3, Pillow 12.2.0.
 
-### `diffuman4d` -- masks, Diffuman4D inference, nerfstudio conversion (scripts 07, 14, 15, and 18's `--retry`)
+### `diffuman4d` -- masks, Diffuman4D inference, nerfstudio conversion (generate_masks.py, the not-yet-built Diffuman4D-branch scripts, and clean_masks.py's `--retry`)
 
 ```bash
 conda create -n diffuman4d python=3.10 -y
@@ -57,7 +57,7 @@ Diffuman4D's own upstream `requirements.txt` specifies. Don't force it
 to match the other envs' torch/CUDA versions without checking that
 Diffuman4D still works against them.
 
-### `sapiens2` -- 2D keypoint prediction (script 08)
+### `sapiens2` -- 2D keypoint prediction (predict_keypoints_2d.py)
 
 ```bash
 conda create -n sapiens2 python=3.12 -y
@@ -81,20 +81,27 @@ laid out like:
 Download the detector and pose checkpoints from Sapiens' released
 weights and place them in that layout; pass the root via
 `--sapiens_checkpoint_root` to the orchestrator (or set
-`SAPIENS_CHECKPOINT_ROOT` directly for standalone script 08 runs).
+`SAPIENS_CHECKPOINT_ROOT` directly for standalone predict_keypoints_2d.py runs).
 
 ### Everything else
 
-Scripts 01-04, 06, 09-13, 16, 17, 20 have no special conda env
-requirement beyond numpy/scipy/Pillow/plyfile -- run them from any env
-with those installed (`base`/`hloc`/etc. all work).
+Most other scripts (compute_sync_offsets.py, extract_synced_frames.py,
+make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
+split_keypoints_per_camera.py, triangulate_and_project_keypoints.py,
+train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py,
+and the not-yet-built resize_for_diffuman4d.py/generate_camera_ring.py/
+draw_skeletons.py) have no special conda env requirement beyond
+numpy/scipy/Pillow/plyfile -- run them from any env with those installed
+(`base`/`hloc`/etc. all work).
 
 ## System-level tools (no conda env)
 
-- `ffmpeg` / `ffprobe` on PATH -- required by stages 01-02. Any recent
-  build works (tested against 6.1.1).
+- `ffmpeg` / `ffprobe` on PATH -- required by compute_sync_offsets.py
+  and extract_synced_frames.py. Any recent build works (tested against
+  6.1.1).
 - `rawtherapee-cli` on PATH, or a flatpak install of RawTherapee --
-  optional, only needed for stage 02's `--pp3_dir` color correction.
+  optional, only needed for extract_synced_frames.py's `--pp3_dir` color
+  correction.
 - `brush_app` -- the compiled Brush gaussian-splat trainer, invoked as
   a binary (no conda env). Either build from the `deps/brush` submodule
   (needs a Rust toolchain -- see that repo's own build instructions) or
@@ -112,15 +119,14 @@ physical display), set one up via a streaming stack (Sunshine+gamescope,
 VNC, etc.) or a virtual compositor, and pass its display number via
 `--display` (e.g. `--display :1`).
 
-## External script dependencies (not conda, not submodules)
+## Vendored script dependencies
 
-Clone [solipsist-studios/4dgs-utils](https://github.com/solipsist-studios/4dgs-utils)
-somewhere and point these flags at it:
-
-- `--multiframe_sfm_script <path>/multiframe_sfm.py` -- required by
-  stage 05
-- `--refine_script <path>/refine_poses_with_keypoints.py` -- used by
-  optional stage 20 (defaults to `~/4dgs-utils/refine_poses_with_keypoints.py`)
+`multiframe_sfm.py` (used by `run_hloc.py`) and
+`refine_poses_with_keypoints.py` (used by the pose-refinement wrapper of
+the same name) are vendored directly into `scripts/vendor/` -- no
+external checkout needed. Pass `--multiframe_sfm_script` /
+`--refine_script` only if you want to point at a different copy (e.g.
+while testing local changes to them).
 
 ## Calibration data
 
