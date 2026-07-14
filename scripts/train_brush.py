@@ -21,7 +21,9 @@ been observed to silently ignore a separate masks/ folder placed
 alongside same-named/same-extension images -- baked alpha is the
 reliable route, not a separate masks dir.
 
---with_viewer is on by default -- using this for now on this setup.
+--with_viewer is on by default -- this is the tested, working
+configuration here; --no_viewer hasn't been separately verified on this
+or any other setup (see --no_viewer help).
 
 Usage:
     python3 train_brush.py \\
@@ -59,8 +61,9 @@ def main():
     parser.add_argument("--lr_coeffs_sh_scale", type=float, default=80)
     parser.add_argument("--export_every", type=int, default=10000)
     parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
-                         help="Open Brush's live viewer during training. On by default -- using "
-                              "this for now on this setup. See --no_viewer.")
+                         help="Open Brush's live viewer during training. On by default -- this "
+                              "is the tested, working configuration; --no_viewer hasn't been "
+                              "separately verified (here or elsewhere, e.g. WSL). See --no_viewer.")
     parser.add_argument("--no_viewer", dest="with_viewer", action="store_false",
                          help="Disable Brush's viewer. Use this if you've confirmed headless "
                               "training works in your own environment.")

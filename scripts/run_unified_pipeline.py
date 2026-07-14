@@ -532,8 +532,9 @@ def build_parser():
     parser.add_argument("--export_every", type=int, default=5000,
                         help="Brush checkpoint export interval in steps (also always exports once at completion)")
     parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
-                        help="Open Brush's live viewer during training. On by default -- using this "
-                             "for now on this setup. See --no_viewer.")
+                        help="Open Brush's live viewer during training. On by default -- this is "
+                             "the tested, working configuration; --no_viewer hasn't been "
+                             "separately verified (here or elsewhere, e.g. WSL). See --no_viewer.")
     parser.add_argument("--no_viewer", dest="with_viewer", action="store_false",
                         help="Disable Brush's viewer. Use this if you've confirmed headless training "
                              "works in your environment.")
