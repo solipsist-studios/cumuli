@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-12_triangulate_and_project_keypoints.py
+triangulate_and_project_keypoints.py
 
 Wraps Diffuman4D's triangulate_skeleton.py to:
   1. Triangulate 3D keypoints from the real cameras' 2D detections
-     (poses_2d, from 09_split_keypoints_per_camera.py / 10_resize_for_diffuman4d.py).
+     (poses_2d, from split_keypoints_per_camera.py / resize_for_diffuman4d.py).
   2. Project those 3D keypoints into EVERY camera in the 48-cam ring
-     (from 11_generate_camera_ring.py), producing the per-view skeleton
+     (from generate_camera_ring.py), producing the per-view skeleton
      keypoints Diffuman4D needs to condition its diffusion model on views
      that have no real image.
 
@@ -27,7 +27,7 @@ conda env: whichever has Diffuman4D's dependencies (easyvolcap, fire) --
 confirmed usage ran this under the "queen" conda env.
 
 Usage:
-    python3 12_triangulate_and_project_keypoints.py \\
+    python3 triangulate_and_project_keypoints.py \\
         --camera_path /path/to/transforms_48cam.json \\
         --kp2d_dir /path/to/poses_2d \\
         --out_kp3d_dir /path/to/poses_3d \\

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-17_build_colmap_sparse.py
+build_colmap_sparse.py
 
 Builds a COLMAP sparse/0 directory (cameras.txt, images.txt, points3D.txt)
 from a nerfstudio-style transforms.json (OpenGL/Blender convention: +X
 right, +Y up, +Z back) and a triangulated 3D keypoint point cloud (.ply,
 x/y/z only -- e.g. poses_pcd_fullres/<tem_label>.ply from
-12_triangulate_and_project_keypoints.py run against the ORIGINAL,
+triangulate_and_project_keypoints.py run against the ORIGINAL,
 un-cropped cameras/keypoints).
 
 Written fresh rather than reusing any of the older, ambiguous
@@ -40,7 +40,7 @@ its `--match-alpha-weight` loss automatically, no special training flag
 needed. Passing --masks_dir here produces that RGBA image set and points
 images.txt at it automatically. Do NOT dilate the masks before baking --
 dilated alpha supervision teaches a white background fringe at the
-silhouette (use 18_clean_masks.py's output, which never dilates).
+silhouette (use clean_masks.py's output, which never dilates).
 
 --images_dir: where the SOURCE images actually live, for the baking
 lookup. Defaults to out_dir/image_subdir (the historical assumption that
@@ -51,7 +51,7 @@ pointing at the real location. --image_subdir still controls the NAME
 recorded in images.txt either way.
 
 Usage:
-    python3 17_build_colmap_sparse.py \\
+    python3 build_colmap_sparse.py \\
         --transforms /path/to/transforms.json \\
         --points_ply /path/to/poses_pcd_fullres/000000.ply \\
         --out_dir /path/to/dataset_root \\
@@ -108,7 +108,7 @@ def main():
                          help="Where the source images actually live, for --masks_dir baking. "
                               "Defaults to out_dir/image_subdir.")
     parser.add_argument("--masks_dir", type=Path, default=None,
-                         help="Cleaned per-camera masks (<camera_label>.png, e.g. 18_clean_masks.py output). "
+                         help="Cleaned per-camera masks (<camera_label>.png, e.g. clean_masks.py output). "
                               "When given, bakes RGBA images and points images.txt at --rgba_subdir instead.")
     parser.add_argument("--rgba_subdir", default="images_rgba",
                          help="Subdir under out_dir to write baked RGBA images (only used with --masks_dir)")

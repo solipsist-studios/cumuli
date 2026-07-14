@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-18_clean_masks.py
+clean_masks.py
 
-Skeleton-guided cleanup of BiRefNet foreground masks (stage 07 output).
-Runs after stage 08/09, since it needs the 2D keypoints.
+Skeleton-guided cleanup of BiRefNet foreground masks (generate_masks.py
+output). Runs after predict_keypoints_2d.py/split_keypoints_per_camera.py,
+since it needs the 2D keypoints.
 
 Raw BiRefNet masks routinely contain non-subject blobs (tripod covers,
 bystanders in the background) and occasionally DROP part of the subject
@@ -26,7 +27,7 @@ conda env: none for the filtering; diffuman4d when --retry is used
 (it invokes deps/Diffuman4D/scripts/preprocess/remove_background.py).
 
 Usage:
-    python3 18_clean_masks.py \\
+    python3 clean_masks.py \\
         --fmasks_dir /path/to/fmasks_flat \\
         --kp2d_dir /path/to/poses_2d \\
         --out_dir /path/to/fmasks_clean \\

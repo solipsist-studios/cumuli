@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-16_train_brush.py
+train_brush.py
 
 Thin wrapper around the Brush gaussian-splat trainer (deps/brush),
 defaulting to the flag values that produced the best confirmed results
 historically (75k steps, lr-coeffs-sh-scale 80). Trains directly off a
-transforms.json (no COLMAP sparse/0 required -- see 15_prepare_brush_dataset.py),
-or off a COLMAP sparse/0 dataset (see 17_build_colmap_sparse.py).
+transforms.json (no COLMAP sparse/0 required -- see prepare_brush_dataset.py),
+or off a COLMAP sparse/0 dataset (see build_colmap_sparse.py).
 
 Masked (subject-only) training: this brush_app build has NO --alpha-mode
 flag (verified against `brush_app --help` -- there is no such option,
@@ -14,14 +14,14 @@ despite it being referenced in some older notes). Alpha transparency is
 picked up automatically whenever the loaded images have an alpha
 channel; --match_alpha_weight controls how strongly that alpha is
 matched (Brush's own default: 0.1). So masked training just means:
-bake masks into the image alpha channel (17_build_colmap_sparse.py
+bake masks into the image alpha channel (build_colmap_sparse.py
 --masks_dir) and train normally -- no special flag needed. Brush has
 been observed to silently ignore a separate masks/ folder placed
 alongside same-named/same-extension images -- baked alpha is the
 reliable route, not a separate masks dir.
 
 Usage:
-    python3 16_train_brush.py \\
+    python3 train_brush.py \\
         --data /path/to/brush_dataset \\
         --brush_app ~/brush-app-x86_64-unknown-linux-gnu/brush_app \\
         --export_path ~/brush_output \\

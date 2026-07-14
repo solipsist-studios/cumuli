@@ -1,29 +1,30 @@
 #!/usr/bin/env python3
 """
-20_refine_poses_with_keypoints.py
+run_pose_refinement.py
 
-Wraps vendor/refine_poses_with_keypoints.py ("human as calibration
-wand"): bundle-adjusts camera poses against 2D human keypoints across
-several time instants, anchoring accuracy at the subject where background
-SfM features (HLOC, run_hloc.py) don't reach. Background-only poses can
+Wraps refine_poses_with_keypoints.py ("human as calibration wand"):
+bundle-adjusts camera poses against 2D human keypoints across several
+time instants, anchoring accuracy at the subject where background SfM
+features (HLOC, run_hloc.py) don't reach. Background-only poses can
 look great on distant walls/windows yet disagree by tens of pixels at the
 capture volume center -- exactly where the subject moves.
 
 IMPORTANT: use keypoints from MANY time instants (10+), not one -- with a
 single instant the optimizer just absorbs sync error into the poses
 instead of correcting real pose error. Produce candidate instants with
-02_extract_synced_frames.py --window N (ideally already sync-corrected via
-19_skeleton_sync_search.py), then run stages 04/08/09 on each f{k}/ dir.
+extract_synced_frames.py --window N, then run
+undistort_frames.py/predict_keypoints_2d.py/split_keypoints_per_camera.py
+on each f{k}/ dir.
 
 This wrapper merges those per-instant poses_2d/<camera_label>/000000.json
-directories (each stage 09 run defaults to the same "000000" temporal
-label) into one directory with distinct temporal labels per instant, then
-invokes the underlying refine script.
+directories (each split_keypoints_per_camera.py run defaults to the same
+"000000" temporal label) into one directory with distinct temporal labels
+per instant, then invokes the underlying refine script.
 
 conda env: none beyond numpy/scipy (same as the underlying script).
 
 Usage:
-    python3 20_refine_poses_with_keypoints.py \\
+    python3 run_pose_refinement.py \\
         --transforms /path/to/solipsist_out/transforms_multiframe.json \\
         --kp2d_dirs /path/f0/poses_2d,/path/f1/poses_2d,/path/f2/poses_2d,... \\
         --out_transforms /path/to/transforms_refined.json \\
@@ -43,7 +44,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEFAULT_REFINE_SCRIPT = Path(__file__).parent / "vendor" / "refine_poses_with_keypoints.py"
+DEFAULT_REFINE_SCRIPT = Path(__file__).parent / "refine_poses_with_keypoints.py"
 
 
 def merge_instants(kp2d_dirs, merged_dir: Path):
@@ -74,7 +75,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transforms", required=True, type=Path)
     parser.add_argument("--kp2d_dirs", required=True,
-                        help="Comma-separated poses_2d dirs, one per time instant (stage 09 output layout)")
+                        help="Comma-separated poses_2d dirs, one per time instant (split_keypoints_per_camera.py output layout)")
     parser.add_argument("--out_transforms", required=True, type=Path)
     parser.add_argument("--merged_dir", type=Path, default=None,
                         help="Where to write the merged multi-instant keypoint dir (default: alongside out_transforms)")
@@ -101,7 +102,7 @@ def main():
     if len(kp2d_dirs) < 5:
         print(f"WARNING: only {len(kp2d_dirs)} time instant(s) given -- with too few instants the "
               "optimizer absorbs sync error into the poses instead of correcting real pose error. "
-              "10+ instants (sync-corrected via 19_skeleton_sync_search.py) is recommended.")
+              "10+ instants is recommended.")
 
     merged_dir = args.merged_dir or (args.out_transforms.parent / "poses_2d_merged")
     print(f"Merging {len(kp2d_dirs)} instant(s) into {merged_dir} ...")
