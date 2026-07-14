@@ -9,13 +9,8 @@ Used both to visually verify sync (via 03_make_sync_grid.py) and to pull
 the actual production frame you'll run the rest of the pipeline on.
 
 Optional per-camera color correction: pass --pp3_dir pointing at a
-directory of RawTherapee .pp3 profiles (matched to each camera by the
-camera stem appearing in the profile filename, e.g.
-thumbs/0001.mp4.thumb.jpg.pp3 for 0001.mp4). Each extracted frame is then
-processed with rawtherapee-cli before being written. Per-GoPro
-exposure/saturation differences are a major source of cross-view color
-inconsistency in the trained splat -- correcting here brings the automated
-chain to parity with manually processed stills. Color-corrected output is
+directory of RawTherapee .pp3 profiles. See color_correct.py for how
+profiles are matched to cameras and applied. Color-corrected output is
 PNG (downstream stages should pass --image_ext .png).
 
 Multi-frame window: --window N extracts N consecutive frames per camera
@@ -48,32 +43,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from color_correct import apply_pp3, find_pp3, resolve_rawtherapee_cmd
 from image_formats import SUPPORTED_IMAGE_EXTS
-
-
-def resolve_rawtherapee_cmd(override=None):
-    if override:
-        return override.split()
-    if shutil.which("rawtherapee-cli"):
-        return ["rawtherapee-cli"]
-    if shutil.which("flatpak"):
-        return ["flatpak", "run", "--command=rawtherapee-cli", "com.rawtherapee.RawTherapee"]
-    print("Error: rawtherapee-cli not found (nor flatpak). Install RawTherapee or pass --rawtherapee_cmd.")
-    sys.exit(1)
-
-
-def find_pp3(pp3_dir: Path, camera_stem: str):
-    """Match a .pp3 profile whose filename contains the camera stem."""
-    candidates = sorted(p for p in pp3_dir.rglob("*.pp3") if camera_stem in p.name)
-    return candidates[0] if candidates else None
-
-
-def apply_pp3(rt_cmd, image_path: Path, pp3_path: Path, out_path: Path):
-    # -n png output, -Y overwrite, -c input (must be last)
-    cmd = rt_cmd + ["-o", str(out_path), "-p", str(pp3_path), "-n", "-Y", "-c", str(image_path)]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if not out_path.exists():
-        raise RuntimeError(f"RawTherapee failed on {image_path}:\n{result.stdout}\n{result.stderr}")
 
 
 def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: Path, ext: str):
