@@ -2,10 +2,10 @@
 """
 05_run_hloc.py
 
-Runs HLOC-based multi-camera pose estimation (deps/4dgs-utils not vendored
-here -- this expects multiframe_sfm.py, passed via --multiframe_sfm_script)
-on a set of undistorted single-frame images, producing camera poses in
-nerfstudio transforms.json format.
+Runs HLOC-based multi-camera pose estimation on a set of undistorted
+single-frame images, producing camera poses in nerfstudio transforms.json
+format. Wraps vendor/multiframe_sfm.py (override with
+--multiframe_sfm_script if you're testing local changes to it).
 
 This wraps two things that multiframe_sfm.py needs set up first:
   1. Restructuring flat undistorted images (<camera_id>.jpg) into the
@@ -28,7 +28,6 @@ Usage:
         --undistorted_dir /path/to/undistorted \\
         --undistorted_pkl_dir /path/to/undistorted_pkls \\
         --outputs_dir /path/to/solipsist_out \\
-        --multiframe_sfm_script ~/4dgs-utils/multiframe_sfm.py \\
         [--num_timestamps 1] [--feature_type superpoint]
 
 Output:
@@ -122,8 +121,9 @@ def main():
     parser.add_argument("--undistorted_dir", required=True, type=Path)
     parser.add_argument("--undistorted_pkl_dir", required=True, type=Path)
     parser.add_argument("--outputs_dir", required=True, type=Path)
-    parser.add_argument("--multiframe_sfm_script", required=True, type=Path,
-                         help="Path to multiframe_sfm.py (e.g. ~/4dgs-utils/multiframe_sfm.py)")
+    parser.add_argument("--multiframe_sfm_script", type=Path,
+                         default=Path(__file__).parent / "vendor" / "multiframe_sfm.py",
+                         help="Path to multiframe_sfm.py (default: the vendored copy in scripts/vendor/)")
     parser.add_argument("--num_timestamps", type=int, default=1)
     parser.add_argument("--feature_type", default="superpoint", choices=["superpoint", "aliked"])
     parser.add_argument("--image_ext", default=".jpg")
