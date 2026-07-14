@@ -7,6 +7,5 @@
   "display": ":2",
   "hloc_resize_max": 4096,
   "hloc_max_keypoints": 8192,
-  "hloc_feature_type": "superpoint",
-  "multiframe_sfm_script": "scripts/vendor/multiframe_sfm.py"
+  "hloc_feature_type": "superpoint"
 }

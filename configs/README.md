@@ -25,3 +25,11 @@ python3 scripts/run_unified_pipeline.py \
 The full list of configurable keys is `CONFIGURABLE_DEFAULTS` in
 `scripts/run_unified_pipeline.py` -- passing an unrecognized key is an error,
 not a silent no-op.
+
+`multiframe_sfm_script` is configurable but deliberately left out of
+[example_rig.json](example_rig.json): its built-in default
+(`scripts/vendor/multiframe_sfm.py`, resolved relative to the script's own
+location) already works regardless of your current directory. Only set it
+in your own config if you're testing local changes to a different copy --
+and use an absolute path if you do, since a relative one is resolved
+against wherever you happen to run the orchestrator from, not the repo root.
