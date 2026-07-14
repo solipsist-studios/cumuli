@@ -1,52 +1,55 @@
 #!/usr/bin/env python3
 """
-21_run_unified_pipeline.py
+run_unified_pipeline.py
 
 Unified entry point for the volumetric capture pipeline: sync -> undistort
 -> pose solve/refine -> mask -> (Diffuman4D dense ring | direct 4K masked)
--> train Brush. Orchestrates the numbered scripts in this directory via
+-> train Brush. Orchestrates the other scripts in this directory via
 subprocess; it does not reimplement any of their logic.
 
-NOTE ON NUMBERING: this was requested as `20_run_unified_pipeline.py`, but
-`20_refine_poses_with_keypoints.py` already occupies slot 20 -- this is
-`21_` instead so nothing collides.
-
 --------------------------------------------------------------------------
-REAL STAGE ORDERING (why this isn't a flat 1..20 walk)
+STAGE ORDERING
 --------------------------------------------------------------------------
-Pose refinement (20) needs a multi-instant keypoint set RE-EXTRACTED at
-the verified sync (the historically-validated approach), not computed
+Pose refinement needs a multi-instant keypoint set RE-EXTRACTED at the
+verified sync (the historically-validated approach), not computed
 alongside sync itself. So the actual flow is:
 
-  1. SYNC: 01 (rough audio offsets, or --initial_sync_json to skip it) ->
-     02 (extract one frame) -> 03 (QA grid) -> sync_offsets.json as-is.
+  1. SYNC: compute_sync_offsets.py (rough audio offsets, or
+     --initial_sync_json to skip it) -> extract_synced_frames.py (extract
+     one frame) -> make_sync_grid.py (QA grid) -> sync_offsets.json as-is.
      NOT auto-corrected -- inspect the grid, hand-tune any camera's
      frame_offset that's visibly off, and pass the result back in via
      --initial_sync_json on the next run. (Automatic skeleton-based sync
-     correction, 19_skeleton_sync_search.py, isn't part of this build yet
+     correction, skeleton_sync_search.py, isn't part of this build yet
      -- it's never been run against real data, only synthetic ground
      truth.)
   2. PRODUCTION: re-extract the single production frame at target_time
-     using that sync -> 04 single-warp undistort (native fisheye
-     straight to the 4K pinhole target, calibration-scale validated)
+     using that sync -> undistort_frames.py single-warp undistort (native
+     fisheye straight to the 4K pinhole target, calibration-scale
+     validated)
   3. POSES: extract + process a candidate window at that same sync
-     (04/07/08/09) -> 05 (final HLOC on the production frame) -> 20
-     (bundle-adjust against the multi-instant keypoints) ->
-     transforms_refined.json
-  4. MASKS: 06 (flatten labels to 2-digit) -> 07 (BiRefNet) -> 08/09
-     (keypoints on the flat images, needed by mask cleanup/triangulation)
-     -> 18 (skeleton-guided cleanup, retry fallback, no dilation) -> 12
-     (triangulate subject point cloud against the real cameras only)
+     (undistort_frames.py/generate_masks.py/predict_keypoints_2d.py/
+     split_keypoints_per_camera.py) -> run_hloc.py (final HLOC on the
+     production frame) -> refine_poses_with_keypoints.py (bundle-adjust
+     against the multi-instant keypoints) -> transforms_refined.json
+  4. MASKS: build_flat_dataset.py (flatten labels to 2-digit) ->
+     generate_masks.py (BiRefNet) -> predict_keypoints_2d.py/
+     split_keypoints_per_camera.py (keypoints on the flat images, needed
+     by mask cleanup/triangulation) -> clean_masks.py (skeleton-guided
+     cleanup, retry fallback, no dilation) ->
+     triangulate_and_project_keypoints.py (triangulate subject point
+     cloud against the real cameras only)
   5. BRANCH:
-       --no_diffuman (direct 4K): 17 (COLMAP sparse + --masks_dir RGBA
-         bake) -> 16 (train, 4096 res; Brush auto-detects the alpha
-         channel baked in by 17, no special flag needed -- brush_app has
-         no --alpha-mode flag, verified against `brush_app --help`)
+       --no_diffuman (direct 4K): build_colmap_sparse.py (COLMAP sparse +
+         --masks_dir RGBA bake) -> train_brush.py (train, 4096 res; Brush
+         auto-detects the alpha channel baked in by build_colmap_sparse.py,
+         no special flag needed -- brush_app has no --alpha-mode flag,
+         verified against `brush_app --help`)
        --use_diffuman (dense ring): not part of this build yet -- only
          the direct 4K branch has been run/validated so far.
 
 Usage (see --help for every flag):
-    python3 21_run_unified_pipeline.py \\
+    python3 run_unified_pipeline.py \\
         --video_dir /media/ai/datasets/CAPTURE/movies \\
         --calib_dir /path/to/calibration_pkls \\
         --out_dir ~/capture_run \\
@@ -66,7 +69,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
-DEFAULT_MULTIFRAME_SFM_SCRIPT = Path.home() / "4dgs-utils" / "multiframe_sfm.py"
+DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "vendor" / "multiframe_sfm.py"
 
 SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi"}
 
@@ -240,7 +243,7 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
                     "--window", str(window)]
     if args.pp3_dir:
         extract_args += ["--pp3_dir", str(args.pp3_dir)]
-    run_script("02_extract_synced_frames.py", extract_args, label=f"02 (candidates, {tag})")
+    run_script("extract_synced_frames.py", extract_args, label=f"extract_synced_frames.py (candidates, {tag})")
 
     poses2d_dirs = []
     for k in range(window):
@@ -253,19 +256,19 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
             poses2d_dirs.append(f_poses2d)
             continue
 
-        run_script("04_undistort_frames.py", undistort_args(args, f_raw, f_undist, f_pkl, image_ext),
-                   conda_env=args.generic_env, label=f"04 (candidates f{k}, {tag})")
+        run_script("undistort_frames.py", undistort_args(args, f_raw, f_undist, f_pkl, image_ext),
+                   conda_env=args.generic_env, label=f"undistort_frames.py (candidates f{k}, {tag})")
 
-        run_script("07_generate_masks.py", [
+        run_script("generate_masks.py", [
             "--images_dir", f_undist, "--out_fmasks_dir", f_fmask, "--image_ext", image_ext,
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"07 (candidates f{k}, {tag})")
+        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"generate_masks.py (candidates f{k}, {tag})")
 
-        run_script("08_predict_keypoints_2d.py", keypoint_args(args, f_undist, f_kp2d, f_fmask),
-                   conda_env=args.sapiens_env, label=f"08 (candidates f{k}, {tag})")
+        run_script("predict_keypoints_2d.py", keypoint_args(args, f_undist, f_kp2d, f_fmask),
+                   conda_env=args.sapiens_env, label=f"predict_keypoints_2d.py (candidates f{k}, {tag})")
 
-        run_script("09_split_keypoints_per_camera.py", [
+        run_script("split_keypoints_per_camera.py", [
             "--kp2d_flat_dir", f_kp2d, "--out_dir", f_poses2d,
-        ], label=f"09 (candidates f{k}, {tag})")
+        ], label=f"split_keypoints_per_camera.py (candidates f{k}, {tag})")
 
         poses2d_dirs.append(f_poses2d)
 
@@ -273,10 +276,11 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
 
 
 def undistort_args(args, frames_dir, out_dir, out_pkl_dir, image_ext):
-    """Common 04_undistort_frames.py args. Single-warp mode (--target_pkl_dir)
+    """Common undistort_frames.py args. Single-warp mode (--target_pkl_dir)
     when a pre-made target pinhole calibration set was given; otherwise falls
-    back to 04's default offline_undistort.py wrapper mode, which derives new
-    (undistorted) intrinsics on the fly per camera -- no target set required."""
+    back to undistort_frames.py's default offline_undistort.py wrapper mode,
+    which derives new (undistorted) intrinsics on the fly per camera -- no
+    target set required."""
     a = ["--frames_dir", frames_dir, "--calib_dir", args.calib_dir,
          "--out_dir", out_dir, "--out_pkl_dir", out_pkl_dir, "--image_ext", image_ext]
     if args.target_pkl_dir:
@@ -293,7 +297,7 @@ def keypoint_args(args, images_dir, out_kp2d_dir, fmasks_dir):
 
 
 def run_hloc(args, undistorted_dir, undistorted_pkl_dir, outputs_dir, image_ext, label):
-    run_script("05_run_hloc.py", [
+    run_script("run_hloc.py", [
         "--undistorted_dir", undistorted_dir,
         "--undistorted_pkl_dir", undistorted_pkl_dir,
         "--outputs_dir", outputs_dir,
@@ -306,23 +310,23 @@ def run_hloc(args, undistorted_dir, undistorted_pkl_dir, outputs_dir, image_ext,
 
 # --------------------------------------------------------------------- stages
 def stage_sync(args, L, image_ext):
-    banner("STAGE 1/5: SYNC")
+    banner("STAGE: SYNC")
 
     if args.initial_sync_json:
         info(f"Using pre-existing sync offsets from {args.initial_sync_json} "
-             "(skipping 01_compute_sync_offsets.py)")
+             "(skipping compute_sync_offsets.py)")
         shutil.copy(args.initial_sync_json, L["sync_offsets"])
         raw_sync_json = L["sync_offsets"]
     else:
-        run_script("01_compute_sync_offsets.py",
-                   [args.video_dir, args.out_dir], conda_env=args.generic_env, label="01 (rough audio sync)")
-        # 01 always names its output sync_offsets.json inside the given out dir
+        run_script("compute_sync_offsets.py",
+                   [args.video_dir, args.out_dir], conda_env=args.generic_env, label="compute_sync_offsets.py (rough audio sync)")
+        # compute_sync_offsets.py always names its output sync_offsets.json inside the given out dir
         raw_sync_json = L["sync_offsets"]
 
     extract_args = [str(args.video_dir), str(raw_sync_json), str(L["cand_raw"]), str(args.target_time_s)]
-    run_script("02_extract_synced_frames.py", extract_args, label="02 (extract frame for sync QA grid)")
-    run_script("03_make_sync_grid.py",
-               [L["cand_raw"], L["sync_grid"]], conda_env=args.generic_env, label="03 (sync QA grid)")
+    run_script("extract_synced_frames.py", extract_args, label="extract_synced_frames.py (extract frame for sync QA grid)")
+    run_script("make_sync_grid.py",
+               [L["cand_raw"], L["sync_grid"]], conda_env=args.generic_env, label="make_sync_grid.py (sync QA grid)")
     info(f"Inspect {L['sync_grid']} -- every camera should show the same instant of action. "
          "This offset is NOT auto-corrected (automatic skeleton-based correction isn't part "
          "of this build yet) -- hand-tune any camera's frame_offset in sync_offsets.json that's "
@@ -332,21 +336,21 @@ def stage_sync(args, L, image_ext):
 
 
 def stage_production(args, L, image_ext, sync_json: Path):
-    banner("STAGE 2/5: DIRECT SINGLE-WARP UNDISTORTION (production frame)")
+    banner("STAGE: PRODUCTION (direct single-warp undistortion)")
 
     extract_args = [str(args.video_dir), str(sync_json), str(L["production_raw"]),
                     str(args.target_time_s)]
     if args.pp3_dir:
         extract_args += ["--pp3_dir", str(args.pp3_dir)]
-    run_script("02_extract_synced_frames.py", extract_args, label="02 (production frame)")
+    run_script("extract_synced_frames.py", extract_args, label="extract_synced_frames.py (production frame)")
 
-    run_script("04_undistort_frames.py",
+    run_script("undistort_frames.py",
                undistort_args(args, L["production_raw"], L["production_undist"], L["production_pkls"], image_ext),
-               conda_env=args.generic_env, label="04 (production)")
+               conda_env=args.generic_env, label="undistort_frames.py (production)")
 
 
 def stage_poses(args, L, image_ext, sync_json: Path):
-    banner("STAGE 3/5: BACKGROUND ESTIMATION & KEYPOINT REFINE")
+    banner("STAGE: POSES (background estimation & keypoint refine)")
 
     poses2d_dirs = [L["cand_corr_poses2d"] / f"f{k}" for k in range(args.sync_window)]
     if all(d.is_dir() and any(d.rglob("*.json")) for d in poses2d_dirs):
@@ -368,94 +372,94 @@ def stage_poses(args, L, image_ext, sync_json: Path):
     else:
         final_transforms = run_hloc(
             args, L["production_undist"], L["production_pkls"],
-            L["hloc_final"], image_ext, label="05 (final HLOC on production frame)",
+            L["hloc_final"], image_ext, label="run_hloc.py (final HLOC on production frame)",
         )
 
-    run_script("20_refine_poses_with_keypoints.py", [
+    run_script("refine_poses_with_keypoints.py", [
         "--transforms", final_transforms,
         "--kp2d_dirs", ",".join(str(p) for p in poses2d_dirs),
         "--out_transforms", L["transforms_refined"],
         "--report_only",
-    ], conda_env=args.generic_env, label="20 (pose refinement, report only -- pre-optimization residuals)")
+    ], conda_env=args.generic_env, label="refine_poses_with_keypoints.py (pose refinement, report only -- pre-optimization residuals)")
 
-    run_script("20_refine_poses_with_keypoints.py", [
+    run_script("refine_poses_with_keypoints.py", [
         "--transforms", final_transforms,
         "--kp2d_dirs", ",".join(str(p) for p in poses2d_dirs),
         "--out_transforms", L["transforms_refined"],
-    ], conda_env=args.generic_env, label="20 (pose refinement)")
+    ], conda_env=args.generic_env, label="refine_poses_with_keypoints.py (pose refinement)")
 
 
 def stage_masks(args, L, image_ext, n_real):
-    banner("STAGE 4/5: MASK GENERATION & CLEANING")
+    banner("STAGE: MASKS (generation & cleaning)")
 
-    # 06_build_flat_dataset.py expects the Camera_XXXX/0000.ext layout, not the
+    # build_flat_dataset.py expects the Camera_XXXX/0000.ext layout, not the
     # flat one -- L["production_undist"] only has that structure because
-    # stage_poses()'s run_hloc() call mutated it in place (05_run_hloc.py's
+    # stage_poses()'s run_hloc() call mutated it in place (run_hloc.py's
     # restructure_flat_to_percam side effect). This relies on stage_poses
     # having already run; if resuming with --start_from_stage masks, that
     # restructuring must already be done on disk.
     if L["flat_transforms"].is_file() and any(L["flat_images"].glob("*")):
-        info("06 already complete on disk -- reusing flat images/transforms.")
+        info("build_flat_dataset.py already complete on disk -- reusing flat images/transforms.")
     else:
-        run_script("06_build_flat_dataset.py", [
+        run_script("build_flat_dataset.py", [
             "--transforms", L["transforms_refined"],
             "--undistorted_dir", L["production_undist"],
             "--out_images_flat", L["flat_images"],
             "--out_transforms", L["flat_transforms"],
             "--image_ext", image_ext, "--out_image_ext", ".png",
-        ], conda_env=args.generic_env, label="06 (flatten to 2-digit labels)")
+        ], conda_env=args.generic_env, label="build_flat_dataset.py (flatten to 2-digit labels)")
 
     if L["flat_fmasks"].is_dir() and any(L["flat_fmasks"].glob("*.png")):
-        info("07 already complete on disk -- reusing flat masks.")
+        info("generate_masks.py already complete on disk -- reusing flat masks.")
     else:
-        run_script("07_generate_masks.py", [
+        run_script("generate_masks.py", [
             "--images_dir", L["flat_images"], "--out_fmasks_dir", L["flat_fmasks"], "--image_ext", ".png",
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label="07 (masks, flat production frame)")
+        ], conda_env=CONDA_ENV_DIFFUMAN4D, label="generate_masks.py (masks, flat production frame)")
 
     if L["flat_poses2d"].is_dir() and any(L["flat_poses2d"].rglob("*.json")):
-        info("08/09 already complete on disk -- reusing flat keypoints.")
+        info("predict_keypoints_2d.py/split_keypoints_per_camera.py already complete on disk -- reusing flat keypoints.")
     else:
-        run_script("08_predict_keypoints_2d.py", keypoint_args(args, L["flat_images"], L["flat_kp2d"], L["flat_fmasks"]),
-                   conda_env=args.sapiens_env, label="08 (keypoints, flat production frame)")
+        run_script("predict_keypoints_2d.py", keypoint_args(args, L["flat_images"], L["flat_kp2d"], L["flat_fmasks"]),
+                   conda_env=args.sapiens_env, label="predict_keypoints_2d.py (keypoints, flat production frame)")
 
-        run_script("09_split_keypoints_per_camera.py", [
+        run_script("split_keypoints_per_camera.py", [
             "--kp2d_flat_dir", L["flat_kp2d"], "--out_dir", L["flat_poses2d"],
-        ], label="09 (split, flat production frame)")
+        ], label="split_keypoints_per_camera.py (split, flat production frame)")
 
     if L["flat_fmasks_clean"].is_dir() and any(L["flat_fmasks_clean"].glob("*.png")):
-        info("18 already complete on disk -- reusing cleaned masks.")
+        info("clean_masks.py already complete on disk -- reusing cleaned masks.")
     else:
-        run_script("18_clean_masks.py", [
+        run_script("clean_masks.py", [
             "--fmasks_dir", L["flat_fmasks"], "--kp2d_dir", L["flat_poses2d"],
             "--out_dir", L["flat_fmasks_clean"], "--images_dir", L["flat_images"], "--retry",
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label="18 (mask cleanup, skeleton-guided, retry fallback)")
+        ], conda_env=CONDA_ENV_DIFFUMAN4D, label="clean_masks.py (mask cleanup, skeleton-guided, retry fallback)")
 
-    run_script("12_triangulate_and_project_keypoints.py", [
+    run_script("triangulate_and_project_keypoints.py", [
         "--camera_path", L["flat_transforms"], "--kp2d_dir", L["flat_poses2d"],
         "--out_kp3d_dir", L["poses_3d_fullres"], "--out_pcd_dir", L["poses_pcd_fullres"],
         "--n_total", str(n_real),
-    ], conda_env=args.triangulate_env, label="12 (triangulate subject point cloud, real cameras)")
+    ], conda_env=args.triangulate_env, label="triangulate_and_project_keypoints.py (triangulate subject point cloud, real cameras)")
 
 
 def stage_branch_direct(args, L):
-    banner("STAGE 5/5 (branch A): DIRECT 4K MASKED PIPELINE")
+    banner("STAGE: BRANCH (direct 4K masked pipeline)")
 
-    run_script("17_build_colmap_sparse.py", [
+    run_script("build_colmap_sparse.py", [
         "--transforms", L["flat_transforms"],
         "--points_ply", L["poses_pcd_fullres"] / "000000.ply",
         "--out_dir", L["train_set"],
         "--image_subdir", "images_flat",
         "--images_dir", L["flat_images"],
         "--masks_dir", L["flat_fmasks_clean"],
-    ], conda_env=args.generic_env, label="17 (COLMAP sparse + RGBA mask bake)")
+    ], conda_env=args.generic_env, label="build_colmap_sparse.py (COLMAP sparse + RGBA mask bake)")
 
-    run_script("16_train_brush.py", [
+    run_script("train_brush.py", [
         "--data", L["train_set"],
         "--total_steps", str(args.total_train_iters), "--max_resolution", "4096",
         "--export_every", str(args.export_every),
         "--brush_app", args.brush_app, "--export_path", L["brush_output"],
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
-    ] + (["--with_viewer"] if args.with_viewer else []), label="16 (train Brush, 4K masked)")
+    ] + (["--with_viewer"] if args.with_viewer else []), label="train_brush.py (train Brush, 4K masked)")
 
 
 def stage_branch_diffuman(args, L, n_real):
@@ -472,17 +476,18 @@ def build_parser():
                         help="Native fisheye calibration PKLs, e.g. Dev/calibration/5k")
     parser.add_argument("--target_pkl_dir", type=Path, default=None,
                         help="Optional target pinhole calibration PKLs, e.g. Dev/calibration/4k_undistorted. "
-                             "When given, 04_undistort_frames.py runs single-warp mode (native fisheye "
-                             "straight to this target geometry). When omitted, falls back to 04's default "
-                             "offline_undistort.py wrapper mode, which derives undistorted intrinsics "
-                             "on the fly per camera -- use this when no pre-made target set exists yet.")
+                             "When given, undistort_frames.py runs single-warp mode (native fisheye "
+                             "straight to this target geometry). When omitted, falls back to "
+                             "undistort_frames.py's default offline_undistort.py wrapper mode, which "
+                             "derives undistorted intrinsics on the fly per camera -- use this when no "
+                             "pre-made target set exists yet.")
     parser.add_argument("--out_dir", required=True, type=Path, help="Master working directory for this run")
     parser.add_argument("--target_time", required=True,
                         help="Central target timestamp, e.g. '1.5', '1.5s', or '1500ms'")
     parser.add_argument("--initial_sync_json", type=Path, default=None,
                         help="Pre-existing sync_offsets.json (e.g. a hand-tuned sync_offsets_v5.json) "
                              "to seed the sync stage with, instead of recomputing audio cross-correlation "
-                             "from scratch via 01_compute_sync_offsets.py")
+                             "from scratch via compute_sync_offsets.py")
     parser.add_argument("--pp3_dir", type=Path, default=None,
                         help="Optional per-camera RawTherapee .pp3 profile directory (e.g. thumbs/)")
 
@@ -498,22 +503,25 @@ def build_parser():
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
-    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for stage 08 (sapiens2 or sapiens_lite)")
+    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for predict_keypoints_2d.py (sapiens2 or sapiens_lite)")
     parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308",
                         help="308kp Sapiens2 Goliath (default, needs the Diffuman4D fork's Sapiens2 support) "
                              "or the legacy 133kp COCO-WholeBody model (needs mmdet, --sapiens_env sapiens_lite)")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
-                        help="Overrides SAPIENS_CHECKPOINT_ROOT for stage 08. If omitted, falls back to "
-                             "whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
+                        help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
+                             "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
     parser.add_argument("--triangulate_env", default="queen",
-                        help="Conda env for stage 12 (needs easyvolcap/fire/open3d; 'queen' historically had these)")
+                        help="Conda env for triangulate_and_project_keypoints.py (needs easyvolcap/fire/open3d; "
+                             "'queen' historically had these)")
     parser.add_argument("--generic_env", default="queen",
                         help="Conda env for scripts needing numpy/scipy/Pillow/plyfile/cv2 but no special "
-                             "framework (03,04,06,10,11,17,19,20). The orchestrator's own launching python "
-                             "may not have these installed, so these are NOT run bare with sys.executable. "
-                             "'queen' is confirmed to have the full set on this machine.")
+                             "framework (make_sync_grid.py, undistort_frames.py, build_flat_dataset.py, "
+                             "resize_for_diffuman4d.py, generate_camera_ring.py, build_colmap_sparse.py, "
+                             "skeleton_sync_search.py, refine_poses_with_keypoints.py). The orchestrator's "
+                             "own launching python may not have these installed, so these are NOT run bare "
+                             "with sys.executable. 'queen' is confirmed to have the full set on this machine.")
     parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
-                        help="Path to 4dgs-utils/multiframe_sfm.py")
+                        help="Path to multiframe_sfm.py (default: the vendored copy in scripts/vendor/)")
     parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
     parser.add_argument("--total_train_iters", type=int, default=30000)
     parser.add_argument("--export_every", type=int, default=5000,
@@ -550,11 +558,11 @@ def main():
         sys.exit(1)
     if not args.multiframe_sfm_script.is_file():
         fail(f"--multiframe_sfm_script {args.multiframe_sfm_script} not found "
-             "(clone solipsist-studios/4dgs-utils, or pass the flag explicitly)")
+             "(pass --multiframe_sfm_script to point at a different copy)")
         sys.exit(1)
     if not args.sapiens_checkpoint_root and not os.environ.get("SAPIENS_CHECKPOINT_ROOT"):
         warn("SAPIENS_CHECKPOINT_ROOT is not set in this shell and --sapiens_checkpoint_root "
-             "was not given -- 08_predict_keypoints_2d.py (stages 'sync', 'poses', 'masks') "
+             "was not given -- predict_keypoints_2d.py (stages 'sync', 'poses', 'masks') "
              "will fail. Pass --sapiens_checkpoint_root, or export it before running, e.g. "
              "export SAPIENS_CHECKPOINT_ROOT=~/sapiens")
 

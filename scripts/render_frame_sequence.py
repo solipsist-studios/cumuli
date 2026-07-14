@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-22_render_frame_sequence.py
+render_frame_sequence.py
 
 Renders a SEQUENCE of trained Brush splats across multiple target_times from
 the same static multi-camera rig, for stop-motion/flipbook-style 4D
@@ -10,24 +10,23 @@ temporally-aware 4D representation.
 Camera sync correction and pose calibration (transforms_refined.json) don't
 depend on which moment in time is being rendered -- they describe the FIXED
 physical rig, calibrated once from a representative time window. So unlike
-21_run_unified_pipeline.py (one target_time, full sync+production+poses+
+run_unified_pipeline.py (one target_time, full sync+production+poses+
 masks+branch pipeline every time), this script:
-  1. Reuses an ALREADY-COMPLETED single-frame 21_run_unified_pipeline.py
+  1. Reuses an ALREADY-COMPLETED single-frame run_unified_pipeline.py
      run's sync offsets and transforms_refined.json (--calib_run_dir)
      instead of recomputing them.
   2. Loops ONLY the per-frame-dependent stages (production undistortion,
      masks, subject triangulation, training) once per --target_times entry,
      into out_dir/frame_<NNNN>/.
 
-Reuses 21_run_unified_pipeline.py's stage_production/stage_masks/
-stage_branch_direct/stage_branch_diffuman functions directly (dynamically
-imported -- a leading-digit filename isn't a valid Python module name for a
-normal `import` statement) rather than reimplementing that orchestration:
-those functions are already tested against this exact rig.
+Reuses run_unified_pipeline.py's stage_production/stage_masks/
+stage_branch_direct/stage_branch_diffuman functions directly (imported as a
+regular module) rather than reimplementing that orchestration: those
+functions are already tested against this exact rig.
 
-Before calling stage_masks(), manually applies 05_run_hloc.py's
+Before calling stage_masks(), manually applies run_hloc.py's
 restructure_flat_to_percam() to this frame's production_undist dir --
-06_build_flat_dataset.py expects that Camera_<id>/0000.ext layout, which
+build_flat_dataset.py expects that Camera_<id>/0000.ext layout, which
 normally comes from run_hloc()'s side effect, but we're deliberately not
 re-running HLOC here (the whole point is that poses are already fixed).
 
@@ -37,7 +36,7 @@ per frame across even a short sequence multiplies out fast. A few thousand
 is usually enough to validate the sequence looks right.
 
 Usage:
-    python3 22_render_frame_sequence.py \\
+    python3 render_frame_sequence.py \\
         --calib_run_dir /path/to/completed/single_frame_run \\
         --video_dir /path/to/movies \\
         --calib_dir /path/to/calibration_pkls \\
@@ -51,27 +50,15 @@ Output:
 """
 
 import argparse
-import importlib.util
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPTS_DIR = REPO_ROOT / "scripts"
-
-
-def _load_module(name, filename):
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS_DIR / filename)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-unified = _load_module("_unified_pipeline_22", "21_run_unified_pipeline.py")
-hloc_mod = _load_module("_run_hloc_22", "05_run_hloc.py")
+import run_hloc as hloc_mod
+import run_unified_pipeline as unified
 
 
 def resolve_sync_json(calib_run_dir: Path) -> Path:
-    """Same resolution order 21_run_unified_pipeline.py's own resume logic uses."""
+    """Same resolution order run_unified_pipeline.py's own resume logic uses."""
     resolved_path = calib_run_dir / "resolved_sync_json.txt"
     if resolved_path.exists():
         return Path(resolved_path.read_text().strip())
@@ -81,7 +68,7 @@ def resolve_sync_json(calib_run_dir: Path) -> Path:
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--calib_run_dir", required=True, type=Path,
-                        help="A completed 21_run_unified_pipeline.py --out_dir to reuse sync + "
+                        help="A completed run_unified_pipeline.py --out_dir to reuse sync + "
                              "transforms_refined.json from (camera poses don't change per frame)")
     parser.add_argument("--video_dir", required=True, type=Path)
     parser.add_argument("--calib_dir", required=True, type=Path, help="Native fisheye calibration PKLs")
@@ -107,12 +94,12 @@ def build_parser():
                              "30000, this multiplies by the number of frames (default 3000)")
     parser.add_argument("--export_every", type=int, default=5000)
     parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
-                        help="See 21_run_unified_pipeline.py's --with_viewer help. On by default "
+                        help="See run_unified_pipeline.py's --with_viewer help. On by default "
                              "for the same reason. See --no_viewer.")
     parser.add_argument("--no_viewer", dest="with_viewer", action="store_false",
-                        help="See 21_run_unified_pipeline.py's --no_viewer help.")
+                        help="See run_unified_pipeline.py's --no_viewer help.")
     parser.add_argument("--display", default=":2",
-                        help="See 21_run_unified_pipeline.py's --display help.")
+                        help="See run_unified_pipeline.py's --display help.")
     parser.add_argument("--run_name", default=None, help="Prefix for output filenames (default: out_dir's name)")
     return parser
 
@@ -130,7 +117,7 @@ def main():
     transforms_refined = args.calib_run_dir / "transforms_refined.json"
     if not transforms_refined.is_file():
         unified.fail(f"{transforms_refined} not found -- is --calib_run_dir a completed "
-                     "21_run_unified_pipeline.py run?")
+                     "run_unified_pipeline.py run?")
         sys.exit(1)
 
     sync_json = resolve_sync_json(args.calib_run_dir)
