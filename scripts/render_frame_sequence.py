@@ -42,7 +42,8 @@ Usage:
         --calib_dir /path/to/calibration_pkls \\
         --out_dir /path/to/flipbook_run \\
         --start_time 1.4s --stop_time 1.6s --fps 30 \\
-        --total_train_iters 3000
+        --total_train_iters 3000 \\
+        [--config /path/to/rig.json]  # same per-rig file run_unified_pipeline.py takes
 
 Output:
     out_dir/frame_0000/brush_output/..., out_dir/frame_0001/brush_output/...
@@ -50,11 +51,48 @@ Output:
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 import run_hloc as hloc_mod
 import run_unified_pipeline as unified
+
+# Subset of run_unified_pipeline.py's CONFIGURABLE_DEFAULTS this script's own
+# parser actually has flags for (it skips HLOC entirely -- poses are reused
+# from --calib_run_dir -- so multiframe_sfm_script/hloc_* are irrelevant here).
+CONFIGURABLE_DEFAULTS = {
+    "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
+    "brush_app", "display",
+}
+
+
+def apply_config_defaults(parser):
+    """Same --config file format as run_unified_pipeline.py's per-rig config
+    (see configs/example_rig.json) -- lets both entry points share one file.
+    Validates against unified.CONFIGURABLE_DEFAULTS (the full schema) so a
+    typo'd key still errors, but only applies the subset of keys this
+    script's parser defines; keys that only run_unified_pipeline.py uses
+    (e.g. hloc_resize_max) are silently ignored rather than rejected."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre.parse_known_args()
+    if pre_args.config is None:
+        return
+
+    if not pre_args.config.is_file():
+        unified.fail(f"--config {pre_args.config} not found")
+        sys.exit(1)
+    with open(pre_args.config) as f:
+        config = json.load(f)
+
+    unknown = set(config) - unified.CONFIGURABLE_DEFAULTS
+    if unknown:
+        unified.fail(f"--config {pre_args.config} has unrecognized key(s): {sorted(unknown)} "
+                     f"-- configurable keys are: {sorted(unified.CONFIGURABLE_DEFAULTS)}")
+        sys.exit(1)
+    relevant = {k: v for k, v in config.items() if k in CONFIGURABLE_DEFAULTS}
+    parser.set_defaults(**relevant)
 
 
 def resolve_sync_json(calib_run_dir: Path) -> Path:
@@ -87,6 +125,10 @@ def resolve_target_times(args):
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="Same per-rig JSON run_unified_pipeline.py takes (conda env names, "
+                             "--brush_app, --display, SAPIENS_CHECKPOINT_ROOT -- see "
+                             "configs/example_rig.json). Explicit CLI flags still override the config.")
     parser.add_argument("--calib_run_dir", required=True, type=Path,
                         help="A completed run_unified_pipeline.py --out_dir to reuse sync + "
                              "transforms_refined.json from (camera poses don't change per frame)")
@@ -124,7 +166,9 @@ def build_parser():
 
 
 def main():
-    args = build_parser().parse_args()
+    parser = build_parser()
+    apply_config_defaults(parser)
+    args = parser.parse_args()
     args.run_name = args.run_name or args.out_dir.name
     image_ext = ".png" if args.pp3_dir else ".jpg"
 
