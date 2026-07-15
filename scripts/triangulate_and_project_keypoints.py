@@ -2,13 +2,13 @@
 """
 triangulate_and_project_keypoints.py
 
-Wraps Diffuman4D's triangulate_skeleton.py to:
-  1. Triangulate 3D keypoints from the real cameras' 2D detections
-     (poses_2d, from split_keypoints_per_camera.py / resize_for_diffuman4d.py).
-  2. Project those 3D keypoints into EVERY camera in the 48-cam ring
-     (from generate_camera_ring.py), producing the per-view skeleton
-     keypoints Diffuman4D needs to condition its diffusion model on views
-     that have no real image.
+Wraps Diffuman4D's triangulate_skeleton.py to triangulate 3D keypoints
+from the real cameras' 2D detections (poses_2d, from
+split_keypoints_per_camera.py). Optionally also projects those 3D
+keypoints into every camera of an N-camera ring, producing the per-view
+skeleton keypoints Diffuman4D needs to condition its diffusion model on
+views with no real image -- not used in this build (no ring-generation
+step exists yet), but supported via --out_kp2d_proj_dir/--n_total below.
 
 IMPORTANT: triangulate_skeleton.py's spa_labels_proj ALWAYS resolves to a
 non-empty list (falling back to os.listdir(kp2d_dir)) even when neither
@@ -16,24 +16,23 @@ non-empty list (falling back to os.listdir(kp2d_dir)) even when neither
 unconditionally joins paths under out_kp2d_proj_dir for every one of
 those labels, crashing with `TypeError: ... not NoneType` if
 out_kp2d_proj_dir was never passed. So --out_kp2d_proj_dir must ALWAYS be
-supplied; if the caller doesn't need the projected 2D keypoints (e.g.
-triangulating for the real cameras only, no ring), this wrapper defaults
-it to a throwaway directory alongside --out_kp3d_dir rather than leaving
-it unset. To get skeleton maps for all 48 ring cameras, pass
---out_kp2d_proj_dir explicitly (this wrapper's --spa_labels_proj_range
-covers 0..n_total by default in that case).
+supplied; if the caller doesn't need the projected 2D keypoints (the
+real-cameras-only case), this wrapper defaults it to a throwaway
+directory alongside --out_kp3d_dir rather than leaving it unset.
 
 conda env: whichever has Diffuman4D's dependencies (easyvolcap, fire) --
 confirmed usage ran this under the "queen" conda env.
 
-Usage:
+Usage (real cameras only, as used in this build):
     python3 triangulate_and_project_keypoints.py \\
-        --camera_path /path/to/transforms_48cam.json \\
+        --camera_path /path/to/transforms.json \\
         --kp2d_dir /path/to/poses_2d \\
         --out_kp3d_dir /path/to/poses_3d \\
-        --out_pcd_dir /path/to/poses_pcd \\
-        --out_kp2d_proj_dir /path/to/poses_2d_proj \\
-        [--n_total 48]
+        --out_pcd_dir /path/to/poses_pcd
+
+Usage (also project into an N-camera ring):
+    python3 triangulate_and_project_keypoints.py ... \\
+        --out_kp2d_proj_dir /path/to/poses_2d_proj [--n_total 48]
 """
 
 import argparse

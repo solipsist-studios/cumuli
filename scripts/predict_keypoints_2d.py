@@ -8,23 +8,17 @@ Predicts 2D human keypoints per camera. Two models are supported:
     body + hands + feet + face), via Diffuman4D's own
     deps/Diffuman4D/scripts/preprocess/predict_keypoints.py (which drives
     deps/Diffuman4D/scripts/preprocess/sapiens/2/demo/vis_pose.py). This is
-    the higher-fidelity model and the one every downstream stage (skeleton
-    sync search, pose refinement, triangulation, mask cleanup) is tuned
-    against -- prefer it unless you have a specific reason not to.
+    the higher-fidelity model and the one every downstream stage (pose
+    refinement, triangulation, mask cleanup) is tuned against -- prefer
+    it unless you have a specific reason not to.
 
   --model coco_wholebody133 (legacy fallback): the older Sapiens
     COCO-WholeBody model (133 keypoints), via
     deps/Diffuman4D/scripts/preprocess/sapiens/lite/demo/vis_pose.py
-    directly rather than through predict_keypoints.py, because THAT
-    script (the pre-Sapiens2 version, if your Diffuman4D checkout
-    predates the Sapiens2/Goliath support) builds vis_pose.py's --gpu_ids
-    flag as an unquoted comma-joined string; python-fire literal-evals CLI
-    values, so an unquoted "0" becomes the int 0 and "0,1" becomes the
-    tuple (0, 1) -- either way, vis_pose.py's own `args.gpu_ids.split(",")`
-    then crashes with AttributeError: 'int'/'tuple' object has no
-    attribute 'split'. Quoting the value as a Python string literal
-    (e.g. '"0"') works around it. This mode also requires mmdet (confirmed
-    present in the sapiens_lite conda env; sapiens2 lacks it by default).
+    directly. Requires mmdet (confirmed present in the sapiens_lite conda
+    env; sapiens2 lacks it by default). Works around a python-fire
+    --gpu_ids arg-quoting quirk in that older vis_pose.py internally --
+    see the --gpu_ids build site below.
 
 Both modes require torchcodec in the active env (even though we never
 decode video) -- vis_pose.py's sibling adhoc_video_dataset.py

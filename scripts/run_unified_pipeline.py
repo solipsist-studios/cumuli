@@ -233,8 +233,8 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
                               tag: str, start_time_s: float = None):
     """Extract a --window-frame candidate instant set starting at start_time_s
     (defaults to target_time_s) using sync_json, then run
-    04(undistort)/07(masks)/08(keypoints)/09(split) on each instant. Returns
-    the list of per-instant poses_2d dirs, in order."""
+    undistort/masks/keypoints/split on each instant. Returns the list of
+    per-instant poses_2d dirs, in order."""
     if start_time_s is None:
         start_time_s = args.target_time_s
     extract_args = [str(args.video_dir), str(sync_json), str(raw_dir), str(start_time_s),
