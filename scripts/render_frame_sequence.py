@@ -20,9 +20,9 @@ masks+branch pipeline every time), this script:
      (--start_time/--stop_time/--fps), into out_dir/frame_<NNNN>/.
 
 Reuses run_unified_pipeline.py's stage_production/stage_masks/
-stage_branch_direct/stage_branch_diffuman functions directly (imported as a
-regular module) rather than reimplementing that orchestration: those
-functions are already tested against this exact rig.
+stage_branch_direct functions directly (imported as a regular module)
+rather than reimplementing that orchestration: those functions are
+already tested against this exact rig.
 
 Before calling stage_masks(), manually applies run_hloc.py's
 restructure_flat_to_percam() to this frame's production_undist dir --
@@ -42,7 +42,7 @@ Usage:
         --calib_dir /path/to/calibration_pkls \\
         --out_dir /path/to/flipbook_run \\
         --start_time 1.4s --stop_time 1.6s --fps 30 \\
-        --no_diffuman --total_train_iters 3000
+        --total_train_iters 3000
 
 Output:
     out_dir/frame_0000/brush_output/..., out_dir/frame_0001/brush_output/...
@@ -102,10 +102,6 @@ def build_parser():
                         help="Frame rate for the --start_time/--stop_time range, e.g. 30.")
     parser.add_argument("--pp3_dir", type=Path, default=None)
 
-    diffuman_group = parser.add_mutually_exclusive_group(required=True)
-    diffuman_group.add_argument("--use_diffuman", dest="use_diffuman", action="store_true")
-    diffuman_group.add_argument("--no_diffuman", dest="use_diffuman", action="store_false")
-
     parser.add_argument("--sapiens_env", default="sapiens2")
     parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None)
@@ -155,8 +151,7 @@ def main():
     videos = unified.discover_cameras(args.video_dir)
     n_real = len(videos)
 
-    unified.banner(f"FRAME SEQUENCE RENDER -- {len(times)} frames, {n_real} cameras, "
-                   f"branch={'Diffuman4D dense ring' if args.use_diffuman else 'direct 4K masked'}")
+    unified.banner(f"FRAME SEQUENCE RENDER -- {len(times)} frames, {n_real} cameras")
     unified.info(f"Reusing calibration from {args.calib_run_dir}")
     unified.info(f"  transforms_refined: {transforms_refined}")
     unified.info(f"  sync offsets: {sync_json}")
@@ -178,10 +173,7 @@ def main():
             unified.stage_production(args, L, image_ext, sync_json)
             hloc_mod.restructure_flat_to_percam(L["production_undist"], image_ext)
             unified.stage_masks(args, L, image_ext, n_real)
-            if args.use_diffuman:
-                unified.stage_branch_diffuman(args, L, n_real)
-            else:
-                unified.stage_branch_direct(args, L)
+            unified.stage_branch_direct(args, L)
         except unified.StageError as e:
             unified.fail(str(e))
             unified.fail(f"{frame_tag} failed -- stopping sequence ({i}/{len(times)} frames "
