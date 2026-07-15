@@ -461,7 +461,8 @@ def stage_branch_direct(args, L):
         "--brush_app", args.brush_app, "--export_path", L["brush_output"],
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
         "--display", args.display,
-    ] + (["--with_viewer"] if args.with_viewer else []), label="train_brush.py (train Brush, 4K masked)")
+        "--with_viewer" if args.with_viewer else "--no_viewer",
+    ], label="train_brush.py (train Brush, 4K masked)")
 
 
 # ------------------------------------------------------------------------ CLI
