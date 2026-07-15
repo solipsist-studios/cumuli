@@ -135,7 +135,7 @@ def similarity_align(src_pts, dst_pts):
     return s, R, t
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--transforms', required=True)
     parser.add_argument('--kp2d', required=True)
@@ -156,24 +156,16 @@ def main():
                              'actually narrowing the left/right eye triangulation gap it was built '
                              'for -- see project memory. Try --face_weight 3.0 as a starting point '
                              'when picking this back up).')
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    FACE_KEYPOINT_IDS = set(range(0, 5)) | set(range(69, 308))
 
-    data, cams = load_transforms(args.transforms)
-    cam_labels = sorted(cams.keys())
-    cam_index = {label: i for i, label in enumerate(cam_labels)}
-    print(f'{len(cam_labels)} cameras.')
-
-    observations = load_keypoints(args.kp2d, cam_labels)
-    print(f'{len(observations)} candidate 3D points (time x keypoint).')
-
-    # Build point list: initial triangulation + observation table
-    points = []      # per point: (xyz, [(cam_idx, u, v, weight), ...])
+def triangulate_candidate_points(cams, cam_labels, cam_index, observations, score_thr, min_views):
+    """Initial triangulation + observation table. Per point: {'xyz', 'obs': [(cam_idx, u, v, weight), ...], 'key'}."""
+    points = []
     for key, cam_obs in observations.items():
         entries = [(cam_index[label], u, v, s) for label, (u, v, s) in cam_obs.items()
-                   if s >= args.score_thr]
-        if len(entries) < args.min_views:
+                   if s >= score_thr]
+        if len(entries) < min_views:
             continue
         Ks = np.array([cams[cam_labels[e[0]]]['K'] for e in entries])
         Ts = np.array([cams[cam_labels[e[0]]]['w2c'] for e in entries])
@@ -181,44 +173,36 @@ def main():
         ws = np.array([e[3] for e in entries])
         xyz = triangulate_linear(Ks, Ts, uvs, ws)
         points.append({'xyz': xyz, 'obs': entries, 'key': key})
-    print(f'{len(points)} points with >= {args.min_views} confident views.')
-    if not points:
-        raise SystemExit('No usable points - check score_thr / keypoint inputs.')
+    return points
 
-    Ks_all = np.array([cams[label]['K'] for label in cam_labels])
 
-    def residuals_report(rvecs, tvecs, pts, tag):
-        errs_by_cam = defaultdict(list)
-        for p_idx, p in enumerate(pts):
-            X = p['xyz'] if isinstance(p, dict) else p
-            entries = points[p_idx]['obs']
-            for cam_idx, u, v, s in entries:
-                R = Rotation.from_rotvec(rvecs[cam_idx]).as_matrix()
-                x = R @ X + tvecs[cam_idx]
-                if x[2] <= 1e-6:
-                    continue
-                uv = Ks_all[cam_idx] @ (x / x[2])
-                errs_by_cam[cam_idx].append(np.hypot(uv[0] - u, uv[1] - v))
-        if not errs_by_cam:
-            raise SystemExit(f'{tag}: no valid reprojections (all points behind cameras?)')
-        all_errs = np.concatenate([np.asarray(v) for v in errs_by_cam.values()])
-        print(f'{tag}: median {np.median(all_errs):.2f}px | mean {all_errs.mean():.2f}px | '
-              f'p90 {np.percentile(all_errs, 90):.2f}px | n={len(all_errs)}')
-        for cam_idx in sorted(errs_by_cam):
-            e = np.array(errs_by_cam[cam_idx])
-            print(f'    {cam_labels[cam_idx]}: median {np.median(e):7.2f}px  n={len(e)}')
-        return all_errs
+def report_residuals(rvecs, tvecs, pts, obs_points, Ks_all, cam_labels, tag):
+    """pts supplies the 3D positions (list of {'xyz': ...} or raw arrays); obs_points supplies the
+    per-point observation table (same length/order as pts -- may be the same list as pts)."""
+    errs_by_cam = defaultdict(list)
+    for p_idx, p in enumerate(pts):
+        X = p['xyz'] if isinstance(p, dict) else p
+        entries = obs_points[p_idx]['obs']
+        for cam_idx, u, v, s in entries:
+            R = Rotation.from_rotvec(rvecs[cam_idx]).as_matrix()
+            x = R @ X + tvecs[cam_idx]
+            if x[2] <= 1e-6:
+                continue
+            uv = Ks_all[cam_idx] @ (x / x[2])
+            errs_by_cam[cam_idx].append(np.hypot(uv[0] - u, uv[1] - v))
+    if not errs_by_cam:
+        raise SystemExit(f'{tag}: no valid reprojections (all points behind cameras?)')
+    all_errs = np.concatenate([np.asarray(v) for v in errs_by_cam.values()])
+    print(f'{tag}: median {np.median(all_errs):.2f}px | mean {all_errs.mean():.2f}px | '
+          f'p90 {np.percentile(all_errs, 90):.2f}px | n={len(all_errs)}')
+    for cam_idx in sorted(errs_by_cam):
+        e = np.array(errs_by_cam[cam_idx])
+        print(f'    {cam_labels[cam_idx]}: median {np.median(e):7.2f}px  n={len(e)}')
+    return all_errs
 
-    rvecs0 = np.array([Rotation.from_matrix(cams[label]['w2c'][:3, :3]).as_rotvec() for label in cam_labels])
-    tvecs0 = np.array([cams[label]['w2c'][:3, 3] for label in cam_labels])
 
-    print('\nInitial reprojection residuals (subject keypoints):')
-    init_errs = residuals_report(rvecs0, tvecs0, points, 'BEFORE')
-
-    if args.report_only:
-        return
-
-    # Drop gross outliers (sync glitches, detector failures) before optimizing
+def drop_outliers(points, rvecs0, tvecs0, Ks_all, outlier_px, min_views):
+    """Drop gross outlier observations (sync glitches, detector failures) before optimizing."""
     kept_points = []
     n_dropped = 0
     for p in points:
@@ -230,38 +214,59 @@ def main():
                 n_dropped += 1
                 continue
             uv = Ks_all[cam_idx] @ (x / x[2])
-            if np.hypot(uv[0] - u, uv[1] - v) > args.outlier_px:
+            if np.hypot(uv[0] - u, uv[1] - v) > outlier_px:
                 n_dropped += 1
                 continue
             entries.append((cam_idx, u, v, s))
-        if len(entries) >= args.min_views:
+        if len(entries) >= min_views:
             p['obs'] = entries
             kept_points.append(p)
-    points = kept_points
-    print(f'\nDropped {n_dropped} outlier observations; optimizing over {len(points)} points.')
+    return kept_points, n_dropped
 
-    n_cams = len(cam_labels)
-    n_pts = len(points)
+
+def build_observations(points, face_keypoint_ids, face_weight):
     n_face_obs = 0
     obs_flat = []
     for p_idx, p in enumerate(points):
         kp_idx = p['key'][1]
-        w_mult = args.face_weight if kp_idx in FACE_KEYPOINT_IDS else 1.0
+        w_mult = face_weight if kp_idx in face_keypoint_ids else 1.0
         for cam_idx, u, v, s in p['obs']:
             obs_flat.append((p_idx, cam_idx, u, v, np.sqrt(w_mult * s)))
             if w_mult != 1.0:
                 n_face_obs += 1
-    print(f'Applying {args.face_weight}x weight to {n_face_obs} face/head keypoint observations.')
-    n_obs = len(obs_flat)
+    print(f'Applying {face_weight}x weight to {n_face_obs} face/head keypoint observations.')
     obs_p = np.array([o[0] for o in obs_flat])
     obs_c = np.array([o[1] for o in obs_flat])
     obs_uv = np.array([[o[2], o[3]] for o in obs_flat])
     obs_w = np.array([o[4] for o in obs_flat])
-    print(f'{n_obs} observations, {6 * n_cams + 3 * n_pts} parameters.')
+    return obs_flat, obs_p, obs_c, obs_uv, obs_w
 
-    x0 = np.concatenate([rvecs0.ravel(), tvecs0.ravel(),
-                         np.array([p['xyz'] for p in points]).ravel()])
 
+def build_sparsity_pattern(obs_flat, n_cams, n_pts):
+    n_obs = len(obs_flat)
+    sparsity = lil_matrix((2 * n_obs, 6 * n_cams + 3 * n_pts), dtype=int)
+    for i, (p_idx, cam_idx, *_rest) in enumerate(obs_flat):
+        rows = (2 * i, 2 * i + 1)
+        for r in rows:
+            sparsity[r, 3 * cam_idx:3 * cam_idx + 3] = 1
+            sparsity[r, 3 * n_cams + 3 * cam_idx:3 * n_cams + 3 * cam_idx + 3] = 1
+            sparsity[r, 6 * n_cams + 3 * p_idx:6 * n_cams + 3 * p_idx + 3] = 1
+    return sparsity
+
+
+def huber_transform(r, delta):
+    """Elementwise: returns r' such that 0.5*r'^2 == huber_rho(r, delta), preserving sign.
+    Lets us apply Huber robustification on the TRUE pixel residual before any
+    per-observation weight is folded in, so weighting (confidence, face_weight)
+    can't shift a point across the outlier-robustification threshold."""
+    abs_r = np.abs(r)
+    out = r.copy()
+    mask = abs_r > delta
+    out[mask] = np.sign(r[mask]) * np.sqrt(delta * (2 * abs_r[mask] - delta))
+    return out
+
+
+def run_bundle_adjustment(x0, n_cams, n_pts, obs_p, obs_c, obs_uv, obs_w, Ks_all, huber_px, max_iters, sparsity):
     def unpack(x):
         rv = x[:3 * n_cams].reshape(n_cams, 3)
         tv = x[3 * n_cams:6 * n_cams].reshape(n_cams, 3)
@@ -273,17 +278,6 @@ def main():
     cx = np.array([Ks_all[c][0, 2] for c in range(n_cams)])
     cy = np.array([Ks_all[c][1, 2] for c in range(n_cams)])
 
-    def huber_transform(r, delta):
-        """Elementwise: returns r' such that 0.5*r'^2 == huber_rho(r, delta), preserving sign.
-        Lets us apply Huber robustification on the TRUE pixel residual before any
-        per-observation weight is folded in, so weighting (confidence, face_weight)
-        can't shift a point across the outlier-robustification threshold."""
-        abs_r = np.abs(r)
-        out = r.copy()
-        mask = abs_r > delta
-        out[mask] = np.sign(r[mask]) * np.sqrt(delta * (2 * abs_r[mask] - delta))
-        return out
-
     def fun(x):
         rv, tv, pts = unpack(x)
         Rmats = Rotation.from_rotvec(rv).as_matrix()
@@ -294,27 +288,21 @@ def main():
         u = fx[obs_c] * xc[:, 0] / z + cx[obs_c]
         v = fy[obs_c] * xc[:, 1] / z + cy[obs_c]
         raw_res = np.stack([u - obs_uv[:, 0], v - obs_uv[:, 1]], axis=1)
-        hres = huber_transform(raw_res, args.huber_px)
+        hres = huber_transform(raw_res, huber_px)
         res = hres * obs_w[:, None]
         return res.ravel()
-
-    sparsity = lil_matrix((2 * n_obs, 6 * n_cams + 3 * n_pts), dtype=int)
-    for i, (p_idx, cam_idx, *_rest) in enumerate(obs_flat):
-        rows = (2 * i, 2 * i + 1)
-        for r in rows:
-            sparsity[r, 3 * cam_idx:3 * cam_idx + 3] = 1
-            sparsity[r, 3 * n_cams + 3 * cam_idx:3 * n_cams + 3 * cam_idx + 3] = 1
-            sparsity[r, 6 * n_cams + 3 * p_idx:6 * n_cams + 3 * p_idx + 3] = 1
 
     print('Optimizing (Huber-robust bundle adjustment, intrinsics fixed)...')
     # loss left at scipy's default ('linear') -- Huber robustification now happens inside
     # fun() itself, on the true pixel residual before per-observation weighting is applied.
     result = least_squares(fun, x0, jac_sparsity=sparsity, method='trf',
-                           max_nfev=args.max_iters, verbose=2, x_scale='jac')
+                           max_nfev=max_iters, verbose=2, x_scale='jac')
+    return unpack(result.x)
 
-    rv1, tv1, pts1 = unpack(result.x)
 
-    # Remove gauge drift: similarity-align refined camera centers to the input ones
+def remove_gauge_drift(rv1, tv1, pts1, rvecs0, tvecs0, n_cams):
+    """Similarity-align refined camera centers back onto the input ones (scene scale/origin
+    are otherwise free to drift under bundle adjustment with no fixed/anchor camera)."""
     centers0 = np.array([-Rotation.from_rotvec(rvecs0[i]).as_matrix().T @ tvecs0[i] for i in range(n_cams)])
     centers1 = np.array([-Rotation.from_rotvec(rv1[i]).as_matrix().T @ tv1[i] for i in range(n_cams)])
     s, R_al, t_al = similarity_align(centers1, centers0)
@@ -326,13 +314,10 @@ def main():
         rv1[i] = Rotation.from_matrix(R_new).as_rotvec()
         tv1[i] = t_new
     pts_aligned = (s * (R_al @ pts1.T)).T + t_al
+    return rv1, tv1, pts_aligned
 
-    print('\nRefined reprojection residuals:')
-    pts_report = [{'xyz': pts_aligned[i], 'obs': points[i]['obs']} for i in range(n_pts)]
-    final_errs = residuals_report(rv1, tv1, pts_report, 'AFTER ')
-    print(f'\nMedian residual: {np.median(init_errs):.2f}px -> {np.median(final_errs):.2f}px')
 
-    # Write refined transforms
+def write_refined_transforms(data, cams, cam_labels, cam_index, rv1, tv1, out_path):
     for label in cam_labels:
         i = cam_index[label]
         w2c = np.eye(4)
@@ -341,9 +326,64 @@ def main():
         c2w = np.linalg.inv(w2c)
         c2w[:3, 1:3] *= -1  # OpenCV -> OpenGL
         cams[label]['frame']['transform_matrix'] = c2w.tolist()
-    with open(args.out_transforms, 'w') as f:
+    with open(out_path, 'w') as f:
         json.dump(data, f, indent=4)
-    print(f'Wrote {args.out_transforms}')
+    print(f'Wrote {out_path}')
+
+
+def main():
+    args = parse_args()
+
+    FACE_KEYPOINT_IDS = set(range(0, 5)) | set(range(69, 308))
+
+    data, cams = load_transforms(args.transforms)
+    cam_labels = sorted(cams.keys())
+    cam_index = {label: i for i, label in enumerate(cam_labels)}
+    print(f'{len(cam_labels)} cameras.')
+
+    observations = load_keypoints(args.kp2d, cam_labels)
+    print(f'{len(observations)} candidate 3D points (time x keypoint).')
+
+    points = triangulate_candidate_points(cams, cam_labels, cam_index, observations,
+                                          args.score_thr, args.min_views)
+    print(f'{len(points)} points with >= {args.min_views} confident views.')
+    if not points:
+        raise SystemExit('No usable points - check score_thr / keypoint inputs.')
+
+    Ks_all = np.array([cams[label]['K'] for label in cam_labels])
+
+    rvecs0 = np.array([Rotation.from_matrix(cams[label]['w2c'][:3, :3]).as_rotvec() for label in cam_labels])
+    tvecs0 = np.array([cams[label]['w2c'][:3, 3] for label in cam_labels])
+
+    print('\nInitial reprojection residuals (subject keypoints):')
+    init_errs = report_residuals(rvecs0, tvecs0, points, points, Ks_all, cam_labels, 'BEFORE')
+
+    if args.report_only:
+        return
+
+    points, n_dropped = drop_outliers(points, rvecs0, tvecs0, Ks_all, args.outlier_px, args.min_views)
+    print(f'\nDropped {n_dropped} outlier observations; optimizing over {len(points)} points.')
+
+    n_cams = len(cam_labels)
+    n_pts = len(points)
+    obs_flat, obs_p, obs_c, obs_uv, obs_w = build_observations(points, FACE_KEYPOINT_IDS, args.face_weight)
+    print(f'{len(obs_flat)} observations, {6 * n_cams + 3 * n_pts} parameters.')
+
+    x0 = np.concatenate([rvecs0.ravel(), tvecs0.ravel(),
+                         np.array([p['xyz'] for p in points]).ravel()])
+    sparsity = build_sparsity_pattern(obs_flat, n_cams, n_pts)
+
+    rv1, tv1, pts1 = run_bundle_adjustment(x0, n_cams, n_pts, obs_p, obs_c, obs_uv, obs_w, Ks_all,
+                                           args.huber_px, args.max_iters, sparsity)
+
+    rv1, tv1, pts_aligned = remove_gauge_drift(rv1, tv1, pts1, rvecs0, tvecs0, n_cams)
+
+    print('\nRefined reprojection residuals:')
+    pts_report = [{'xyz': pts_aligned[i], 'obs': points[i]['obs']} for i in range(n_pts)]
+    final_errs = report_residuals(rv1, tv1, pts_report, points, Ks_all, cam_labels, 'AFTER ')
+    print(f'\nMedian residual: {np.median(init_errs):.2f}px -> {np.median(final_errs):.2f}px')
+
+    write_refined_transforms(data, cams, cam_labels, cam_index, rv1, tv1, args.out_transforms)
 
 
 if __name__ == '__main__':
