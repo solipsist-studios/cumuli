@@ -67,11 +67,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from image_formats import SUPPORTED_VIDEO_EXTS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
-DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "vendor" / "multiframe_sfm.py"
-
-SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi"}
+DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "multiframe_sfm.py"
 
 STAGE_KEYS = ["sync", "production", "poses", "masks", "branch"]
 
@@ -521,7 +521,7 @@ def build_parser():
                              "own launching python may not have these installed, so these are NOT run bare "
                              "with sys.executable. 'queen' is confirmed to have the full set on this machine.")
     parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
-                        help="Path to multiframe_sfm.py (default: the vendored copy in scripts/vendor/)")
+                        help="Path to multiframe_sfm.py (override to test local changes to it)")
     parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
     parser.add_argument("--total_train_iters", type=int, default=30000)
     parser.add_argument("--export_every", type=int, default=5000,
