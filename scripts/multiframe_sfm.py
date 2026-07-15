@@ -248,7 +248,7 @@ def export_points_ply(rec, out_path, max_error=2.0, min_track_length=3):
     return len(points)
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--videos_dir', help='Directory of per-camera videos (one file per camera).')
     parser.add_argument('--frames_root', help='Alternative to --videos_dir: root of pre-extracted frames/<camera>/<time>.jpg.')
@@ -269,68 +269,71 @@ def main():
                         help='Optional dir of per-camera undistorted pinhole pkls; if given, the output transforms uses those intrinsics.')
     parser.add_argument('--file_path_format', default='images/undistorted_{label}.png')
     parser.add_argument('--max_rot_spread_deg', type=float, default=10.0)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    outputs_dir = Path(args.outputs_dir)
-    outputs_dir.mkdir(parents=True, exist_ok=True)
-    frames_dir = outputs_dir / 'frames'
 
-    # ------------------------------------------------------------------ frames
-    sync_shifts = {}
-    if args.sync_json:
-        with open(args.sync_json) as f:
-            sync = json.load(f)
-        for name, entry in sync['cameras'].items():
-            sync_shifts[Path(name).stem] = int(entry.get('frame_shift') or 0)
+def load_sync_shifts(sync_json):
+    if not sync_json:
+        return {}
+    with open(sync_json) as f:
+        sync = json.load(f)
+    return {Path(name).stem: int(entry.get('frame_shift') or 0) for name, entry in sync['cameras'].items()}
 
-    if args.videos_dir:
-        videos = sorted(p for p in Path(args.videos_dir).iterdir()
-                        if p.suffix.lower() in SUPPORTED_VIDEO_EXTS)
-        if not videos:
-            raise SystemExit(f'No videos found in {args.videos_dir}')
-        print(f'Found {len(videos)} videos.')
-        infos = {v.stem: probe_video(v) for v in videos}
-        min_frames = min(i['nb_frames'] for i in infos.values())
-        max_shift = max([abs(s) for s in sync_shifts.values()] + [0])
 
-        if args.timestamps:
-            timestamps = [int(t) for t in args.timestamps.split(',')]
-        else:
-            lo, hi = max_shift, min_frames - 1 - max_shift
-            timestamps = np.unique(np.linspace(lo, hi, args.num_timestamps).round().astype(int)).tolist()
-        print(f'Sampling timestamps: {timestamps}')
+def sample_frames_from_videos(videos_dir, frames_dir, sync_shifts, num_timestamps, timestamps_arg):
+    videos = sorted(p for p in Path(videos_dir).iterdir() if p.suffix.lower() in SUPPORTED_VIDEO_EXTS)
+    if not videos:
+        raise SystemExit(f'No videos found in {videos_dir}')
+    print(f'Found {len(videos)} videos.')
+    infos = {v.stem: probe_video(v) for v in videos}
+    min_frames = min(i['nb_frames'] for i in infos.values())
+    max_shift = max([abs(s) for s in sync_shifts.values()] + [0])
 
-        image_names_by_camera = defaultdict(list)
-        for video in videos:
-            label = video.stem
-            shift = sync_shifts.get(label, 0)
-            for t in timestamps:
-                idx = int(np.clip(t + shift, 0, infos[label]['nb_frames'] - 1))
-                rel = f'{label}/{t:06d}.jpg'
-                out_path = frames_dir / rel
-                if not out_path.exists():
-                    extract_frame(video, idx, out_path)
-                image_names_by_camera[label].append(rel)
-            print(f'  extracted {label} (shift {shift:+d})')
-    elif args.frames_root:
-        frames_dir = Path(args.frames_root)
-        image_names_by_camera = defaultdict(list)
-        for cam_dir in sorted(p for p in frames_dir.iterdir() if p.is_dir()):
-            for img in sorted(cam_dir.iterdir()):
-                if img.suffix.lower() in {'.jpg', '.jpeg', '.png'}:
-                    image_names_by_camera[cam_dir.name].append(f'{cam_dir.name}/{img.name}')
-        if not image_names_by_camera:
-            raise SystemExit(f'No frames found under {args.frames_root}')
+    if timestamps_arg:
+        timestamps = [int(t) for t in timestamps_arg.split(',')]
     else:
-        raise SystemExit('Provide --videos_dir or --frames_root')
+        lo, hi = max_shift, min_frames - 1 - max_shift
+        timestamps = np.unique(np.linspace(lo, hi, num_timestamps).round().astype(int)).tolist()
+    print(f'Sampling timestamps: {timestamps}')
 
-    camera_labels = sorted(image_names_by_camera.keys())
-    all_images = [n for label in camera_labels for n in image_names_by_camera[label]]
-    print(f'{len(camera_labels)} cameras, {len(all_images)} images total.')
+    image_names_by_camera = defaultdict(list)
+    for video in videos:
+        label = video.stem
+        shift = sync_shifts.get(label, 0)
+        for t in timestamps:
+            idx = int(np.clip(t + shift, 0, infos[label]['nb_frames'] - 1))
+            rel = f'{label}/{t:06d}.jpg'
+            out_path = frames_dir / rel
+            if not out_path.exists():
+                extract_frame(video, idx, out_path)
+            image_names_by_camera[label].append(rel)
+        print(f'  extracted {label} (shift {shift:+d})')
+    return image_names_by_camera
 
-    intrinsics_by_camera = load_init_intrinsics(args.init_transforms, camera_labels)
 
-    # ------------------------------------------------------- features + matches
+def collect_frames_from_root(frames_root):
+    image_names_by_camera = defaultdict(list)
+    for cam_dir in sorted(p for p in Path(frames_root).iterdir() if p.is_dir()):
+        for img in sorted(cam_dir.iterdir()):
+            if img.suffix.lower() in {'.jpg', '.jpeg', '.png'}:
+                image_names_by_camera[cam_dir.name].append(f'{cam_dir.name}/{img.name}')
+    if not image_names_by_camera:
+        raise SystemExit(f'No frames found under {frames_root}')
+    return image_names_by_camera
+
+
+def gather_frames(args, frames_dir):
+    """Returns (image_names_by_camera, frames_dir) -- frames_dir may be overridden to --frames_root."""
+    sync_shifts = load_sync_shifts(args.sync_json)
+    if args.videos_dir:
+        return sample_frames_from_videos(args.videos_dir, frames_dir, sync_shifts,
+                                         args.num_timestamps, args.timestamps), frames_dir
+    if args.frames_root:
+        return collect_frames_from_root(args.frames_root), Path(args.frames_root)
+    raise SystemExit('Provide --videos_dir or --frames_root')
+
+
+def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
     if args.feature_type == 'superpoint':
         feature_conf = {
             'output': f'feats-superpoint-n{args.max_keypoints}-r{args.resize_max}',
@@ -352,8 +355,11 @@ def main():
     pairs_from_exhaustive.main(sfm_pairs, image_list=all_images)
     print(f'Matching {sum(1 for _ in open(sfm_pairs))} pairs...')
     match_path = match_features.main(matcher_conf, sfm_pairs, feature_conf['output'], outputs_dir)
+    return feature_path, sfm_pairs, match_path
 
-    # ------------------------------------------------------------------- SfM
+
+def run_sfm_reconstruction(args, frames_dir, outputs_dir, image_names_by_camera, intrinsics_by_camera,
+                           feature_path, sfm_pairs, match_path):
     sfm_dir = outputs_dir / 'sfm'
     sfm_dir.mkdir(exist_ok=True)
     database_path = sfm_dir / 'database.db'
@@ -403,7 +409,10 @@ def main():
               f'{rec.num_points3D()} points')
         rec.write(sfm_dir)
 
-    # ------------------------------------------------------------ pose average
+    return rec, sfm_dir
+
+
+def average_camera_poses(rec, camera_labels, max_rot_spread_deg):
     poses_by_camera = defaultdict(dict)
     for _, img in rec.images.items():
         label = img.name.split('/')[0]
@@ -421,14 +430,16 @@ def main():
     print('\nPer-camera pose repeatability across timestamps:')
     for label in sorted(poses_by_camera.keys()):
         T_list = list(poses_by_camera[label].values())
-        T_avg, stats = robust_pose_average(T_list, args.max_rot_spread_deg)
+        T_avg, stats = robust_pose_average(T_list, max_rot_spread_deg)
         avg_poses[label] = T_avg
         per_camera_stats[label] = stats
         print(f'  {label}: {stats["num_inliers"]}/{stats["num_views"]} views | '
               f'center spread {stats["center_spread"]:.4f} (max {stats["center_spread_max"]:.4f}) | '
               f'rot spread {stats["rot_spread_deg"]:.3f} deg (max {stats["rot_spread_deg_max"]:.3f})')
+    return avg_poses, per_camera_stats
 
-    # refined intrinsics out of the reconstruction
+
+def extract_refined_intrinsics(rec):
     refined_intrinsics = {}
     label_by_camera_id = {}
     for _, img in rec.images.items():
@@ -440,7 +451,11 @@ def main():
         model_name = cam.model.name if hasattr(cam.model, 'name') else str(cam.model)
         model_name = model_name.replace('CameraModelId.', '')
         refined_intrinsics[label] = (model_name, cam.width, cam.height, list(map(float, cam.params)))
+    return refined_intrinsics
 
+
+def export_results(args, outputs_dir, rec, camera_labels, all_images, avg_poses, per_camera_stats,
+                   refined_intrinsics):
     undistorted_intrinsics = None
     if args.undistorted_calibration_dir:
         undistorted_intrinsics = load_undistorted_intrinsics(args.undistorted_calibration_dir, camera_labels)
@@ -470,6 +485,32 @@ def main():
     with open(outputs_dir / 'report.json', 'w') as f:
         json.dump(report, f, indent=2)
     print(f"\nWrote {outputs_dir / 'transforms_multiframe.json'} and {outputs_dir / 'report.json'}")
+
+
+def main():
+    args = parse_args()
+
+    outputs_dir = Path(args.outputs_dir)
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+    frames_dir = outputs_dir / 'frames'
+
+    image_names_by_camera, frames_dir = gather_frames(args, frames_dir)
+    camera_labels = sorted(image_names_by_camera.keys())
+    all_images = [n for label in camera_labels for n in image_names_by_camera[label]]
+    print(f'{len(camera_labels)} cameras, {len(all_images)} images total.')
+
+    intrinsics_by_camera = load_init_intrinsics(args.init_transforms, camera_labels)
+
+    feature_path, sfm_pairs, match_path = extract_and_match_features(args, frames_dir, outputs_dir, all_images)
+
+    rec, sfm_dir = run_sfm_reconstruction(args, frames_dir, outputs_dir, image_names_by_camera,
+                                          intrinsics_by_camera, feature_path, sfm_pairs, match_path)
+
+    avg_poses, per_camera_stats = average_camera_poses(rec, camera_labels, args.max_rot_spread_deg)
+    refined_intrinsics = extract_refined_intrinsics(rec)
+
+    export_results(args, outputs_dir, rec, camera_labels, all_images, avg_poses, per_camera_stats,
+                   refined_intrinsics)
 
 
 if __name__ == '__main__':
