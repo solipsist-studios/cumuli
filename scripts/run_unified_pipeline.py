@@ -375,18 +375,18 @@ def stage_poses(args, L, image_ext, sync_json: Path):
             L["hloc_final"], image_ext, label="run_hloc.py (final HLOC on production frame)",
         )
 
-    run_script("refine_poses_with_keypoints.py", [
+    run_script("run_pose_refinement.py", [
         "--transforms", final_transforms,
         "--kp2d_dirs", ",".join(str(p) for p in poses2d_dirs),
         "--out_transforms", L["transforms_refined"],
         "--report_only",
-    ], conda_env=args.generic_env, label="refine_poses_with_keypoints.py (pose refinement, report only -- pre-optimization residuals)")
+    ], conda_env=args.generic_env, label="run_pose_refinement.py (pose refinement, report only -- pre-optimization residuals)")
 
-    run_script("refine_poses_with_keypoints.py", [
+    run_script("run_pose_refinement.py", [
         "--transforms", final_transforms,
         "--kp2d_dirs", ",".join(str(p) for p in poses2d_dirs),
         "--out_transforms", L["transforms_refined"],
-    ], conda_env=args.generic_env, label="refine_poses_with_keypoints.py (pose refinement)")
+    ], conda_env=args.generic_env, label="run_pose_refinement.py (pose refinement)")
 
 
 def stage_masks(args, L, image_ext, n_real):
