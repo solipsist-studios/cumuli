@@ -34,7 +34,7 @@ import numpy as np
 import pycolmap
 from hloc import extract_features, match_features, pairs_from_exhaustive, reconstruction
 
-SUPPORTED_VIDEO_EXTS = {'.mp4', '.mov', '.mkv', '.avi'}
+from image_formats import SUPPORTED_IMAGE_EXTS, SUPPORTED_VIDEO_EXTS
 
 CAMERA_MODEL_PARAM_BUILDERS = {
     # transforms.json intrinsics -> COLMAP params vector
@@ -315,7 +315,7 @@ def collect_frames_from_root(frames_root):
     image_names_by_camera = defaultdict(list)
     for cam_dir in sorted(p for p in Path(frames_root).iterdir() if p.is_dir()):
         for img in sorted(cam_dir.iterdir()):
-            if img.suffix.lower() in {'.jpg', '.jpeg', '.png'}:
+            if img.suffix.lower() in SUPPORTED_IMAGE_EXTS:
                 image_names_by_camera[cam_dir.name].append(f'{cam_dir.name}/{img.name}')
     if not image_names_by_camera:
         raise SystemExit(f'No frames found under {frames_root}')
