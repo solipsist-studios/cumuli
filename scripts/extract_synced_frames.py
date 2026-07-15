@@ -128,14 +128,17 @@ def main():
     print(f"Reference camera: {reference_camera}")
     print(f"Extracting {args.window} frame(s) at {args.seconds_into_clip:.2f}s (reference camera time) for all cameras...\n")
 
+    failed = []
     for name, data in offsets.items():
         video_path = args.movies_dir / name
         if not video_path.is_file():
             print(f"  WARNING: {video_path} not found, skipping")
+            failed.append(name)
             continue
 
         if "error" in data:
             print(f"  WARNING: {name} has no sync data (failed in compute_sync_offsets.py: {data['error']}), skipping")
+            failed.append(name)
             continue
 
         fps = data["fps"]
@@ -151,6 +154,7 @@ def main():
             print(f"  WARNING: {name} starts too late to extract a frame at "
                   f"{args.seconds_into_clip:.2f}s reference time (would need negative seek). "
                   f"Try a larger seconds_into_clip value. Skipping.")
+            failed.append(name)
             continue
 
         pp3 = find_pp3(args.pp3_dir, video_path.stem) if rt_cmd else None
@@ -174,8 +178,12 @@ def main():
             print(f"  {name}: seeking to {seek_time:.3f}s, {args.window} frame(s){cc}")
         except (subprocess.CalledProcessError, RuntimeError) as e:
             print(f"  ERROR extracting frames from {name}: {e}")
+            failed.append(name)
 
     print(f"\nDone. Extracted frames are in {args.output_dir}")
+    if failed:
+        print(f"Failed/skipped cameras: {failed}")
+        sys.exit(1)
     if args.window == 1:
         print("Open them side by side -- if sync is correct, all frames should")
         print("show the same instant of action/pose across every camera.")

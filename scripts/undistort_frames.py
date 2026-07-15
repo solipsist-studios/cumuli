@@ -275,6 +275,7 @@ def main():
     print(f"\nDone. {ok}/{len(frame_paths)} cameras undistorted into {args.out_dir}")
     if failed:
         print(f"Failed/skipped cameras: {failed}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
