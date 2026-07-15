@@ -3,9 +3,10 @@
 run_unified_pipeline.py
 
 Unified entry point for the volumetric capture pipeline: sync -> undistort
--> pose solve/refine -> mask -> (Diffuman4D dense ring | direct 4K masked)
--> train Brush. Orchestrates the other scripts in this directory via
-subprocess; it does not reimplement any of their logic.
+-> pose solve/refine -> mask -> direct 4K masked training -> train Brush.
+Orchestrates the other scripts in this directory via subprocess; it does
+not reimplement any of their logic. (A Diffuman4D 48-camera dense-ring
+branch is planned but not wired in yet.)
 
 --------------------------------------------------------------------------
 STAGE ORDERING
@@ -19,10 +20,7 @@ alongside sync itself. So the actual flow is:
      one frame) -> make_sync_grid.py (QA grid) -> sync_offsets.json as-is.
      NOT auto-corrected -- inspect the grid, hand-tune any camera's
      frame_offset that's visibly off, and pass the result back in via
-     --initial_sync_json on the next run. (Automatic skeleton-based sync
-     correction, skeleton_sync_search.py, isn't part of this build yet
-     -- it's never been run against real data, only synthetic ground
-     truth.)
+     --initial_sync_json on the next run.
   2. PRODUCTION: re-extract the single production frame at target_time
      using that sync -> undistort_frames.py single-warp undistort (native
      fisheye straight to the 4K pinhole target, calibration-scale
@@ -30,8 +28,8 @@ alongside sync itself. So the actual flow is:
   3. POSES: extract + process a candidate window at that same sync
      (undistort_frames.py/generate_masks.py/predict_keypoints_2d.py/
      split_keypoints_per_camera.py) -> run_hloc.py (final HLOC on the
-     production frame) -> refine_poses_with_keypoints.py (bundle-adjust
-     against the multi-instant keypoints) -> transforms_refined.json
+     production frame) -> run_pose_refinement.py (bundle-adjust against
+     the multi-instant keypoints) -> transforms_refined.json
   4. MASKS: build_flat_dataset.py (flatten labels to 2-digit) ->
      generate_masks.py (BiRefNet) -> predict_keypoints_2d.py/
      split_keypoints_per_camera.py (keypoints on the flat images, needed
@@ -39,14 +37,12 @@ alongside sync itself. So the actual flow is:
      cleanup, retry fallback, no dilation) ->
      triangulate_and_project_keypoints.py (triangulate subject point
      cloud against the real cameras only)
-  5. BRANCH:
-       --no_diffuman (direct 4K): build_colmap_sparse.py (COLMAP sparse +
-         --masks_dir RGBA bake) -> train_brush.py (train, 4096 res; Brush
-         auto-detects the alpha channel baked in by build_colmap_sparse.py,
-         no special flag needed -- brush_app has no --alpha-mode flag,
-         verified against `brush_app --help`)
-       --use_diffuman (dense ring): not part of this build yet -- only
-         the direct 4K branch has been run/validated so far.
+  5. BRANCH: build_colmap_sparse.py (COLMAP sparse + --masks_dir RGBA
+     bake) -> train_brush.py (train, 4096 res; Brush auto-detects the
+     alpha channel baked in by build_colmap_sparse.py, no special flag
+     needed -- brush_app has no --alpha-mode flag, verified against
+     `brush_app --help`). This is the only branch this build supports;
+     the Diffuman4D 48-camera dense-ring branch isn't wired in yet.
 
 Usage (see --help for every flag):
     python3 run_unified_pipeline.py \\
@@ -55,8 +51,7 @@ Usage (see --help for every flag):
         --out_dir ~/capture_run \\
         --target_time 1500ms \\
         [--target_pkl_dir /path/to/4k_undistorted]  # omit to derive undistorted intrinsics on the fly \\
-        [--initial_sync_json /path/to/sync_offsets_v5.json]  # skip audio sync, seed from a known-good file \\
-        --no_diffuman   # or --use_diffuman
+        [--initial_sync_json /path/to/sync_offsets_v5.json]  # skip audio sync, seed from a known-good file
 """
 
 import argparse
@@ -462,12 +457,6 @@ def stage_branch_direct(args, L):
     ] + (["--with_viewer"] if args.with_viewer else []), label="train_brush.py (train Brush, 4K masked)")
 
 
-def stage_branch_diffuman(args, L, n_real):
-    fail("The Diffuman4D (48-camera dense ring) branch hasn't been run/validated yet -- "
-         "only --no_diffuman has been tested so far. Not available in this build.")
-    sys.exit(1)
-
-
 # ------------------------------------------------------------------------ CLI
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -491,12 +480,6 @@ def build_parser():
     parser.add_argument("--pp3_dir", type=Path, default=None,
                         help="Optional per-camera RawTherapee .pp3 profile directory (e.g. thumbs/)")
 
-    diffuman_group = parser.add_mutually_exclusive_group(required=True)
-    diffuman_group.add_argument("--use_diffuman", dest="use_diffuman", action="store_true",
-                                help="Run the Diffuman4D 48-camera dense-ring branch")
-    diffuman_group.add_argument("--no_diffuman", dest="use_diffuman", action="store_false",
-                                help="Skip Diffuman4D; train directly on the 4K masked physical views")
-
     parser.add_argument("--start_from_stage", choices=STAGE_KEYS, default=STAGE_KEYS[0],
                         help=f"Resume at one of {STAGE_KEYS} (assumes earlier stages' outputs already "
                              "exist under --out_dir)")
@@ -516,9 +499,8 @@ def build_parser():
     parser.add_argument("--generic_env", default="queen",
                         help="Conda env for scripts needing numpy/scipy/Pillow/plyfile/cv2 but no special "
                              "framework (make_sync_grid.py, undistort_frames.py, build_flat_dataset.py, "
-                             "resize_for_diffuman4d.py, generate_camera_ring.py, build_colmap_sparse.py, "
-                             "skeleton_sync_search.py, refine_poses_with_keypoints.py). The orchestrator's "
-                             "own launching python may not have these installed, so these are NOT run bare "
+                             "build_colmap_sparse.py, run_pose_refinement.py). The orchestrator's own "
+                             "launching python may not have these installed, so these are NOT run bare "
                              "with sys.executable. 'queen' is confirmed to have the full set on this machine.")
     parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
                         help="Path to multiframe_sfm.py (override to test local changes to it)")
@@ -571,8 +553,7 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
     L = build_layout(args.out_dir)
 
-    banner(f"UNIFIED VOLUMETRIC PIPELINE -- {n_real} cameras, t={args.target_time_s:.3f}s, "
-           f"branch={'Diffuman4D dense ring' if args.use_diffuman else 'direct 4K masked'}")
+    banner(f"UNIFIED VOLUMETRIC PIPELINE -- {n_real} cameras, t={args.target_time_s:.3f}s")
     info(f"Working directory: {args.out_dir}")
 
     start_idx = STAGE_KEYS.index(args.start_from_stage)
@@ -611,10 +592,7 @@ def main():
             check_expected(L["flat_fmasks_clean"], "masks")
 
         if should_run("branch"):
-            if args.use_diffuman:
-                stage_branch_diffuman(args, L, n_real)
-            else:
-                stage_branch_direct(args, L)
+            stage_branch_direct(args, L)
         else:
             info("Skipping stage 'branch' (--start_from_stage)")
 
