@@ -203,8 +203,11 @@ the subject:
 
 ```bash
 python3 scripts/clean_masks.py \
-    --fmasks_dir ~/heidi_1500ms/fmasks_flat --kp2d_dir ~/heidi_1500ms/poses_2d \
-    --out_dir ~/heidi_1500ms/fmasks_clean --images_dir ~/heidi_1500ms/images_flat --retry
+    --fmasks_dir ~/heidi_1500ms/fmasks_flat \
+    --kp2d_dir ~/heidi_1500ms/poses_2d \
+    --out_dir ~/heidi_1500ms/fmasks_clean \
+    --images_dir ~/heidi_1500ms/images_flat \
+    --retry
 ```
 
 Score any evaluation against the CLEANED masks, not the raw ones -- raw
@@ -227,7 +230,8 @@ reprojection error from ~30px to ~5px.
 python3 scripts/refine_poses_with_keypoints.py \
     --transforms ~/heidi_1500ms/transforms.json \
     --kp2d ~/heidi_1500ms/poses_2d \
-    --out_transforms ~/heidi_1500ms/transforms_refined.json --report_only
+    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --report_only
 # check the printed median px error, then re-run without --report_only
 ```
 
@@ -273,7 +277,8 @@ python3 scripts/build_colmap_sparse.py \
 python3 scripts/train_brush.py \
     --data ~/heidi_1500ms/train_set \
     --brush_app ~/brush-app-x86_64-unknown-linux-gnu/brush_app \
-    --export_path ~/brush_output --export_name heidi_1500ms_{iter}.ply
+    --export_path ~/brush_output \
+    --export_name heidi_1500ms_{iter}.ply
 # opens Brush's live viewer by default (see "Recommended" section above for why);
 # pass --no_viewer only if you've confirmed headless training works in your environment
 ```

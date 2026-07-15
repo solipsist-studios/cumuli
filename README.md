@@ -71,8 +71,10 @@ orchestrator" section for the full flag reference):
 
 ```bash
 python3 scripts/run_unified_pipeline.py \
-    --video_dir <movies_dir> --calib_dir <calibration_pkls_dir> \
-    --out_dir <out_dir> --target_time <e.g. 2500ms> \
+    --video_dir <movies_dir> \
+    --calib_dir <calibration_pkls_dir> \
+    --out_dir <out_dir> \
+    --target_time <e.g. 2500ms> \
     --sapiens_checkpoint_root <path_to_sapiens_checkpoints>
 ```
 
