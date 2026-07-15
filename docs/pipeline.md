@@ -193,7 +193,7 @@ python3 scripts/predict_keypoints_2d.py \
     --fmasks_dir ~/heidi_1500ms/fmasks_flat
 
 python3 scripts/split_keypoints_per_camera.py \
-    --predictions_json ~/heidi_1500ms/poses_2d_flat \
+    --kp2d_flat_dir ~/heidi_1500ms/poses_2d_flat \
     --out_dir ~/heidi_1500ms/poses_2d
 ```
 
