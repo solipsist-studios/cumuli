@@ -20,6 +20,11 @@ per-(time,keypoint) 3D points, with analytic sparsity for scipy least_squares.
 Gauge freedom is removed afterwards by similarity-aligning the refined camera
 centers back onto the input ones, so scene scale/origin are preserved.
 
+Assumes goliath308 (308-keypoint) input throughout (see FACE_KEYPOINT_IDS in
+main()) -- no backward compatibility with older/smaller keypoint layouts
+(e.g. Sapiens 1 or coco_wholebody133); this pipeline standardizes on Sapiens 2 /
+goliath308 (see predict_keypoints_2d.py).
+
 Example:
     python refine_poses_with_keypoints.py \
         --transforms ./transforms.json \
@@ -334,6 +339,8 @@ def write_refined_transforms(data, cams, cam_labels, cam_index, rv1, tv1, out_pa
 def main():
     args = parse_args()
 
+    # goliath308 (308kp) only -- no backward compatibility with older/smaller keypoint
+    # layouts (e.g. Sapiens 1 or coco_wholebody133); see module docstring.
     FACE_KEYPOINT_IDS = set(range(0, 5)) | set(range(69, 308))
 
     data, cams = load_transforms(args.transforms)
