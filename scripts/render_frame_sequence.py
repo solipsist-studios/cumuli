@@ -17,8 +17,7 @@ masks+branch pipeline every time), this script:
      instead of recomputing them.
   2. Loops ONLY the per-frame-dependent stages (production undistortion,
      masks, subject triangulation, training) once per resolved target time
-     (--target_times, or --start_time/--stop_time/--fps), into
-     out_dir/frame_<NNNN>/.
+     (--start_time/--stop_time/--fps), into out_dir/frame_<NNNN>/.
 
 Reuses run_unified_pipeline.py's stage_production/stage_masks/
 stage_branch_direct/stage_branch_diffuman functions directly (imported as a
@@ -36,19 +35,13 @@ Training steps: pick --total_train_iters much lower than a hero-shot run
 per frame across even a short sequence multiplies out fast. A few thousand
 is usually enough to validate the sequence looks right.
 
-Usage (evenly-spaced range -- the common case):
+Usage:
     python3 render_frame_sequence.py \\
         --calib_run_dir /path/to/completed/single_frame_run \\
         --video_dir /path/to/movies \\
         --calib_dir /path/to/calibration_pkls \\
         --out_dir /path/to/flipbook_run \\
         --start_time 1.4s --stop_time 1.6s --fps 30 \\
-        --no_diffuman --total_train_iters 3000
-
-Usage (explicit / non-uniform list -- --target_times instead of
---start_time/--stop_time/--fps):
-    python3 render_frame_sequence.py ... \\
-        --target_times 1.400,1.433,1.467,1.500,1.533,1.567,1.600 \\
         --no_diffuman --total_train_iters 3000
 
 Output:
@@ -73,24 +66,7 @@ def resolve_sync_json(calib_run_dir: Path) -> Path:
 
 
 def resolve_target_times(args):
-    """Either an explicit --target_times list, or a uniform --start_time/
-    --stop_time/--fps range -- the two are mutually exclusive."""
-    range_flags = {"start_time": args.start_time, "stop_time": args.stop_time, "fps": args.fps}
-    range_given = [v is not None for v in range_flags.values()]
-
-    if args.target_times is not None and any(range_given):
-        unified.fail("Pass either --target_times or --start_time/--stop_time/--fps, not both.")
-        sys.exit(1)
-    if args.target_times is not None:
-        return [unified.parse_target_time(t) for t in args.target_times.split(",")]
-    if not all(range_given):
-        if any(range_given):
-            missing = [k for k, v in range_flags.items() if v is None]
-            unified.fail(f"--start_time/--stop_time/--fps must all be given together (missing: {missing}).")
-        else:
-            unified.fail("Must pass either --target_times or --start_time/--stop_time/--fps.")
-        sys.exit(1)
-
+    """Uniform --start_time/--stop_time/--fps range."""
     start = unified.parse_target_time(args.start_time)
     stop = unified.parse_target_time(args.stop_time)
     if args.fps <= 0:
@@ -118,18 +94,11 @@ def build_parser():
     parser.add_argument("--calib_dir", required=True, type=Path, help="Native fisheye calibration PKLs")
     parser.add_argument("--target_pkl_dir", type=Path, default=None)
     parser.add_argument("--out_dir", required=True, type=Path)
-    parser.add_argument("--target_times", default=None,
-                        help="Comma-separated target times, e.g. '1.4,1.433,1.467,1.5' "
-                             "(each in '1.5' / '1.5s' / '1500ms' form). Use this for an "
-                             "explicit or non-uniform list; for an evenly-spaced range use "
-                             "--start_time/--stop_time/--fps instead. Mutually exclusive "
-                             "with those three.")
-    parser.add_argument("--start_time", default=None,
-                        help="Start of a uniform time range (requires --stop_time and --fps; "
-                             "mutually exclusive with --target_times), e.g. '1.4s'.")
-    parser.add_argument("--stop_time", default=None,
+    parser.add_argument("--start_time", required=True,
+                        help="Start of the uniform time range (requires --stop_time and --fps), e.g. '1.4s'.")
+    parser.add_argument("--stop_time", required=True,
                         help="End (inclusive) of the uniform time range -- same form as --start_time.")
-    parser.add_argument("--fps", type=float, default=None,
+    parser.add_argument("--fps", type=float, required=True,
                         help="Frame rate for the --start_time/--stop_time range, e.g. 30.")
     parser.add_argument("--pp3_dir", type=Path, default=None)
 
@@ -216,8 +185,8 @@ def main():
         except unified.StageError as e:
             unified.fail(str(e))
             unified.fail(f"{frame_tag} failed -- stopping sequence ({i}/{len(times)} frames "
-                         "completed before this one). Re-run with a shorter --target_times "
-                         "list (or a narrower --start_time/--stop_time range) to resume from here.")
+                         "completed before this one). Re-run with a narrower --start_time/--stop_time "
+                         "range to resume from here.")
             sys.exit(1)
 
     unified.banner("FRAME SEQUENCE COMPLETE")
