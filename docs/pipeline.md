@@ -269,7 +269,7 @@ for k in 0 1 2 3 4; do
         --out_kp2d_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
         --fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
     python3 scripts/split_keypoints_per_camera.py \
-        --predictions_json ~/heidi_1500ms/sync_candidates_kp2d/f$k \
+        --kp2d_flat_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
         --out_dir ~/heidi_1500ms/sync_candidates_poses2d/f$k
 done
 
