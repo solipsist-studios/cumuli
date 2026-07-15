@@ -4,8 +4,8 @@ run_hloc.py
 
 Runs HLOC-based multi-camera pose estimation on a set of undistorted
 single-frame images, producing camera poses in nerfstudio transforms.json
-format. Wraps vendor/multiframe_sfm.py (override with
---multiframe_sfm_script if you're testing local changes to it).
+format. Wraps multiframe_sfm.py (override with --multiframe_sfm_script
+if you're testing local changes to it).
 
 This wraps two things that multiframe_sfm.py needs set up first:
   1. Restructuring flat undistorted images (<camera_id>.jpg) into the
@@ -124,8 +124,8 @@ def main():
     parser.add_argument("--undistorted_pkl_dir", required=True, type=Path)
     parser.add_argument("--outputs_dir", required=True, type=Path)
     parser.add_argument("--multiframe_sfm_script", type=Path,
-                         default=Path(__file__).parent / "vendor" / "multiframe_sfm.py",
-                         help="Path to multiframe_sfm.py (default: the vendored copy in scripts/vendor/)")
+                         default=Path(__file__).parent / "multiframe_sfm.py",
+                         help="Path to multiframe_sfm.py (override to test local changes to it)")
     parser.add_argument("--num_timestamps", type=int, default=1)
     parser.add_argument("--feature_type", default="superpoint", choices=["superpoint", "aliked"])
     parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS)
