@@ -97,6 +97,70 @@ def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
     rgba.save(out_path)
 
 
+def bake_masks(frames, masks_dir: Path, images_dir: Path, out_dir: Path, rgba_subdir: str):
+    print(f"Baking masks from {masks_dir} (images from {images_dir}) "
+          f"into {out_dir / rgba_subdir} ...")
+    n_baked, n_missing = 0, []
+    for fr in frames:
+        label = fr["camera_label"]
+        image_path = images_dir / f"{label}{Path(fr['file_path']).suffix}"
+        mask_path = masks_dir / f"{label}.png"
+        out_path = out_dir / rgba_subdir / f"{label}.png"
+        if not image_path.is_file() or not mask_path.is_file():
+            n_missing.append(label)
+            continue
+        bake_rgba(image_path, mask_path, out_path)
+        n_baked += 1
+    print(f"  Baked {n_baked}/{len(frames)} cameras.")
+    if n_missing:
+        print(f"  WARNING: missing image or mask for cameras: {n_missing} (left unbaked, will 404 in images.txt)")
+
+
+def write_cameras_txt(sparse_dir: Path, frames):
+    """One PINHOLE camera per image (crops differ per camera)."""
+    with open(sparse_dir / "cameras.txt", "w") as f:
+        f.write("# Camera list with one line of data per camera:\n")
+        f.write("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
+        for i, fr in enumerate(frames, start=1):
+            f.write(f"{i} PINHOLE {fr['w']} {fr['h']} {fr['fl_x']} {fr['fl_y']} {fr['cx']} {fr['cy']}\n")
+
+
+def write_images_txt(sparse_dir: Path, frames, image_subdir: str, masks_dir, rgba_subdir: str):
+    """Image line + empty points2D line, one camera_id per image (1:1)."""
+    with open(sparse_dir / "images.txt", "w") as f:
+        f.write("# Image list with two lines of data per image:\n")
+        f.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
+        f.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
+        for i, fr in enumerate(frames, start=1):
+            c2w = np.array(fr["transform_matrix"])
+            R, t = opengl_c2w_to_colmap_w2c(c2w)
+            qx, qy, qz, qw = Rotation.from_matrix(R).as_quat()
+            if masks_dir is not None:
+                name = f"{rgba_subdir}/{fr['camera_label']}.png"
+            else:
+                name = f"{image_subdir}/{fr['camera_label']}{Path(fr['file_path']).suffix}"
+            f.write(f"{i} {qw} {qx} {qy} {qz} {t[0]} {t[1]} {t[2]} {i} {name}\n")
+            f.write("\n")
+
+
+def write_points3d_txt(sparse_dir: Path, points_ply: Path):
+    """id x y z r g b error (empty track). Returns the vertex array for the summary print."""
+    ply = PlyData.read(str(points_ply))
+    verts = ply["vertex"].data
+    has_color = all(c in verts.dtype.names for c in ("red", "green", "blue"))
+
+    with open(sparse_dir / "points3D.txt", "w") as f:
+        f.write("# 3D point list with one line of data per point:\n")
+        f.write("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
+        for i, v in enumerate(verts, start=1):
+            if has_color:
+                r, g, b = int(v["red"]), int(v["green"]), int(v["blue"])
+            else:
+                r, g, b = 128, 128, 128
+            f.write(f"{i} {v['x']} {v['y']} {v['z']} {r} {g} {b} 1.0\n")
+    return verts
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--transforms", required=True, type=Path)
@@ -124,60 +188,11 @@ def main():
 
     if args.masks_dir is not None:
         images_dir = args.images_dir or (args.out_dir / args.image_subdir)
-        print(f"Baking masks from {args.masks_dir} (images from {images_dir}) "
-              f"into {args.out_dir / args.rgba_subdir} ...")
-        n_baked, n_missing = 0, []
-        for fr in frames:
-            label = fr["camera_label"]
-            image_path = images_dir / f"{label}{Path(fr['file_path']).suffix}"
-            mask_path = args.masks_dir / f"{label}.png"
-            out_path = args.out_dir / args.rgba_subdir / f"{label}.png"
-            if not image_path.is_file() or not mask_path.is_file():
-                n_missing.append(label)
-                continue
-            bake_rgba(image_path, mask_path, out_path)
-            n_baked += 1
-        print(f"  Baked {n_baked}/{len(frames)} cameras.")
-        if n_missing:
-            print(f"  WARNING: missing image or mask for cameras: {n_missing} (left unbaked, will 404 in images.txt)")
+        bake_masks(frames, args.masks_dir, images_dir, args.out_dir, args.rgba_subdir)
 
-    # cameras.txt: one PINHOLE camera per image (crops differ per camera)
-    with open(sparse_dir / "cameras.txt", "w") as f:
-        f.write("# Camera list with one line of data per camera:\n")
-        f.write("#   CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n")
-        for i, fr in enumerate(frames, start=1):
-            f.write(f"{i} PINHOLE {fr['w']} {fr['h']} {fr['fl_x']} {fr['fl_y']} {fr['cx']} {fr['cy']}\n")
-
-    # images.txt: image line + empty points2D line, one camera_id per image (1:1)
-    with open(sparse_dir / "images.txt", "w") as f:
-        f.write("# Image list with two lines of data per image:\n")
-        f.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
-        f.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
-        for i, fr in enumerate(frames, start=1):
-            c2w = np.array(fr["transform_matrix"])
-            R, t = opengl_c2w_to_colmap_w2c(c2w)
-            qx, qy, qz, qw = Rotation.from_matrix(R).as_quat()
-            if args.masks_dir is not None:
-                name = f"{args.rgba_subdir}/{fr['camera_label']}.png"
-            else:
-                name = f"{args.image_subdir}/{fr['camera_label']}{Path(fr['file_path']).suffix}"
-            f.write(f"{i} {qw} {qx} {qy} {qz} {t[0]} {t[1]} {t[2]} {i} {name}\n")
-            f.write("\n")
-
-    # points3D.txt: id x y z r g b error (empty track)
-    ply = PlyData.read(str(args.points_ply))
-    verts = ply["vertex"].data
-    has_color = all(c in verts.dtype.names for c in ("red", "green", "blue"))
-
-    with open(sparse_dir / "points3D.txt", "w") as f:
-        f.write("# 3D point list with one line of data per point:\n")
-        f.write("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
-        for i, v in enumerate(verts, start=1):
-            if has_color:
-                r, g, b = int(v["red"]), int(v["green"]), int(v["blue"])
-            else:
-                r, g, b = 128, 128, 128
-            f.write(f"{i} {v['x']} {v['y']} {v['z']} {r} {g} {b} 1.0\n")
+    write_cameras_txt(sparse_dir, frames)
+    write_images_txt(sparse_dir, frames, args.image_subdir, args.masks_dir, args.rgba_subdir)
+    verts = write_points3d_txt(sparse_dir, args.points_ply)
 
     print(f"Wrote COLMAP sparse/0 to {sparse_dir}")
     print(f"  {len(frames)} cameras/images, {len(verts)} 3D points")
