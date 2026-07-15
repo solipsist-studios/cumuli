@@ -108,11 +108,10 @@ weights and place them in that layout; pass the root via
 Most other scripts (compute_sync_offsets.py, extract_synced_frames.py,
 make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
 split_keypoints_per_camera.py, triangulate_and_project_keypoints.py,
-train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py,
-and the not-yet-built resize_for_diffuman4d.py/generate_camera_ring.py/
-draw_skeletons.py) have no special conda env requirement beyond
-numpy/scipy/Pillow/plyfile -- run them from any env with those installed
-(`base`/`hloc`/etc. all work).
+train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py)
+have no special conda env requirement beyond numpy/scipy/Pillow/plyfile
+-- run them from any env with those installed (`base`/`hloc`/etc. all
+work).
 
 ## System-level tools (no conda env)
 

@@ -390,7 +390,7 @@ def stage_poses(args, L, image_ext, sync_json: Path):
     ], conda_env=args.generic_env, label="run_pose_refinement.py (pose refinement)")
 
 
-def stage_masks(args, L, image_ext, n_real):
+def stage_masks(args, L, image_ext):
     banner("STAGE: MASKS (generation & cleaning)")
 
     # build_flat_dataset.py expects the Camera_XXXX/0000.ext layout, not the
@@ -438,7 +438,6 @@ def stage_masks(args, L, image_ext, n_real):
     run_script("triangulate_and_project_keypoints.py", [
         "--camera_path", L["flat_transforms"], "--kp2d_dir", L["flat_poses2d"],
         "--out_kp3d_dir", L["poses_3d_fullres"], "--out_pcd_dir", L["poses_pcd_fullres"],
-        "--n_total", str(n_real),
     ], conda_env=args.triangulate_env, label="triangulate_and_project_keypoints.py (triangulate subject point cloud, real cameras)")
 
 
@@ -663,7 +662,7 @@ def main():
             return
 
         if should_run("masks"):
-            stage_masks(args, L, image_ext, n_real)
+            stage_masks(args, L, image_ext)
         else:
             info("Skipping stage 'masks' (--start_from_stage)")
             check_expected(L["flat_fmasks_clean"], "masks")

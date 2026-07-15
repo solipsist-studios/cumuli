@@ -303,8 +303,6 @@ python3 scripts/triangulate_and_project_keypoints.py \
     --kp2d_dir ~/heidi_1500ms/poses_2d \
     --out_kp3d_dir ~/heidi_1500ms/poses_3d \
     --out_pcd_dir ~/heidi_1500ms/poses_pcd_fullres
-# real cameras only -- omit --out_kp2d_proj_dir/--n_total, those are for
-# projecting into the (not-yet-built) 48-camera Diffuman4D ring
 ```
 
 Then bake the cleaned masks into image alpha -- **do not** pass masks as

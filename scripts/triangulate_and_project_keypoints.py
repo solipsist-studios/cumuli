@@ -4,40 +4,36 @@ triangulate_and_project_keypoints.py
 
 Wraps Diffuman4D's triangulate_skeleton.py to triangulate 3D keypoints
 from the real cameras' 2D detections (poses_2d, from
-split_keypoints_per_camera.py). Optionally also projects those 3D
-keypoints into every camera of an N-camera ring, producing the per-view
-skeleton keypoints Diffuman4D needs to condition its diffusion model on
-views with no real image -- not used in this build (no ring-generation
-step exists yet), but supported via --out_kp2d_proj_dir/--n_total below.
+split_keypoints_per_camera.py) into --out_kp3d_dir/--out_pcd_dir.
 
-IMPORTANT: triangulate_skeleton.py's spa_labels_proj ALWAYS resolves to a
-non-empty list (falling back to os.listdir(kp2d_dir)) even when neither
---spa_labels_proj nor --spa_labels_proj_range is given -- it then
-unconditionally joins paths under out_kp2d_proj_dir for every one of
-those labels, crashing with `TypeError: ... not NoneType` if
-out_kp2d_proj_dir was never passed. So --out_kp2d_proj_dir must ALWAYS be
-supplied; if the caller doesn't need the projected 2D keypoints (the
-real-cameras-only case), this wrapper defaults it to a throwaway
-directory alongside --out_kp3d_dir rather than leaving it unset.
+IMPORTANT: triangulate_skeleton.py can't skip projection entirely --
+`Ks_proj, Ts_proj = zip(*[...for spa_label in spa_labels_proj])` crashes
+with ValueError on an empty spa_labels_proj, and spa_labels_proj ALWAYS
+resolves to a non-empty list (falling back to os.listdir(kp2d_dir)) when
+neither --spa_labels_proj nor --spa_labels_proj_range is given, then
+crashes with `TypeError: ... not NoneType` joining paths under
+out_kp2d_proj_dir if that was never passed. This projected-keypoints
+output isn't used anywhere in this build (it would only feed a
+ring-generation step that doesn't exist yet), so this wrapper does the
+minimum unavoidable work to satisfy triangulate_skeleton.py: projects
+into just 1 camera (--spa_labels_proj_range=[0,1,1]) and writes it to a
+temp directory that's deleted once the subprocess exits.
 
 conda env: whichever has Diffuman4D's dependencies (easyvolcap, fire) --
 confirmed usage ran this under the "queen" conda env.
 
-Usage (real cameras only, as used in this build):
+Usage:
     python3 triangulate_and_project_keypoints.py \\
         --camera_path /path/to/transforms.json \\
         --kp2d_dir /path/to/poses_2d \\
         --out_kp3d_dir /path/to/poses_3d \\
         --out_pcd_dir /path/to/poses_pcd
-
-Usage (also project into an N-camera ring):
-    python3 triangulate_and_project_keypoints.py ... \\
-        --out_kp2d_proj_dir /path/to/poses_2d_proj [--n_total 48]
 """
 
 import argparse
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -51,33 +47,27 @@ def main():
     parser.add_argument("--kp2d_dir", required=True, type=Path)
     parser.add_argument("--out_kp3d_dir", required=True, type=Path)
     parser.add_argument("--out_pcd_dir", type=Path)
-    parser.add_argument("--out_kp2d_proj_dir", type=Path)
-    parser.add_argument("--n_total", type=int, default=48)
     args = parser.parse_args()
 
     if not SCRIPT.is_file():
         print(f"Error: {SCRIPT} not found -- is the Diffuman4D submodule checked out?")
         sys.exit(1)
 
-    out_kp2d_proj_dir = args.out_kp2d_proj_dir
-    if out_kp2d_proj_dir is None:
-        out_kp2d_proj_dir = args.out_kp3d_dir.parent / f"{args.out_kp3d_dir.name}_kp2d_proj_unused"
-        print(f"--out_kp2d_proj_dir not given; defaulting to {out_kp2d_proj_dir} "
-              "(triangulate_skeleton.py requires a valid path here regardless -- see module docstring)")
+    with tempfile.TemporaryDirectory() as tmp:
+        cmd = [
+            sys.executable, str(SCRIPT),
+            "--camera_path", str(args.camera_path),
+            "--kp2d_dir", str(args.kp2d_dir),
+            "--out_kp3d_dir", str(args.out_kp3d_dir),
+            "--out_kp2d_proj_dir", tmp,
+            "--spa_labels_proj_range=[0,1,1]",
+        ]
+        if args.out_pcd_dir:
+            cmd += ["--out_pcd_dir", str(args.out_pcd_dir)]
 
-    cmd = [
-        sys.executable, str(SCRIPT),
-        "--camera_path", str(args.camera_path),
-        "--kp2d_dir", str(args.kp2d_dir),
-        "--out_kp3d_dir", str(args.out_kp3d_dir),
-        "--out_kp2d_proj_dir", str(out_kp2d_proj_dir),
-    ]
-    if args.out_pcd_dir:
-        cmd += ["--out_pcd_dir", str(args.out_pcd_dir)]
-    cmd += [f"--spa_labels_proj_range=[0,{args.n_total},1]"]
+        print("Running:", " ".join(cmd))
+        result = subprocess.run(cmd, cwd=str(DIFFUMAN4D_ROOT))
 
-    print("Running:", " ".join(cmd))
-    result = subprocess.run(cmd, cwd=str(DIFFUMAN4D_ROOT))
     sys.exit(result.returncode)
 
 

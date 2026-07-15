@@ -172,7 +172,7 @@ def main():
         try:
             unified.stage_production(args, L, image_ext, sync_json)
             hloc_mod.restructure_flat_to_percam(L["production_undist"], image_ext)
-            unified.stage_masks(args, L, image_ext, n_real)
+            unified.stage_masks(args, L, image_ext)
             unified.stage_branch_direct(args, L)
         except unified.StageError as e:
             unified.fail(str(e))
