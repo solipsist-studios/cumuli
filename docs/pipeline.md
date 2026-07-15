@@ -251,13 +251,17 @@ refine against all of them at once (10+ instants recommended):
 python3 scripts/extract_synced_frames.py \
     /media/ai/datasets/260521-105422/movies \
     ~/heidi_260521_undist/sync_offsets_v5.json \
-    ~/heidi_1500ms/sync_candidates 1.5 --window 5
+    ~/heidi_1500ms/sync_candidates \
+    1.5 \
+    --window 5
 
 # Run undistort_frames.py + generate_masks.py + predict_keypoints_2d.py +
 # split_keypoints_per_camera.py on each instant subdir f0/..f4/
 for k in 0 1 2 3 4; do
-    python3 scripts/undistort_frames.py --frames_dir ~/heidi_1500ms/sync_candidates/f$k \
-        --calib_dir /path/to/calibration_pkls --out_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+    python3 scripts/undistort_frames.py \
+        --frames_dir ~/heidi_1500ms/sync_candidates/f$k \
+        --calib_dir /path/to/calibration_pkls \
+        --out_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
         --out_pkl_dir ~/heidi_1500ms/sync_candidates_pkls/f$k
     conda activate diffuman4d
     python3 scripts/generate_masks.py \
@@ -276,7 +280,8 @@ done
 python3 scripts/run_pose_refinement.py \
     --transforms ~/heidi_1500ms/transforms.json \
     --kp2d_dirs ~/heidi_1500ms/sync_candidates_poses2d/f0,~/heidi_1500ms/sync_candidates_poses2d/f1,~/heidi_1500ms/sync_candidates_poses2d/f2,~/heidi_1500ms/sync_candidates_poses2d/f3,~/heidi_1500ms/sync_candidates_poses2d/f4 \
-    --out_transforms ~/heidi_1500ms/transforms_refined.json --report_only
+    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --report_only
 # check the printed median px error, then re-run without --report_only
 ```
 
