@@ -142,11 +142,10 @@ VNC, etc.) or a virtual compositor, and pass its display number via
 ## Vendored script dependencies
 
 `multiframe_sfm.py` (used by `run_hloc.py`) and
-`refine_poses_with_keypoints.py` (used by the pose-refinement wrapper of
-the same name) are vendored directly into `scripts/vendor/` -- no
-external checkout needed. Pass `--multiframe_sfm_script` /
-`--refine_script` only if you want to point at a different copy (e.g.
-while testing local changes to them).
+`refine_poses_with_keypoints.py` (used by the `run_pose_refinement.py`
+wrapper) live directly in `scripts/` -- no external checkout needed.
+Pass `--multiframe_sfm_script` / `--refine_script` only if you want to
+point at a different copy (e.g. while testing local changes to them).
 
 ## Calibration data
 

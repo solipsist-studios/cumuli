@@ -28,7 +28,7 @@ not a silent no-op.
 
 `multiframe_sfm_script` is configurable but deliberately left out of
 [example_rig.json](example_rig.json): its built-in default
-(`scripts/vendor/multiframe_sfm.py`, resolved relative to the script's own
+(`scripts/multiframe_sfm.py`, resolved relative to the script's own
 location) already works regardless of your current directory. Only set it
 in your own config if you're testing local changes to a different copy --
 and use an absolute path if you do, since a relative one is resolved
