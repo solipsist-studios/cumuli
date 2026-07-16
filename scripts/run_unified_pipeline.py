@@ -611,7 +611,11 @@ def main():
              "will fail. Pass --sapiens_checkpoint_root, or export it before running, e.g. "
              "export SAPIENS_CHECKPOINT_ROOT=~/sapiens")
 
-    videos = discover_cameras(args.video_dir)
+    try:
+        videos = discover_cameras(args.video_dir)
+    except StageError as e:
+        fail(str(e))
+        sys.exit(1)
     n_real = len(videos)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     L = build_layout(args.out_dir)

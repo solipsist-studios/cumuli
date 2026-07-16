@@ -243,7 +243,11 @@ def main():
                          "sub-stages are reusable via their own on-disk resume checks).")
             sys.exit(1)
 
-    videos = unified.discover_cameras(args.video_dir)
+    try:
+        videos = unified.discover_cameras(args.video_dir)
+    except unified.StageError as e:
+        unified.fail(str(e))
+        sys.exit(1)
     n_real = len(videos)
 
     unified.banner(f"FRAME SEQUENCE RENDER -- {len(times)} frames, {n_real} cameras")
