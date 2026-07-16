@@ -242,10 +242,48 @@ This single-instant refinement is worthwhile on its own, but the
 optimization gets meaningfully more constrained with keypoints from
 several time instants of the same static rig instead of one (the subject
 sweeping through the capture volume over a few seconds anchors the
-cameras far more strongly than a single pose). That multi-instant
-version -- extracting a short candidate window per camera and refining
-against keypoints from all of them at once -- needs a wrapper this build
-doesn't have yet; it'll land as a follow-up once that wrapper exists.
+cameras far more strongly than a single pose). `run_pose_refinement.py`
+wraps the same underlying script for that case: extract a short
+candidate window per camera, predict keypoints on each instant, and
+refine against all of them at once (10+ instants recommended):
+
+```bash
+python3 scripts/extract_synced_frames.py \
+    /media/ai/datasets/260521-105422/movies \
+    ~/heidi_260521_undist/sync_offsets_v5.json \
+    ~/heidi_1500ms/sync_candidates \
+    1.5 \
+    --window 5
+
+# Run undistort_frames.py + generate_masks.py + predict_keypoints_2d.py +
+# split_keypoints_per_camera.py on each instant subdir f0/..f4/
+for k in 0 1 2 3 4; do
+    python3 scripts/undistort_frames.py \
+        --frames_dir ~/heidi_1500ms/sync_candidates/f$k \
+        --calib_dir /path/to/calibration_pkls \
+        --out_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+        --out_pkl_dir ~/heidi_1500ms/sync_candidates_pkls/f$k
+    conda activate diffuman4d
+    python3 scripts/generate_masks.py \
+        --images_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+        --out_fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
+    conda activate sapiens2
+    python3 scripts/predict_keypoints_2d.py \
+        --images_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+        --out_kp2d_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
+        --fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
+    python3 scripts/split_keypoints_per_camera.py \
+        --kp2d_flat_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
+        --out_dir ~/heidi_1500ms/sync_candidates_poses2d/f$k
+done
+
+python3 scripts/run_pose_refinement.py \
+    --transforms ~/heidi_1500ms/transforms.json \
+    --kp2d_dirs ~/heidi_1500ms/sync_candidates_poses2d/f0,~/heidi_1500ms/sync_candidates_poses2d/f1,~/heidi_1500ms/sync_candidates_poses2d/f2,~/heidi_1500ms/sync_candidates_poses2d/f3,~/heidi_1500ms/sync_candidates_poses2d/f4 \
+    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --report_only
+# check the printed median px error, then re-run without --report_only
+```
 
 ## Triangulate, build the training set, and train Brush
 
