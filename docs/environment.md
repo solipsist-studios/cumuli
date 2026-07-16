@@ -4,7 +4,9 @@ Precise setup instructions for the three conda environments and system
 tools this pipeline needs, plus known-good versions this has actually
 been tested against. `README.md` and `docs/pipeline.md` mention which
 env each stage needs; this doc is the "how do I actually create them"
-reference.
+reference. `envs/*.yml` pin the exact known-good combination for each --
+`conda env create -f envs/<name>.yml` is the fastest path; the manual
+steps below explain what's actually in them.
 
 ## Requirements
 
@@ -29,6 +31,12 @@ directly.
 ### `hloc` -- pose estimation (run_hloc.py)
 
 ```bash
+conda env create -f envs/hloc.yml
+```
+
+That pins the exact known-good combination below. Equivalent by hand:
+
+```bash
 conda create -n hloc python=3.10 -y
 conda activate hloc
 pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
@@ -41,6 +49,12 @@ Known-good combination (verified 2026-07-13): Python 3.10.20, torch
 2.2.6, scipy 1.15.3, Pillow 12.2.0.
 
 ### `diffuman4d` -- masks, Diffuman4D inference, nerfstudio conversion (generate_masks.py, the not-yet-built Diffuman4D-branch scripts, and clean_masks.py's `--retry`)
+
+```bash
+conda env create -f envs/diffuman4d.yml
+```
+
+Equivalent by hand:
 
 ```bash
 conda create -n diffuman4d python=3.10 -y
@@ -58,6 +72,12 @@ to match the other envs' torch/CUDA versions without checking that
 Diffuman4D still works against them.
 
 ### `sapiens2` -- 2D keypoint prediction (predict_keypoints_2d.py)
+
+```bash
+conda env create -f envs/sapiens2.yml
+```
+
+Equivalent by hand:
 
 ```bash
 conda create -n sapiens2 python=3.12 -y
@@ -88,11 +108,10 @@ weights and place them in that layout; pass the root via
 Most other scripts (compute_sync_offsets.py, extract_synced_frames.py,
 make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
 split_keypoints_per_camera.py, triangulate_and_project_keypoints.py,
-train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py,
-and the not-yet-built resize_for_diffuman4d.py/generate_camera_ring.py/
-draw_skeletons.py) have no special conda env requirement beyond
-numpy/scipy/Pillow/plyfile -- run them from any env with those installed
-(`base`/`hloc`/etc. all work).
+train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py)
+have no special conda env requirement beyond numpy/scipy/Pillow/plyfile
+-- run them from any env with those installed (`base`/`hloc`/etc. all
+work).
 
 ## System-level tools (no conda env)
 
@@ -122,11 +141,10 @@ VNC, etc.) or a virtual compositor, and pass its display number via
 ## Vendored script dependencies
 
 `multiframe_sfm.py` (used by `run_hloc.py`) and
-`refine_poses_with_keypoints.py` (used by the pose-refinement wrapper of
-the same name) are vendored directly into `scripts/vendor/` -- no
-external checkout needed. Pass `--multiframe_sfm_script` /
-`--refine_script` only if you want to point at a different copy (e.g.
-while testing local changes to them).
+`refine_poses_with_keypoints.py` (used by the `run_pose_refinement.py`
+wrapper) live directly in `scripts/` -- no external checkout needed.
+Pass `--multiframe_sfm_script` / `--refine_script` only if you want to
+point at a different copy (e.g. while testing local changes to them).
 
 ## Calibration data
 

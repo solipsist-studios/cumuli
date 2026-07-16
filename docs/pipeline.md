@@ -38,6 +38,7 @@ orchestrator to run them without the manual bookkeeping.
 
 ```bash
 python3 scripts/run_unified_pipeline.py \
+    --config configs/my_rig.json \
     --video_dir /path/to/movies \
     --calib_dir /path/to/calibration_pkls \
     --out_dir ~/pipeline_run \
@@ -48,6 +49,10 @@ python3 scripts/run_unified_pipeline.py \
 
 Key flags:
 
+- **`--config`** -- JSON file of per-rig defaults (conda env names,
+  `--brush_app`, `--display`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
+  you don't have to repeat them on every run. Explicit CLI flags always
+  override the config. See `configs/README.md`.
 - **`--start_from_stage` / `--stop_after_stage`** (`sync`, `production`,
   `poses`, `masks`, `branch`) -- resume partway through, or stop early to
   inspect intermediate output before committing GPU time to training.
@@ -298,8 +303,6 @@ python3 scripts/triangulate_and_project_keypoints.py \
     --kp2d_dir ~/heidi_1500ms/poses_2d \
     --out_kp3d_dir ~/heidi_1500ms/poses_3d \
     --out_pcd_dir ~/heidi_1500ms/poses_pcd_fullres
-# real cameras only -- omit --out_kp2d_proj_dir/--n_total, those are for
-# projecting into the (not-yet-built) 48-camera Diffuman4D ring
 ```
 
 Then bake the cleaned masks into image alpha -- **do not** pass masks as

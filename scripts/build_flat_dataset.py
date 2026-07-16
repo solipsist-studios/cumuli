@@ -39,6 +39,7 @@ Output:
 import argparse
 import json
 import shutil
+import sys
 from pathlib import Path
 
 from PIL import Image
@@ -101,6 +102,12 @@ def main():
         new_frame["file_path"] = f"images_flat/{new_label}{args.out_image_ext}"
         new_frames.append(new_frame)
 
+    if skipped:
+        print(f"\nERROR: {len(skipped)} camera(s) missing an undistorted image, skipped: {skipped}")
+        print("Not writing out_transforms/label_map -- a resumed run must not silently "
+              "reuse a partial-camera flat dataset.")
+        sys.exit(1)
+
     tf["frames"] = new_frames
     with open(args.out_transforms, "w") as f:
         json.dump(tf, f, indent=2)
@@ -109,7 +116,7 @@ def main():
     with open(label_map_path, "w") as f:
         json.dump(label_map, f, indent=2)
 
-    print(f"\nDone. {len(new_frames)} cameras written, {len(skipped)} skipped.")
+    print(f"\nDone. {len(new_frames)} cameras written.")
     print(f"Flat images: {args.out_images_flat}")
     print(f"Transforms:  {args.out_transforms}")
     print(f"Label map:   {label_map_path}")

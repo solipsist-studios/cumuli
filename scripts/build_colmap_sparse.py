@@ -9,10 +9,6 @@ x/y/z only -- e.g. poses_pcd_fullres/<tem_label>.ply from
 triangulate_and_project_keypoints.py run against the ORIGINAL,
 un-cropped cameras/keypoints).
 
-Written fresh rather than reusing any of the older, ambiguous
-transforms->COLMAP converters that had accumulated (build_colmap_sparse.py,
-transforms_to_colmap.py, ns2colmap.py).
-
 Coordinate conversion matches Brush's own COLMAP loader exactly (see
 deps/brush/crates/brush-dataset/src/formats/mod.rs, opengl_c2w_to_pose):
 c2w's Y and Z axis columns are negated to go from nerfstudio/OpenGL to

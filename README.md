@@ -20,8 +20,12 @@ scripts/   pipeline scripts, plus run_unified_pipeline.py (the
            render_frame_sequence.py for multi-frame playback once you
            have posed cameras
 deps/      git submodules for the external tools each stage wraps
-configs/   placeholder for example configs / flag presets (empty for now)
-docs/      pipeline.md walkthrough
+configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
+           (conda env names, --brush_app, --display, etc.) -- see
+           configs/README.md
+envs/      environment.yml per conda env (hloc, diffuman4d, sapiens2),
+           pinning the known-good versions from docs/environment.md
+docs/      pipeline.md walkthrough, environment.md conda setup
 ```
 
 `clean_masks.py`, `build_colmap_sparse.py`, and
@@ -73,12 +77,18 @@ orchestrator" section for the full flag reference):
 
 ```bash
 python3 scripts/run_unified_pipeline.py \
+    --config configs/my_rig.json \
     --video_dir <movies_dir> \
     --calib_dir <calibration_pkls_dir> \
     --out_dir <out_dir> \
-    --target_time <e.g. 2500ms> \
-    --sapiens_checkpoint_root <path_to_sapiens_checkpoints>
+    --target_time <e.g. 2500ms>
 ```
+
+`--config` loads per-rig defaults (conda env names, `--brush_app`,
+`--display`, `SAPIENS_CHECKPOINT_ROOT`) from a JSON file so you don't have
+to repeat them on every run -- copy [configs/example_rig.json](configs/example_rig.json)
+and fill in your own paths. See [configs/README.md](configs/README.md).
+Everything it sets can still be overridden on the command line.
 
 Or run the individual stages by hand -- useful the first time, to
 understand what each one does:

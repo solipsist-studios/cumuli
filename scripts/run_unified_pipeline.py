@@ -233,8 +233,8 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
                               tag: str, start_time_s: float = None):
     """Extract a --window-frame candidate instant set starting at start_time_s
     (defaults to target_time_s) using sync_json, then run
-    04(undistort)/07(masks)/08(keypoints)/09(split) on each instant. Returns
-    the list of per-instant poses_2d dirs, in order."""
+    undistort/masks/keypoints/split on each instant. Returns the list of
+    per-instant poses_2d dirs, in order."""
     if start_time_s is None:
         start_time_s = args.target_time_s
     extract_args = [str(args.video_dir), str(sync_json), str(raw_dir), str(start_time_s),
@@ -390,7 +390,7 @@ def stage_poses(args, L, image_ext, sync_json: Path):
     ], conda_env=args.generic_env, label="run_pose_refinement.py (pose refinement)")
 
 
-def stage_masks(args, L, image_ext, n_real):
+def stage_masks(args, L, image_ext):
     banner("STAGE: MASKS (generation & cleaning)")
 
     # build_flat_dataset.py expects the Camera_XXXX/0000.ext layout, not the
@@ -438,7 +438,6 @@ def stage_masks(args, L, image_ext, n_real):
     run_script("triangulate_and_project_keypoints.py", [
         "--camera_path", L["flat_transforms"], "--kp2d_dir", L["flat_poses2d"],
         "--out_kp3d_dir", L["poses_3d_fullres"], "--out_pcd_dir", L["poses_pcd_fullres"],
-        "--n_total", str(n_real),
     ], conda_env=args.triangulate_env, label="triangulate_and_project_keypoints.py (triangulate subject point cloud, real cameras)")
 
 
@@ -461,12 +460,25 @@ def stage_branch_direct(args, L):
         "--brush_app", args.brush_app, "--export_path", L["brush_output"],
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
         "--display", args.display,
-    ] + (["--with_viewer"] if args.with_viewer else []), label="train_brush.py (train Brush, 4K masked)")
+        "--with_viewer" if args.with_viewer else "--no_viewer",
+    ], label="train_brush.py (train Brush, 4K masked)")
 
 
 # ------------------------------------------------------------------------ CLI
+CONFIGURABLE_DEFAULTS = {
+    "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
+    "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
+    "brush_app", "display",
+}
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="JSON file of per-rig defaults (conda env names, --brush_app, --display, "
+                             "SAPIENS_CHECKPOINT_ROOT, HLOC settings -- see configs/example_rig.json). "
+                             "Explicit CLI flags always override the config. Per-run flags like --video_dir, "
+                             "--calib_dir, --out_dir aren't configurable here -- those change every run.")
     parser.add_argument("--video_dir", required=True, type=Path, help="Root dir of raw multi-camera GoPro footage")
     parser.add_argument("--calib_dir", required=True, type=Path,
                         help="Native fisheye calibration PKLs, e.g. Dev/calibration/5k")
@@ -544,8 +556,35 @@ def build_parser():
     return parser
 
 
+def apply_config_defaults(parser):
+    """Pre-scan argv for --config (without triggering the real parser's required-arg
+    checks) and, if given, use its contents to override defaults for the flags in
+    CONFIGURABLE_DEFAULTS. Explicit CLI flags still win -- set_defaults() only changes
+    what's used when a flag isn't passed at all."""
+    pre = argparse.ArgumentParser(add_help=False)
+    pre.add_argument("--config", type=Path, default=None)
+    pre_args, _ = pre.parse_known_args()
+    if pre_args.config is None:
+        return
+
+    if not pre_args.config.is_file():
+        fail(f"--config {pre_args.config} not found")
+        sys.exit(1)
+    with open(pre_args.config) as f:
+        config = json.load(f)
+
+    unknown = set(config) - CONFIGURABLE_DEFAULTS
+    if unknown:
+        fail(f"--config {pre_args.config} has unrecognized key(s): {sorted(unknown)} "
+             f"-- configurable keys are: {sorted(CONFIGURABLE_DEFAULTS)}")
+        sys.exit(1)
+    parser.set_defaults(**config)
+
+
 def main():
-    args = build_parser().parse_args()
+    parser = build_parser()
+    apply_config_defaults(parser)
+    args = parser.parse_args()
     args.target_time_s = parse_target_time(args.target_time)
     args.run_name = args.run_name or args.out_dir.name
     image_ext = ".png" if args.pp3_dir else ".jpg"
@@ -623,7 +662,7 @@ def main():
             return
 
         if should_run("masks"):
-            stage_masks(args, L, image_ext, n_real)
+            stage_masks(args, L, image_ext)
         else:
             info("Skipping stage 'masks' (--start_from_stage)")
             check_expected(L["flat_fmasks_clean"], "masks")
