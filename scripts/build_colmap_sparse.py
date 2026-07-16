@@ -88,11 +88,22 @@ def opengl_c2w_to_colmap_w2c(c2w: np.ndarray):
 
 def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
     from PIL import Image
+    import numpy as np
     img = Image.open(image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
     if mask.size != img.size:
         mask = mask.resize(img.size, Image.NEAREST)
-    rgba = Image.merge("RGBA", (*img.split(), mask))
+    img_arr = np.array(img)
+    mask_arr = np.array(mask)
+    # Zero RGB wherever fully transparent. The source photo's background isn't
+    # masked out of the RGB channels by default, so a bright/white background
+    # pixel can sit right behind the silhouette edge; any later bilinear/mipmap
+    # filtering (e.g. Brush's own image loading at --max-resolution) then blends
+    # that "invisible" color into visible edge pixels, producing a white/bright
+    # halo at the boundary. Zeroing it here removes the contamination at the source.
+    img_arr[mask_arr == 0] = 0
+    rgba_arr = np.dstack([img_arr, mask_arr])
+    rgba = Image.fromarray(rgba_arr, mode="RGBA")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     rgba.save(out_path)
 

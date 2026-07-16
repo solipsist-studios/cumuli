@@ -72,18 +72,20 @@ Key flags:
      yourself and pass `--start_from_stage production`. This is the
      normal way to iterate without re-running (and re-trusting) sync
      search each time.
-- **`--with_viewer`** (default: on) / **`--no_viewer`** -- on this
-  machine, `--no_viewer` has reliably hung (a busy-spin thread, not a
-  blocked syscall) regardless of the display setup tried -- no display
-  at all, a dummy Xorg instance, a real composited display with no
-  client connected, and a real composited display with an active client
-  all reproduced it identically. This may be specific to this machine's
-  driver/library setup rather than a general limitation -- it hasn't
-  been confirmed to fail (or work) elsewhere. `--wgpu_backend=vulkan`
-  (forces wgpu's backend instead of auto-probing) is available as an
-  experimental option but did not resolve the hang in testing here.
-  Only pass `--no_viewer` if you've separately confirmed headless
-  training completes in your own environment.
+- **`--with_viewer`** (default: on) / **`--no_viewer`** -- `--with_viewer`
+  is the tested, working configuration on this machine. `--no_viewer`
+  hasn't been separately verified here or anywhere else (including
+  WSL): in testing on this machine it reliably hung (a busy-spin
+  thread, not a blocked syscall) across every display setup tried -- no
+  display at all, a dummy Xorg instance, a real composited display with
+  no client connected, and a real composited display with an active
+  client all reproduced it identically -- but that result is specific
+  to this one machine's driver/library setup and may not generalize.
+  `--wgpu_backend=vulkan` (forces wgpu's backend instead of
+  auto-probing) is available as an experimental option but did not
+  resolve the hang in testing here. Only pass `--no_viewer` if you've
+  separately confirmed headless training completes in your own
+  environment.
 - **`--display`** (default `:2`) -- the X display `brush_app` connects
   to for `--with_viewer`. The default is specific to this machine's
   setup; override it for your own (needs a real, composited display --
