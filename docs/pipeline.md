@@ -363,3 +363,74 @@ the radius from the triangulated subject's median.
 
 Run `--report_only` first to see the keep/drop split before writing
 anything.
+
+## Optional: densification crops (head/arm identity)
+
+With ~12 cameras the face gets so few training pixels that the head
+reconstructs as a soft blob, and fast-moving extended limbs can come out
+truncated. `build_densification_crops.py` appends keypoint-guided crop
+views to a built training set -- the same real photos at tighter,
+principal-point-shifted framings (real pixels, zero hallucination) --
+concentrating supervision exactly where the rig starves it. On real runs
+this was the single biggest identity improvement measured. Run it after
+`build_colmap_sparse.py`, before training:
+
+```bash
+python3 scripts/build_densification_crops.py \
+    --dataset_dir ~/heidi_1500ms/train_set \
+    --transforms ~/heidi_1500ms/transforms.json \
+    --images_dir ~/heidi_1500ms/images_flat \
+    --masks_dir ~/heidi_1500ms/fmasks_clean \
+    --kp2d_dir ~/heidi_1500ms/poses_2d
+```
+
+It refuses to run twice on the same dataset (appending again would
+silently double the crop views); rebuild the training set for a clean
+slate.
+
+## Optional: splat-seeded init for per-frame sequences
+
+For `render_frame_sequence.py`-style per-frame training, the triangulated
+keypoint cloud (or any static point cloud) sits far from a fast-moving
+subject at most timesteps, so densification rebuilds the subject from
+scratch every frame. `build_colmap_sparse.py --seed_splat_ply` seeds each
+frame's init points from a neighboring frame's trained splat instead
+(prefer the mask-filtered version so junk isn't propagated):
+
+```bash
+python3 scripts/build_colmap_sparse.py \
+    --transforms .../transforms.json \
+    --seed_splat_ply .../prev_frame_30000_maskfilt.ply \
+    --out_dir .../train_set --images_dir .../images_flat \
+    --masks_dir .../fmasks_clean
+```
+
+Do NOT warm-start sequence frames from the previous frame's full splat
+at the trainer level (e.g. LFS `--init`): the inherited Gaussian count
+compounds frame over frame until it pins at the trainer's cap --
+measured at 6x slower per frame in an unvalidated training regime. The
+point-cloud seed gives the same "start where the subject is" benefit
+without any cross-frame accumulation.
+
+## Alternative trainer: LichtFeld-Studio (LFS)
+
+`train_lfs.py` wraps the compiled LFS binary (`deps/LichtFeld-Studio`,
+build it per its README) as a drop-in alternative to `train_brush.py`,
+consuming the same COLMAP training set. Qualified head-to-head against
+Brush on a real capture: sharper on most novel views, 3-10x lower
+silhouette halo ratio, native-4K training in about half the wall-clock,
+and genuinely headless (no X display, unlike `brush_app`).
+
+```bash
+python3 scripts/train_lfs.py \
+    --data ~/heidi_1500ms/train_set \
+    --lfs_app deps/LichtFeld-Studio/build/LichtFeld-Studio \
+    --export_path ~/lfs_output \
+    --output_name heidi_30k
+```
+
+The defaults are the qualified recipe -- in particular `--mask_mode
+alpha_consistent` (without it LFS's soft alpha handling drowns the
+subject in semi-transparent haze) and `--max_width 0` (LFS's own 3840
+default silently downscales wider media). See the module docstring
+before changing any of them.
