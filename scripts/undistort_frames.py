@@ -71,6 +71,25 @@ def load_pkl(path: Path):
         return pickle.load(f)
 
 
+def resolve_calib_path(calib_dir: Path, cam_id: str) -> Path:
+    """Match a calibration pkl to a camera id across the naming conventions
+    seen across capture rigs: Camera_<id>.pkl (this script's documented
+    convention) or cam<N>_calibration_data.pkl (no zero-padding, "cam"
+    prefix -- e.g. the 260521 rig's calibration_pkls_heidi). Returns the
+    first candidate that exists, or the documented-convention path (for a
+    clean "no calibration file at ..." error message) if neither does.
+    """
+    candidates = [calib_dir / f"Camera_{cam_id}.pkl"]
+    try:
+        candidates.append(calib_dir / f"cam{int(cam_id)}_calibration_data.pkl")
+    except ValueError:
+        pass
+    for c in candidates:
+        if c.is_file():
+            return c
+    return candidates[0]
+
+
 def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, allow_rescale: bool):
     """Check calibration against the actual frame resolution.
 
@@ -174,7 +193,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for frame_path in frame_paths:
             cam_id = frame_path.stem
-            calib_path = args.calib_dir / f"Camera_{cam_id}.pkl"
+            calib_path = resolve_calib_path(args.calib_dir, cam_id)
             if not calib_path.is_file():
                 print(f"  SKIP {cam_id}: no calibration file at {calib_path}")
                 failed.append(cam_id)
@@ -195,7 +214,7 @@ def main():
             out_pkl_path = args.out_pkl_dir / f"Camera_{cam_id}.pkl"
 
             if args.target_pkl_dir is not None:
-                target_path = args.target_pkl_dir / f"Camera_{cam_id}.pkl"
+                target_path = resolve_calib_path(args.target_pkl_dir, cam_id)
                 if not target_path.is_file():
                     print(f"  SKIP {cam_id}: no target pkl at {target_path}")
                     failed.append(cam_id)
@@ -256,6 +275,7 @@ def main():
     print(f"\nDone. {ok}/{len(frame_paths)} cameras undistorted into {args.out_dir}")
     if failed:
         print(f"Failed/skipped cameras: {failed}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

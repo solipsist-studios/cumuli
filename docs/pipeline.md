@@ -38,6 +38,7 @@ orchestrator to run them without the manual bookkeeping.
 
 ```bash
 python3 scripts/run_unified_pipeline.py \
+    --config configs/my_rig.json \
     --video_dir /path/to/movies \
     --calib_dir /path/to/calibration_pkls \
     --out_dir ~/pipeline_run \
@@ -48,6 +49,10 @@ python3 scripts/run_unified_pipeline.py \
 
 Key flags:
 
+- **`--config`** -- JSON file of per-rig defaults (conda env names,
+  `--brush_app`, `--display`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
+  you don't have to repeat them on every run. Explicit CLI flags always
+  override the config. See `configs/README.md`.
 - **`--start_from_stage` / `--stop_after_stage`** (`sync`, `production`,
   `poses`, `masks`, `branch`) -- resume partway through, or stop early to
   inspect intermediate output before committing GPU time to training.
@@ -72,18 +77,20 @@ Key flags:
      yourself and pass `--start_from_stage production`. This is the
      normal way to iterate without re-running (and re-trusting) sync
      search each time.
-- **`--with_viewer`** (default: on) / **`--no_viewer`** -- on this
-  machine, `--no_viewer` has reliably hung (a busy-spin thread, not a
-  blocked syscall) regardless of the display setup tried -- no display
-  at all, a dummy Xorg instance, a real composited display with no
-  client connected, and a real composited display with an active client
-  all reproduced it identically. This may be specific to this machine's
-  driver/library setup rather than a general limitation -- it hasn't
-  been confirmed to fail (or work) elsewhere. `--wgpu_backend=vulkan`
-  (forces wgpu's backend instead of auto-probing) is available as an
-  experimental option but did not resolve the hang in testing here.
-  Only pass `--no_viewer` if you've separately confirmed headless
-  training completes in your own environment.
+- **`--with_viewer`** (default: on) / **`--no_viewer`** -- `--with_viewer`
+  is the tested, working configuration on this machine. `--no_viewer`
+  hasn't been separately verified here or anywhere else (including
+  WSL): in testing on this machine it reliably hung (a busy-spin
+  thread, not a blocked syscall) across every display setup tried -- no
+  display at all, a dummy Xorg instance, a real composited display with
+  no client connected, and a real composited display with an active
+  client all reproduced it identically -- but that result is specific
+  to this one machine's driver/library setup and may not generalize.
+  `--wgpu_backend=vulkan` (forces wgpu's backend instead of
+  auto-probing) is available as an experimental option but did not
+  resolve the hang in testing here. Only pass `--no_viewer` if you've
+  separately confirmed headless training completes in your own
+  environment.
 - **`--display`** (default `:2`) -- the X display `brush_app` connects
   to for `--with_viewer`. The default is specific to this machine's
   setup; override it for your own (needs a real, composited display --
@@ -160,19 +167,87 @@ python3 scripts/run_hloc.py \
 # -> ~/heidi_1500ms/solipsist_out/transforms_multiframe.json (real camera poses)
 ```
 
+## Keypoint pose refinement
+
+Background SfM features (HLOC, above) live on distant walls/windows, so
+camera poses can fit the background well while still disagreeing by
+dozens of pixels at the capture volume center -- exactly where the
+subject is. This step bundle-adjusts the camera poses against 2D human
+keypoints instead ("human as calibration wand"), and has been reliable:
+real runs have seen it take subject-space median reprojection error from
+~30px to ~5px.
+
+The optimization is meaningfully more constrained with keypoints from
+several time instants of the same static rig instead of one (the subject
+sweeping through the capture volume over a few seconds anchors the
+cameras far more strongly than a single pose), so this is the validated
+approach: extract a short candidate window per camera -- separate from,
+and in addition to, the single production frame extracted above --
+predict keypoints on each instant, and refine against all of them at
+once (10+ instants recommended; 5 shown here for brevity):
+
+```bash
+python3 scripts/extract_synced_frames.py \
+    /media/ai/datasets/260521-105422/movies \
+    ~/heidi_260521_undist/sync_offsets_v5.json \
+    ~/heidi_1500ms/sync_candidates \
+    1.5 \
+    --window 5
+
+# Run undistort_frames.py + generate_masks.py + predict_keypoints_2d.py +
+# split_keypoints_per_camera.py on each instant subdir f0/..f4/
+for k in 0 1 2 3 4; do
+    python3 scripts/undistort_frames.py \
+        --frames_dir ~/heidi_1500ms/sync_candidates/f$k \
+        --calib_dir /path/to/calibration_pkls \
+        --out_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+        --out_pkl_dir ~/heidi_1500ms/sync_candidates_pkls/f$k
+    conda activate diffuman4d
+    python3 scripts/generate_masks.py \
+        --images_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+        --out_fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
+    conda activate sapiens2
+    python3 scripts/predict_keypoints_2d.py \
+        --images_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
+        --out_kp2d_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
+        --fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
+    python3 scripts/split_keypoints_per_camera.py \
+        --kp2d_flat_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
+        --out_dir ~/heidi_1500ms/sync_candidates_poses2d/f$k
+done
+
+python3 scripts/run_pose_refinement.py \
+    --transforms ~/heidi_1500ms/solipsist_out/transforms_multiframe.json \
+    --kp2d_dirs ~/heidi_1500ms/sync_candidates_poses2d/f0,~/heidi_1500ms/sync_candidates_poses2d/f1,~/heidi_1500ms/sync_candidates_poses2d/f2,~/heidi_1500ms/sync_candidates_poses2d/f3,~/heidi_1500ms/sync_candidates_poses2d/f4 \
+    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --report_only
+# check the printed median px error, then re-run without --report_only
+```
+
+Use `transforms_refined.json` in place of `transforms_multiframe.json`
+from here on. For a single instant instead (lighter-weight, less
+constrained), skip the candidate-window loop above and call the
+underlying script directly with this frame's own `poses_2d` -- note the
+singular `--kp2d`, not `--kp2d_dirs`:
+
+```bash
+python3 scripts/refine_poses_with_keypoints.py \
+    --transforms ~/heidi_1500ms/solipsist_out/transforms_multiframe.json \
+    --kp2d ~/heidi_1500ms/poses_2d \
+    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --report_only
+```
+
 ## Build the flat, 2-digit-labeled dataset
 
 Downstream tooling looks up cameras by the literal `camera_label` string
 in transforms.json, and assumes plain zero-padded 2-digit labels ("00",
 "01", ...). This step is where HLOC's `Camera_undistorted_0001`-style
 labels get converted to that convention -- every later stage inherits it.
-This is purely a relabeling step, independent of pose quality, so it's
-safe to do before pose refinement below (and lets that step reuse this
-frame's masks/keypoints instead of predicting them twice).
 
 ```bash
 python3 scripts/build_flat_dataset.py \
-    --transforms ~/heidi_1500ms/solipsist_out/transforms_multiframe.json \
+    --transforms ~/heidi_1500ms/transforms_refined.json \
     --undistorted_dir ~/heidi_1500ms/undistorted \
     --out_images_flat ~/heidi_1500ms/images_flat \
     --out_transforms ~/heidi_1500ms/transforms.json
@@ -216,47 +291,18 @@ Masking/alignment quality on real captures is still an open problem
 being actively worked (see project notes) -- treat this as the current
 best approach, not a solved one.
 
-## Keypoint pose refinement
-
-Background SfM features (HLOC, above) live on distant walls/windows, so
-camera poses can fit the background well while still disagreeing by
-dozens of pixels at the capture volume center -- exactly where the
-subject is. This step bundle-adjusts the camera poses against this
-frame's 2D human keypoints instead ("human as calibration wand"), and
-has been reliable: real runs have seen it take subject-space median
-reprojection error from ~30px to ~5px.
-
-```bash
-python3 scripts/refine_poses_with_keypoints.py \
-    --transforms ~/heidi_1500ms/transforms.json \
-    --kp2d ~/heidi_1500ms/poses_2d \
-    --out_transforms ~/heidi_1500ms/transforms_refined.json \
-    --report_only
-# check the printed median px error, then re-run without --report_only
-```
-
-Use `transforms_refined.json` in place of `transforms.json` in the
-triangulate/build/train step below.
-
-This single-instant refinement is worthwhile on its own, but the
-optimization gets meaningfully more constrained with keypoints from
-several time instants of the same static rig instead of one (the subject
-sweeping through the capture volume over a few seconds anchors the
-cameras far more strongly than a single pose). That multi-instant
-version -- extracting a short candidate window per camera and refining
-against keypoints from all of them at once -- needs a wrapper this build
-doesn't have yet; it'll land as a follow-up once that wrapper exists.
-
 ## Triangulate, build the training set, and train Brush
+
+`transforms.json` here already carries the refined poses (pose
+refinement ran before flattening, above), so nothing further needs to
+reference `transforms_refined.json` from this point on.
 
 ```bash
 python3 scripts/triangulate_and_project_keypoints.py \
-    --camera_path ~/heidi_1500ms/transforms_refined.json \
+    --camera_path ~/heidi_1500ms/transforms.json \
     --kp2d_dir ~/heidi_1500ms/poses_2d \
     --out_kp3d_dir ~/heidi_1500ms/poses_3d \
     --out_pcd_dir ~/heidi_1500ms/poses_pcd_fullres
-# real cameras only -- omit --out_kp2d_proj_dir/--n_total, those are for
-# projecting into the (not-yet-built) 48-camera Diffuman4D ring
 ```
 
 Then bake the cleaned masks into image alpha -- **do not** pass masks as
@@ -268,7 +314,7 @@ alpha channel and applies its own `--match-alpha-weight` loss:
 
 ```bash
 python3 scripts/build_colmap_sparse.py \
-    --transforms ~/heidi_1500ms/transforms_refined.json \
+    --transforms ~/heidi_1500ms/transforms.json \
     --points_ply ~/heidi_1500ms/poses_pcd_fullres/000000.ply \
     --out_dir ~/heidi_1500ms/train_set \
     --images_dir ~/heidi_1500ms/images_flat \

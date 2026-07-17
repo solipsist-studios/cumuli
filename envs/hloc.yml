@@ -1,0 +1,23 @@
+# Known-good combination, verified 2026-07-13 against a real run (see
+# docs/environment.md). Create with: conda env create -f envs/hloc.yml
+#
+# torch/torchvision's CUDA build tag depends on your driver -- pip will
+# pick the right +cuXXX wheel for your system; this was verified against
+# torch 2.12.0+cu130 / torchvision 0.27.0+cu130.
+name: hloc
+channels:
+  - defaults
+dependencies:
+  - python=3.10.20
+  - pip
+  - pip:
+      - torch==2.12.0
+      - torchvision==0.27.0
+      - numpy==2.2.6
+      - scipy==1.15.3
+      - Pillow==12.2.0
+      - pycolmap==4.0.4
+      - hloc==1.5
+      - opencv-python>=4.5.0   # deps/camera-calibration/requirements.txt
+      - matplotlib>=3.4.0      # deps/camera-calibration/requirements.txt
+      - tqdm>=4.50.0           # deps/camera-calibration/requirements.txt

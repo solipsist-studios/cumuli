@@ -128,6 +128,14 @@ def main():
                          help="Path to multiframe_sfm.py (override to test local changes to it)")
     parser.add_argument("--num_timestamps", type=int, default=1)
     parser.add_argument("--feature_type", default="superpoint", choices=["superpoint", "aliked"])
+    parser.add_argument("--resize_max", type=int, default=None,
+                         help="Long-edge resize before feature extraction (passed through to "
+                              "multiframe_sfm.py; its own default is 2048 -- low relative to this rig's "
+                              "~5312px native media, discarding detail that would otherwise sharpen "
+                              "keypoint localization and camera pose accuracy). None = use that default.")
+    parser.add_argument("--max_keypoints", type=int, default=None,
+                         help="Max keypoints per image (passed through to multiframe_sfm.py; its own "
+                              "default is 8192). None = use that default.")
     parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS)
     parser.add_argument("--skip_setup", action="store_true",
                          help="Skip restructure/init_transforms steps (if already done)")
@@ -159,6 +167,10 @@ def main():
         "--num_timestamps", str(args.num_timestamps),
         "--feature_type", args.feature_type,
     ]
+    if args.resize_max is not None:
+        cmd += ["--resize_max", str(args.resize_max)]
+    if args.max_keypoints is not None:
+        cmd += ["--max_keypoints", str(args.max_keypoints)]
     print("\nRunning multiframe_sfm.py:")
     print(" ", " ".join(cmd))
     env = {
