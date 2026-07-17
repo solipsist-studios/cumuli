@@ -1,0 +1,9 @@
+# Test-only dependencies for `pytest`.
+# Not a runtime requirement of the pipeline itself -- the pipeline's real
+# deps live in envs/*.yml per conda env.
+#
+#   python3 -m venv .venv && .venv/bin/pip install -r requirements-test.txt
+#   .venv/bin/pytest
+pytest>=7.0
+numpy
+pillow

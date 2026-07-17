@@ -506,6 +506,11 @@ def build_parser():
                         help="Stop once this stage completes, instead of running through 'branch'. "
                              "Useful to checkpoint and inspect (e.g. the sync grid) before committing "
                              "to the rest of the pipeline.")
+    parser.add_argument("--no_validate", action="store_true",
+                        help="Skip validate_stage_output.py's on-disk sanity checks after each stage "
+                             "(camera counts, non-degenerate masks/poses, non-empty COLMAP/splat output). "
+                             "On by default so a stage that exits 0 but produced garbage doesn't silently "
+                             "waste GPU time on the next (often more expensive) stage.")
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
@@ -611,7 +616,11 @@ def main():
              "will fail. Pass --sapiens_checkpoint_root, or export it before running, e.g. "
              "export SAPIENS_CHECKPOINT_ROOT=~/sapiens")
 
-    videos = discover_cameras(args.video_dir)
+    try:
+        videos = discover_cameras(args.video_dir)
+    except StageError as e:
+        fail(str(e))
+        sys.exit(1)
     n_real = len(videos)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     L = build_layout(args.out_dir)
@@ -621,6 +630,7 @@ def main():
 
     start_idx = STAGE_KEYS.index(args.start_from_stage)
     stop_idx = STAGE_KEYS.index(args.stop_after_stage) if args.stop_after_stage else None
+    real_cameras_arg = ",".join(sorted(v.stem for v in videos))
 
     def should_run(key):
         return STAGE_KEYS.index(key) >= start_idx
@@ -631,11 +641,19 @@ def main():
             return True
         return False
 
+    def validate_stage(key):
+        if args.no_validate:
+            return
+        run_script("validate_stage_output.py", [
+            "--stage", key, "--out_dir", args.out_dir, "--real_cameras", real_cameras_arg,
+        ], conda_env=args.generic_env, label=f"validate_stage_output.py ({key})")
+
     try:
         if should_run("sync"):
             sync_json = stage_sync(args, L, image_ext)
             with open(args.out_dir / "resolved_sync_json.txt", "w") as f:
                 f.write(str(sync_json))
+            validate_stage("sync")
         else:
             info("Skipping stage 'sync' (--start_from_stage)")
             resolved_path = args.out_dir / "resolved_sync_json.txt"
@@ -647,6 +665,7 @@ def main():
 
         if should_run("production"):
             stage_production(args, L, image_ext, sync_json)
+            validate_stage("production")
         else:
             info("Skipping stage 'production' (--start_from_stage)")
             check_expected(L["production_undist"], "production")
@@ -655,6 +674,7 @@ def main():
 
         if should_run("poses"):
             stage_poses(args, L, image_ext, sync_json)
+            validate_stage("poses")
         else:
             info("Skipping stage 'poses' (--start_from_stage)")
             check_expected(L["transforms_refined"], "poses")
@@ -663,6 +683,7 @@ def main():
 
         if should_run("masks"):
             stage_masks(args, L, image_ext)
+            validate_stage("masks")
         else:
             info("Skipping stage 'masks' (--start_from_stage)")
             check_expected(L["flat_fmasks_clean"], "masks")
@@ -671,6 +692,7 @@ def main():
 
         if should_run("branch"):
             stage_branch_direct(args, L)
+            validate_stage("branch")
         else:
             info("Skipping stage 'branch' (--start_from_stage)")
 
