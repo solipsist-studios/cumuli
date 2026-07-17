@@ -328,3 +328,38 @@ python3 scripts/train_brush.py \
 # opens Brush's live viewer by default (see "Recommended" section above for why);
 # pass --no_viewer only if you've confirmed headless training works in your environment
 ```
+
+## Post-process: mask-consistency splat filtering
+
+Masked training does not prevent floaters -- trained splats routinely
+carry non-subject junk that alpha supervision never removed (measured at
+30-56% of Gaussians on warm-started per-frame sequences, a few percent
+even on clean single-frame runs). The junk occludes the subject from
+novel views and corrupts anything computed *from* the splat, e.g. a
+subject centroid used to aim novel-view render cameras.
+
+`filter_splat_by_masks.py` removes it with a direct geometric test:
+every Gaussian is projected into every camera and dropped if it lands
+outside the subject mask in at least half the cameras whose frustum
+resolves it. Score it against the cleaned masks (same rule as eval:
+never the raw BiRefNet output):
+
+```bash
+python3 scripts/filter_splat_by_masks.py \
+    --splat_ply ~/brush_output/heidi_1500ms_30000.ply \
+    --transforms ~/heidi_1500ms/transforms.json \
+    --masks_dir ~/heidi_1500ms/fmasks_clean \
+    --out_ply ~/brush_output/heidi_1500ms_30000_maskfilt.ply
+```
+
+One class of junk survives the silhouette test: Gaussians hiding
+*behind* the subject inside the silhouette frustum project inside the
+mask from every camera and cannot be caught this way (depth is
+unobservable from silhouettes). If a downstream consumer computes
+statistics from the splat, either bound them spatially or add the
+optional `--subject_anchor_ply poses_pcd_fullres/<tem>.ply
+--subject_radius 3.0` test, which also drops everything farther than
+the radius from the triangulated subject's median.
+
+Run `--report_only` first to see the keep/drop split before writing
+anything.
