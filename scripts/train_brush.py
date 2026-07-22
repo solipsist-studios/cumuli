@@ -75,6 +75,12 @@ def main():
                          help="X DISPLAY brush_app connects to (default ':2').")
     args = parser.parse_args()
 
+    if "{iter}" not in args.export_name:
+        print(f"Error: --export_name {args.export_name!r} must contain the literal \"{{iter}}\" "
+              "placeholder (e.g. 'splat_{iter}.ply') -- it's how the final-export check recognizes "
+              "which file marks training as done.")
+        sys.exit(1)
+
     if not args.brush_app.is_file():
         print(f"Error: brush_app not found at {args.brush_app}")
         sys.exit(1)
