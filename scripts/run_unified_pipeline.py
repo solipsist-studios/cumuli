@@ -230,7 +230,7 @@ def build_layout(out_dir: Path):
 # ------------------------------------------------------- candidate window prep
 def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: str,
                               raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir,
-                              tag: str, start_time_s: float = None):
+                              tag: str, start_time_s: float | None = None):
     """Extract a --window-frame candidate instant set starting at start_time_s
     (defaults to target_time_s) using sync_json, then run
     undistort/masks/keypoints/split on each instant. Returns the list of
@@ -703,8 +703,8 @@ def main():
 
     except StageError as e:
         fail(str(e))
-        fail(f"Pipeline stopped. Re-run with --start_from_stage <stage> to resume "
-             f"(completed stages up to and including the one before the failure are reusable).")
+        fail("Pipeline stopped. Re-run with --start_from_stage <stage> to resume "
+             "(completed stages up to and including the one before the failure are reusable).")
         sys.exit(1)
 
     banner("PIPELINE COMPLETE")

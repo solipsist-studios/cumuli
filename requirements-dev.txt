@@ -4,3 +4,8 @@ Pillow
 pytest
 hypothesis
 opencv-python>=4.5.0  # matches deps/camera-calibration/requirements.txt (envs/hloc.yml mirrors the same constraint)
+pycolmap==4.0.4  # matches envs/hloc.yml and envs/diffuman4d.yml's pin exactly; no prebuilt wheel for Intel macOS (Apple Silicon, Linux, Windows all covered)
+plyfile  # scripts/build_colmap_sparse.py's .ply reader -- was missing here entirely; CI would have failed on its first real run
+pytest-cov  # --cov/--cov-report, used in CI for the coverage HTML artifact
+ruff  # lint gate
+mypy  # advisory type-check step in CI (not a hard gate -- see .github/workflows/tests.yml)

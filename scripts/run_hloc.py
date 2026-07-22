@@ -81,7 +81,7 @@ def build_init_transforms(undistorted_pkl_dir: Path, camera_ids, out_path: Path,
     multiframe_sfm.py matches init_transforms.json frames to cameras by
     that exact label (or a file_path/prefix match).
     """
-    init_tf = {"camera_model": "PINHOLE", "frames": []}
+    init_tf: dict = {"camera_model": "PINHOLE", "frames": []}
 
     for cam_id in camera_ids:
         pkl_path = undistorted_pkl_dir / f"Camera_{cam_id}.pkl"

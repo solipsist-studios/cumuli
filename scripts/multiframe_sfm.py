@@ -369,7 +369,9 @@ def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
     feature_path = extract_features.main(feature_conf, frames_dir, outputs_dir, image_list=all_images)
     sfm_pairs = outputs_dir / 'pairs-exhaustive.txt'
     pairs_from_exhaustive.main(sfm_pairs, image_list=all_images)
-    print(f'Matching {sum(1 for _ in open(sfm_pairs))} pairs...')
+    with open(sfm_pairs) as f:
+        n_pairs = sum(1 for _ in f)
+    print(f'Matching {n_pairs} pairs...')
     match_path = match_features.main(matcher_conf, sfm_pairs, feature_conf['output'], outputs_dir)
     return feature_path, sfm_pairs, match_path
 

@@ -110,7 +110,7 @@ def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
     img = Image.open(image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
     if mask.size != img.size:
-        mask = mask.resize(img.size, Image.NEAREST)
+        mask = mask.resize(img.size, Image.Resampling.NEAREST)
     img_arr = np.array(img)
     mask_arr = np.array(mask)
     # Zero RGB wherever fully transparent. The source photo's background isn't

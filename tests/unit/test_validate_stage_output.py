@@ -163,7 +163,7 @@ def test_validate_masks_passes_with_plausible_coverage(tmp_path):
     L = unified.build_layout(tmp_path)
     labels = ["00", "01", "02"]
     L["flat_transforms"].parent.mkdir(parents=True, exist_ok=True)
-    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": l} for l in labels]}))
+    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": label} for label in labels]}))
     for label in labels:
         write_mask(L["flat_fmasks_clean"] / f"{label}.png", foreground_frac=0.15)
 
@@ -174,7 +174,7 @@ def test_validate_masks_fails_when_mask_missing(tmp_path):
     L = unified.build_layout(tmp_path)
     labels = ["00", "01", "02"]
     L["flat_transforms"].parent.mkdir(parents=True, exist_ok=True)
-    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": l} for l in labels]}))
+    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": label} for label in labels]}))
     for label in labels[:-1]:
         write_mask(L["flat_fmasks_clean"] / f"{label}.png", foreground_frac=0.15)
 
@@ -186,7 +186,7 @@ def test_validate_masks_fails_when_subject_dropped_entirely(tmp_path):
     L = unified.build_layout(tmp_path)
     labels = ["00", "01", "02"]
     L["flat_transforms"].parent.mkdir(parents=True, exist_ok=True)
-    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": l} for l in labels]}))
+    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": label} for label in labels]}))
     for label in labels:
         write_mask(L["flat_fmasks_clean"] / f"{label}.png", foreground_frac=0.0)
 
@@ -198,7 +198,7 @@ def test_validate_masks_fails_when_mask_keeps_background_instead(tmp_path):
     L = unified.build_layout(tmp_path)
     labels = ["00"]
     L["flat_transforms"].parent.mkdir(parents=True, exist_ok=True)
-    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": l} for l in labels]}))
+    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": label} for label in labels]}))
     write_mask(L["flat_fmasks_clean"] / "00.png", foreground_frac=0.99)
 
     with pytest.raises(vso.ValidationError, match="implausible mask coverage"):
@@ -431,7 +431,7 @@ def test_validate_poses_passes_with_real_rotations(tmp_path):
 
 def write_flat(L, labels):
     L["flat_transforms"].parent.mkdir(parents=True, exist_ok=True)
-    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": l} for l in labels]}))
+    L["flat_transforms"].write_text(json.dumps({"frames": [{"camera_label": label} for label in labels]}))
 
 
 def test_validate_masks_fails_on_duplicate_labels(tmp_path):
@@ -444,18 +444,22 @@ def test_validate_masks_fails_on_duplicate_labels(tmp_path):
         vso.validate_masks(L, REAL_CAMERAS)
 
 
-def test_validate_masks_boundary_coverage(tmp_path):
-    # Just inside the plausible band passes; just outside fails, both ends.
+@pytest.mark.parametrize("frac,ok", [
+    (0.01, True),   # just inside the plausible band, low side
+    (0.004, False), # just outside, low side
+    (0.85, True),   # just inside, high side
+    (0.95, False),  # just outside, high side
+])
+def test_validate_masks_boundary_coverage(tmp_path, frac, ok):
     L = unified.build_layout(tmp_path)
     write_flat(L, ["00"])
+    write_mask(L["flat_fmasks_clean"] / "00.png", foreground_frac=frac)
 
-    for frac, ok in ((0.01, True), (0.004, False), (0.85, True), (0.95, False)):
-        write_mask(L["flat_fmasks_clean"] / "00.png", foreground_frac=frac)
-        if ok:
+    if ok:
+        vso.validate_masks(L, ["0001"])
+    else:
+        with pytest.raises(vso.ValidationError, match="implausible mask coverage"):
             vso.validate_masks(L, ["0001"])
-        else:
-            with pytest.raises(vso.ValidationError, match="implausible mask coverage"):
-                vso.validate_masks(L, ["0001"])
 
 
 # --------------------------------------------------------------------------

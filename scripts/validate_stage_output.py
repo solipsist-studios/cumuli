@@ -155,10 +155,10 @@ def validate_branch(L, real_cameras):
         if not (sparse_dir / name).is_file():
             raise ValidationError(f"{sparse_dir / name} was not produced")
 
-    cam_lines = [l for l in (sparse_dir / "cameras.txt").read_text().splitlines() if not l.startswith("#")]
-    img_lines = [l for l in (sparse_dir / "images.txt").read_text().splitlines()
-                 if l.strip() and not l.startswith("#")]
-    pts_lines = [l for l in (sparse_dir / "points3D.txt").read_text().splitlines() if not l.startswith("#")]
+    cam_lines = [line for line in (sparse_dir / "cameras.txt").read_text().splitlines() if not line.startswith("#")]
+    img_lines = [line for line in (sparse_dir / "images.txt").read_text().splitlines()
+                 if line.strip() and not line.startswith("#")]
+    pts_lines = [line for line in (sparse_dir / "points3D.txt").read_text().splitlines() if not line.startswith("#")]
 
     if len(cam_lines) != len(real_cameras):
         raise ValidationError(f"cameras.txt has {len(cam_lines)} entries, expected {len(real_cameras)}")
@@ -181,7 +181,8 @@ def validate_branch(L, real_cameras):
 def ply_vertex_count(path):
     """Vertex count from a .ply header (ascii or binary body), or -1 if the
     header is missing/unparseable."""
-    header = path.open("rb").read(4096).decode("ascii", errors="replace")
+    with path.open("rb") as f:
+        header = f.read(4096).decode("ascii", errors="replace")
     if not header.startswith("ply"):
         return -1
     for line in header.splitlines():

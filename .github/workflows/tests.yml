@@ -16,5 +16,20 @@ jobs:
       - name: Install test dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Run unit tests
-        run: pytest tests/unit -q
+      - name: Lint (ruff)
+        run: ruff check scripts/ tests/
+
+      - name: Run unit tests (with coverage)
+        run: pytest tests/unit -q --cov=scripts --cov-report=html --cov-report=term-missing
+
+      - name: Upload coverage HTML report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html-report
+          path: htmlcov/
+
+      - name: Type check (mypy, advisory -- does not fail the build)
+        if: always()
+        run: mypy scripts/
+        continue-on-error: true
