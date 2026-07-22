@@ -2,7 +2,7 @@
 minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["scripts"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config --durations=10"
 filterwarnings = ["error"]
 
 [tool.ruff]
@@ -14,7 +14,28 @@ target-version = "py312"
 # without it installed rather than failing collection outright.
 "tests/unit/*.py" = ["E402"]
 
+# Mutation testing: run tests/run_mutation_testing.sh (NOT `mutmut run` here --
+# mutmut 3.x only supports ./, src/, or source/ layouts, so the script stages a
+# src/-layout copy and runs mutmut there; its [tool.mutmut] config lives in the
+# staged pyproject the script generates).
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
 mypy_path = "scripts"
+
+[tool.coverage.run]
+source = ["scripts"]
+branch = true
+
+[tool.coverage.report]
+# Baseline is 96% as of 2026-07-22 (646 tests); 90 leaves headroom for
+# legitimate new untested branches without masking a real regression.
+fail_under = 90
+show_missing = true
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

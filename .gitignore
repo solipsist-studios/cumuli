@@ -7,3 +7,5 @@ target/
 .ruff_cache/
 htmlcov/
 .coverage
+mutants/
+.hypothesis/
