@@ -45,15 +45,32 @@ from scipy.spatial.transform import Rotation
 
 
 def load_transforms(path):
-    with open(path) as f:
-        data = json.load(f)
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        frames = data['frames']
+    except FileNotFoundError:
+        raise SystemExit(f'Error: {path} not found')
+    except json.JSONDecodeError as e:
+        raise SystemExit(f'Error: {path} is not valid JSON: {e}')
+    except KeyError as e:
+        raise SystemExit(f'Error: {path} is missing expected key {e}')
+
     cams = {}
-    for fr in data['frames']:
-        label = str(fr.get('camera_label') or Path(fr['file_path']).stem)
-        K = np.array([[fr['fl_x'], 0, fr['cx']], [0, fr['fl_y'], fr['cy']], [0, 0, 1]])
-        c2w = np.array(fr['transform_matrix'], dtype=np.float64)
-        c2w[:3, 1:3] *= -1  # OpenGL -> OpenCV
-        cams[label] = {'K': K, 'w2c': np.linalg.inv(c2w), 'frame': fr}
+    for fr in frames:
+        try:
+            label = str(fr.get('camera_label') or Path(fr['file_path']).stem)
+            K = np.array([[fr['fl_x'], 0, fr['cx']], [0, fr['fl_y'], fr['cy']], [0, 0, 1]])
+            c2w = np.array(fr['transform_matrix'], dtype=np.float64)
+            c2w[:3, 1:3] *= -1  # OpenGL -> OpenCV
+            w2c = np.linalg.inv(c2w)
+        except (KeyError, IndexError, ValueError, np.linalg.LinAlgError) as e:
+            label = fr.get('camera_label', '<unknown>')
+            print(f'  WARNING: skipping camera {label}: {e}')
+            continue
+        cams[label] = {'K': K, 'w2c': w2c, 'frame': fr}
+    if not cams:
+        raise SystemExit(f'Error: no usable cameras found in {path}')
     return data, cams
 
 
@@ -87,32 +104,56 @@ def load_keypoints(kp2d_path, cam_labels):
     kp2d_path = Path(kp2d_path)
     obs = defaultdict(dict)
     if kp2d_path.is_file():
-        with open(kp2d_path) as f:
-            data = json.load(f)
-        for fr in data['frames']:
-            label = match_camera(fr['image_name'], cam_labels)
+        try:
+            with open(kp2d_path) as f:
+                data = json.load(f)
+            frames = data['frames']
+        except json.JSONDecodeError as e:
+            raise SystemExit(f'Error: {kp2d_path} is not valid JSON: {e}')
+        except KeyError as e:
+            raise SystemExit(f'Error: {kp2d_path} is missing expected key {e}')
+        for fr in frames:
+            try:
+                image_name = fr['image_name']
+            except KeyError as e:
+                print(f'  WARNING: skipping malformed keypoint frame entry (missing key {e})')
+                continue
+            label = match_camera(image_name, cam_labels)
             if label is None or not fr.get('instances'):
                 continue
             tem = str(fr.get('frame_id', '000000'))
-            inst = fr['instances'][0]
-            for k, (pt, s) in enumerate(zip(inst['keypoints'], inst['keypoint_scores'])):
+            try:
+                inst = fr['instances'][0]
+                kps = inst['keypoints']
+                scores = inst['keypoint_scores']
+            except KeyError as e:
+                print(f'  WARNING: skipping malformed keypoint instance for {image_name}: missing key {e}')
+                continue
+            for k, (pt, s) in enumerate(zip(kps, scores)):
                 obs[(tem, k)][label] = (float(pt[0]), float(pt[1]), float(s))
-    else:
+    elif kp2d_path.is_dir():
         for cam_dir in sorted(p for p in kp2d_path.iterdir() if p.is_dir()):
             label = match_camera(cam_dir.name, cam_labels)
             if label is None:
                 continue
             for jf in sorted(cam_dir.glob('*.json')):
-                with open(jf) as f:
-                    data = json.load(f)
-                insts = data.get('instance_info') or data.get('instances') or []
-                if not insts:
+                try:
+                    with open(jf) as f:
+                        data = json.load(f)
+                    insts = data.get('instance_info') or data.get('instances') or []
+                    if not insts:
+                        continue
+                    inst = insts[0]
+                    kps = inst['keypoints']
+                except (json.JSONDecodeError, KeyError) as e:
+                    print(f'  WARNING: skipping {jf}: malformed ({e})')
                     continue
-                inst = insts[0]
                 scores = inst.get('keypoint_scores') or inst.get('keypoint_score') or []
-                for k, pt in enumerate(inst['keypoints']):
+                for k, pt in enumerate(kps):
                     s = float(scores[k]) if k < len(scores) else 1.0
                     obs[(jf.stem, k)][label] = (float(pt[0]), float(pt[1]), float(s))
+    else:
+        raise SystemExit(f'Error: {kp2d_path} not found (expected a file or a directory)')
     return obs
 
 
@@ -331,6 +372,7 @@ def write_refined_transforms(data, cams, cam_labels, cam_index, rv1, tv1, out_pa
         c2w = np.linalg.inv(w2c)
         c2w[:3, 1:3] *= -1  # OpenCV -> OpenGL
         cams[label]['frame']['transform_matrix'] = c2w.tolist()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, 'w') as f:
         json.dump(data, f, indent=4)
     print(f'Wrote {out_path}')
