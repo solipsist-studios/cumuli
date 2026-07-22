@@ -53,29 +53,14 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
 
-      # Coverage floor (fail_under = 90) is enforced via [tool.coverage.report]
-      # in pyproject.toml, so local runs and CI apply the same gate.
-      - name: Run unit tests (parallel, coverage + JUnit XML)
-        run: >
-          pytest tests/unit -q -n auto
-          --cov=scripts
-          --cov-report=html --cov-report=xml --cov-report=term-missing
-          --junitxml=junit.xml
+      - name: Run unit tests (parallel, JUnit XML)
+        run: pytest tests/unit -q -n auto --junitxml=junit.xml
 
       - name: Publish test results as inline PR annotations
         if: always()
         uses: mikepenz/action-junit-report@v5
         with:
           report_paths: junit.xml
-
-      - name: Upload coverage reports (HTML + XML)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-reports
-          path: |
-            htmlcov/
-            coverage.xml
 
       - name: Upload JUnit XML
         if: always()

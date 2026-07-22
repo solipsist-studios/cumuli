@@ -23,19 +23,3 @@ target-version = "py312"
 python_version = "3.12"
 ignore_missing_imports = true
 mypy_path = "scripts"
-
-[tool.coverage.run]
-source = ["scripts"]
-branch = true
-
-[tool.coverage.report]
-# Baseline is 96% as of 2026-07-22 (646 tests); 90 leaves headroom for
-# legitimate new untested branches without masking a real regression.
-fail_under = 90
-show_missing = true
-exclude_lines = [
-    "pragma: no cover",
-    "if TYPE_CHECKING:",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-]

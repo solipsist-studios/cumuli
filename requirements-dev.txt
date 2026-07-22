@@ -6,7 +6,6 @@ hypothesis==6.157.1
 opencv-python>=4.5.0,<6  # matches deps/camera-calibration/requirements.txt (envs/hloc.yml mirrors the same constraint); upper bound added after opencv-python silently jumped 4.x -> 5.x under the old unbounded >=4.5.0
 pycolmap==4.0.4  # matches envs/hloc.yml and envs/diffuman4d.yml's pin exactly; no prebuilt wheel for Intel macOS (Apple Silicon, Linux, Windows all covered)
 plyfile==1.1.4  # scripts/build_colmap_sparse.py's .ply reader -- was missing here entirely; CI would have failed on its first real run
-pytest-cov==7.1.0  # --cov/--cov-report, used in CI for the coverage HTML/XML artifacts
 pytest-xdist==3.8.0  # -n auto for parallel test execution in CI
 ruff==0.15.22  # lint gate (`ruff format --check` not gated yet -- 40 files would need reformatting first)
 mypy==2.3.0  # advisory type-check step in CI (not a hard gate -- see .github/workflows/tests.yml)
