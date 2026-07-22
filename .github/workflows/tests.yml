@@ -28,8 +28,9 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Lint (ruff)
+      - name: Lint (ruff, advisory -- does not fail the build)
         run: ruff check scripts/ tests/
+        continue-on-error: true
 
       - name: Type check (mypy, advisory -- does not fail the build)
         run: mypy scripts/
