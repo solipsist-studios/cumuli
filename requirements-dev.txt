@@ -3,3 +3,4 @@ scipy
 Pillow
 pytest
 hypothesis
+opencv-python>=4.5.0  # matches deps/camera-calibration/requirements.txt (envs/hloc.yml mirrors the same constraint)
