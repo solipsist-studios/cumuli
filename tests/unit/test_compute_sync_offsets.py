@@ -1,7 +1,13 @@
+import json
+import subprocess
+import sys
+
 import pytest
 
 pytest.importorskip("numpy")
 pytest.importorskip("scipy")
+hypothesis = pytest.importorskip("hypothesis")
+from hypothesis import given, settings, strategies as st
 
 import numpy as np
 
@@ -73,6 +79,28 @@ def test_negative_offset_when_target_starts_earlier():
     assert est.is_confident
 
 
+@given(
+    true_offset=st.floats(min_value=-2.0, max_value=2.0, allow_nan=False, allow_infinity=False),
+    seed=st.integers(min_value=0, max_value=100_000),
+)
+@settings(max_examples=40, deadline=None)
+def test_find_offset_seconds_recovers_any_injected_offset(true_offset, seed):
+    # The 3 tests above (positive/negative/zero) each prove the sign
+    # convention at ONE hand-picked offset value on ONE fixed audio seed --
+    # they can't rule out a bug that only shows up at other offsets or
+    # other audio content. This sweeps both across many randomized
+    # combinations to check the recovery-accuracy property holds in
+    # general, not just at the specific points already hand-tested.
+    # clip_seconds=6.0 with |true_offset|<=2.0 keeps overlap well above
+    # find_offset_seconds' MIN_OVERLAP_FRACTION=0.5 requirement.
+    master = transient_master(seconds=16.0, seed=seed)
+    ref = camera_clip(master, 5.0, clip_seconds=6.0)
+    tgt = camera_clip(master, 5.0 + true_offset, clip_seconds=6.0)
+    est = cso.find_offset_seconds(ref, tgt, SR)
+    assert est.offset_seconds == pytest.approx(true_offset, abs=0.02)
+    assert est.is_confident
+
+
 def test_zero_offset():
     master = transient_master()
     ref = camera_clip(master, 1.0)
@@ -128,6 +156,32 @@ def test_preprocess_audio_of_silence_is_all_zeros():
     assert np.all(np.isfinite(env))
 
 
+def test_correlate_envelopes_peak_value_non_positive_gives_floor_peak_ratio():
+    # Every valid lag has a negative correlation (constant envelopes of
+    # opposite sign never agree at any shift) -- peak_value <= 0, so a
+    # ratio would be meaningless. Must hard-floor to 1.0 (the "completely
+    # unconfident" value), not divide by something nonsensical.
+    ref_env = np.full(6, 1.0)
+    tgt_env = np.full(6, -1.0)
+    est = cso.correlate_envelopes(ref_env, tgt_env, sample_rate=10)
+    assert est.peak_ratio == 1.0
+    assert not est.is_confident
+
+
+def test_correlate_envelopes_no_competing_peak_gives_infinite_peak_ratio():
+    # A tiny envelope self-matched against itself: relative to the exclusion
+    # window (derived from PEAK_EXCLUSION_SECONDS * sample_rate), there's no
+    # other lag left to compare against once the winning lag's neighborhood
+    # is excluded -- runner_up stays at the -inf sentinel. This is the
+    # "perfectly clean, uncontested match" case, capped to 999.0 by main()
+    # before writing JSON (see test_main_caps_infinite_peak_ratio_to_keep_json_valid).
+    rng = np.random.default_rng(1)
+    env = rng.standard_normal(6)
+    est = cso.correlate_envelopes(env, env.copy(), sample_rate=1000)
+    assert est.peak_ratio == float("inf")
+    assert est.is_confident
+
+
 # --------------------------------------------------------------------------
 # solve_pairwise_offsets -- joint least-squares solve and fallback
 # --------------------------------------------------------------------------
@@ -166,3 +220,254 @@ def test_pairwise_solve_falls_back_for_unmatchable_camera():
     bad = solutions["0003.mp4"]
     assert bad["solver"] == "reference_fallback"
     assert not bad["estimate"].is_confident
+
+
+# --------------------------------------------------------------------------
+# main() -- CLI arg wiring, reference selection, output JSON, error handling.
+# get_fps/extract_audio_array are monkeypatched (they shell out to
+# ffprobe/ffmpeg); these tests exercise main()'s own decisions on top of the
+# already-tested preprocess_audio/solve_pairwise_offsets internals.
+# --------------------------------------------------------------------------
+
+def make_movies(tmp_path, names):
+    d = tmp_path / "movies"
+    d.mkdir()
+    for n in names:
+        (d / n).write_bytes(b"")
+    return d
+
+
+def patch_audio(monkeypatch, starts, fps_by_name=None, master=None, fail=()):
+    master = master if master is not None else transient_master(seed=9)
+    fps_by_name = fps_by_name or {name: 30.0 for name in starts}
+
+    def fake_get_fps(video_path):
+        return fps_by_name[video_path.name]
+
+    def fake_extract_audio_array(video_path, tmp_dir):
+        if video_path.name in fail:
+            raise subprocess.CalledProcessError(1, "ffmpeg")
+        return camera_clip(master, starts[video_path.name])
+
+    monkeypatch.setattr(cso, "get_fps", fake_get_fps)
+    monkeypatch.setattr(cso, "extract_audio_array", fake_extract_audio_array)
+
+
+def test_main_usage_exits_1_on_wrong_arg_count(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["prog", "/only/one/arg"])
+    with pytest.raises(SystemExit) as exc_info:
+        cso.main()
+    assert exc_info.value.code == 1
+    assert "Usage" in capsys.readouterr().out
+
+
+def test_main_single_camera_run_produces_reference_only_output(tmp_path, monkeypatch):
+    # A one-camera "rig" has no one to correlate against -- must not crash,
+    # and the output should just be the reference entry at frame_offset 0.
+    movies = make_movies(tmp_path, ["0001.mp4"])
+    patch_audio(monkeypatch, {"0001.mp4": 1.0})
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert output["reference_camera"] == "0001.mp4"
+    assert set(output["offsets"]) == {"0001.mp4"}
+    assert output["offsets"]["0001.mp4"]["frame_offset"] == 0
+
+
+def test_main_propagates_low_confidence_flag_into_written_json(tmp_path, monkeypatch):
+    # The internals-level test_repetitive_music_is_flagged_ambiguous already
+    # proves find_offset_seconds itself flags ambiguous audio -- this proves
+    # that flag actually reaches the final JSON file through main(), not
+    # just the internal OffsetEstimate object.
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4"])
+    master = periodic_master()
+    patch_audio(monkeypatch, {"0001.mp4": 1.0, "0002.mp4": 1.3}, master=master)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    tgt = output["offsets"]["0002.mp4"]
+    assert tgt["low_confidence"] is True
+    assert "solver" in tgt
+
+
+def test_main_reference_fallback_prints_both_warnings_together(tmp_path, monkeypatch, capsys):
+    # Regression test: sol["solver"] == "reference_fallback" can only ever
+    # occur when the camera's direct correlation to the reference is itself
+    # not confident (see test_pairwise_solve_falls_back_for_unmatchable_camera
+    # -- "bad" there is both reference_fallback AND not is_confident). Before
+    # this fix, the two warnings were an if/elif, so the reference_fallback
+    # message was unreachable dead code -- "not confident" always won the
+    # branch first. Now both print together.
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4", "0003.mp4"])
+    master = transient_master(seed=6)
+    rng = np.random.default_rng(8)
+
+    def fake_get_fps(video_path):
+        return 30.0
+
+    def fake_extract_audio_array(video_path, tmp_dir):
+        if video_path.name == "0003.mp4":
+            return rng.standard_normal(3 * SR)  # heard something else entirely
+        starts = {"0001.mp4": 1.0, "0002.mp4": 1.2}
+        return camera_clip(master, starts[video_path.name])
+
+    monkeypatch.setattr(cso, "get_fps", fake_get_fps)
+    monkeypatch.setattr(cso, "extract_audio_array", fake_extract_audio_array)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert output["offsets"]["0003.mp4"]["solver"] == "reference_fallback"
+    assert output["offsets"]["0003.mp4"]["low_confidence"] is True
+
+    out = capsys.readouterr().out
+    assert "LOW CONFIDENCE" in out
+    assert "no confident pairwise path" in out
+
+
+def test_main_caps_infinite_peak_ratio_to_keep_json_valid(tmp_path, monkeypatch):
+    # correlate_envelopes can legitimately return peak_ratio=inf (a
+    # perfectly clean match with no competing peak at all) -- json.dump
+    # would otherwise write the non-standard "Infinity" token, which most
+    # JSON parsers (including strict ones) reject. main() is supposed to
+    # cap it at 999.0 before writing; this proves that cap actually
+    # reaches the file and the file is genuinely valid, re-parseable JSON.
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4"])
+    patch_audio(monkeypatch, {"0001.mp4": 1.0, "0002.mp4": 1.0})
+    monkeypatch.setattr(cso, "correlate_envelopes",
+                        lambda ref, tgt, sr: cso.OffsetEstimate(0.05, 0.9, float("inf")))
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    raw_text = (out_dir / "sync_offsets.json").read_text()
+    assert "Infinity" not in raw_text  # would make the file non-standard JSON
+    output = json.loads(raw_text)  # re-parse from scratch, proving validity
+    assert output["offsets"]["0002.mp4"]["peak_ratio"] == 999.0
+
+
+def test_main_errors_when_movies_dir_missing(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["prog", str(tmp_path / "nope"), str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as exc_info:
+        cso.main()
+    assert exc_info.value.code == 1
+    assert "is not a directory" in capsys.readouterr().out
+
+
+def test_main_errors_when_no_mp4_files(tmp_path, monkeypatch, capsys):
+    movies = tmp_path / "movies"
+    movies.mkdir()
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as exc_info:
+        cso.main()
+    assert exc_info.value.code == 1
+    assert "no video files" in capsys.readouterr().out
+
+
+def test_main_finds_uppercase_mp4_extension(tmp_path, monkeypatch):
+    # Regression test: real GoPro cameras default to uppercase .MP4 naming
+    # (e.g. GX010001.MP4) -- a case-sensitive "*.mp4" glob silently found
+    # zero cameras for real unmodified GoPro footage.
+    movies = make_movies(tmp_path, ["GX010001.MP4", "GX010002.MP4"])
+    patch_audio(monkeypatch, {"GX010001.MP4": 1.0, "GX010002.MP4": 1.0})
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert output["reference_camera"] == "GX010001.MP4"
+    assert set(output["offsets"]) == {"GX010001.MP4", "GX010002.MP4"}
+
+
+def test_main_finds_other_supported_video_extensions(tmp_path, monkeypatch):
+    # .mov/.mkv/.avi are all declared supported (SUPPORTED_VIDEO_EXTS) --
+    # the old hardcoded "*.mp4" glob silently ignored all of them.
+    movies = make_movies(tmp_path, ["0001.mov", "0002.MKV"])
+    patch_audio(monkeypatch, {"0001.mov": 1.0, "0002.MKV": 1.0})
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert set(output["offsets"]) == {"0001.mov", "0002.MKV"}
+
+
+def test_main_errors_when_forced_reference_not_found(tmp_path, monkeypatch, capsys):
+    movies = make_movies(tmp_path, ["0001.mp4"])
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(tmp_path / "out"), "9999.mp4"])
+    with pytest.raises(SystemExit) as exc_info:
+        cso.main()
+    assert exc_info.value.code == 1
+    assert "not found" in capsys.readouterr().out
+
+
+def test_main_uses_first_alphabetical_as_default_reference(tmp_path, monkeypatch):
+    movies = make_movies(tmp_path, ["0003.mp4", "0001.mp4", "0002.mp4"])
+    starts = {"0001.mp4": 1.0, "0002.mp4": 1.1, "0003.mp4": 1.0}
+    patch_audio(monkeypatch, starts)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert output["reference_camera"] == "0001.mp4"
+
+
+def test_main_uses_forced_reference_when_given(tmp_path, monkeypatch):
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4"])
+    starts = {"0001.mp4": 1.0, "0002.mp4": 1.1}
+    patch_audio(monkeypatch, starts)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir), "0002.mp4"])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert output["reference_camera"] == "0002.mp4"
+    assert output["offsets"]["0002.mp4"]["frame_offset"] == 0
+
+
+def test_main_writes_expected_fields_and_correct_frame_offset_sign(tmp_path, monkeypatch):
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4"])
+    starts = {"0001.mp4": 1.0, "0002.mp4": 1.2}  # 0002 started 0.2s LATER
+    patch_audio(monkeypatch, starts)
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert output["method"] == "audio_envelope_cross_correlation"
+    ref = output["offsets"]["0001.mp4"]
+    assert ref["frame_offset"] == 0
+    tgt = output["offsets"]["0002.mp4"]
+    assert tgt["frame_offset"] == round(0.2 * 30.0)
+    assert tgt["offset_seconds"] == pytest.approx(0.2, abs=0.01)
+    assert tgt["low_confidence"] is False
+
+
+def test_main_records_error_for_non_reference_camera_audio_failure(tmp_path, monkeypatch, capsys):
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4"])
+    starts = {"0001.mp4": 1.0, "0002.mp4": 1.1}
+    patch_audio(monkeypatch, starts, fail={"0002.mp4"})
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(out_dir)])
+    cso.main()  # must not raise -- non-reference audio failures are recorded, not fatal
+
+    output = json.loads((out_dir / "sync_offsets.json").read_text())
+    assert "error" in output["offsets"]["0002.mp4"]
+    assert "FAILED" in capsys.readouterr().out
+
+
+def test_main_exits_when_reference_camera_audio_fails(tmp_path, monkeypatch, capsys):
+    movies = make_movies(tmp_path, ["0001.mp4", "0002.mp4"])
+    starts = {"0001.mp4": 1.0, "0002.mp4": 1.1}
+    patch_audio(monkeypatch, starts, fail={"0001.mp4"})  # reference itself fails
+    monkeypatch.setattr(sys, "argv", ["prog", str(movies), str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as exc_info:
+        cso.main()
+    assert exc_info.value.code == 1
+    assert "reference camera" in capsys.readouterr().out
