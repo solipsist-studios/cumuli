@@ -287,8 +287,7 @@ def undistort_args(args, frames_dir, out_dir, out_pkl_dir, image_ext):
 
 
 def keypoint_args(args, images_dir, out_kp2d_dir, fmasks_dir):
-    a = ["--images_dir", images_dir, "--out_kp2d_dir", out_kp2d_dir, "--fmasks_dir", fmasks_dir,
-         "--model", args.keypoint_model]
+    a = ["--images_dir", images_dir, "--out_kp2d_dir", out_kp2d_dir, "--fmasks_dir", fmasks_dir]
     if args.sapiens_checkpoint_root:
         a += ["--sapiens_checkpoint_root", args.sapiens_checkpoint_root]
     return a
@@ -514,10 +513,7 @@ def build_parser():
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
-    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for predict_keypoints_2d.py (sapiens2 or sapiens_lite)")
-    parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308",
-                        help="308kp Sapiens2 Goliath (default, needs the Diffuman4D fork's Sapiens2 support) "
-                             "or the legacy 133kp COCO-WholeBody model (needs mmdet, --sapiens_env sapiens_lite)")
+    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for predict_keypoints_2d.py")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
                              "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
@@ -575,8 +571,12 @@ def apply_config_defaults(parser):
     if not pre_args.config.is_file():
         fail(f"--config {pre_args.config} not found")
         sys.exit(1)
-    with open(pre_args.config) as f:
-        config = json.load(f)
+    try:
+        with open(pre_args.config) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        fail(f"--config {pre_args.config} is not valid JSON: {e}")
+        sys.exit(1)
 
     unknown = set(config) - CONFIGURABLE_DEFAULTS
     if unknown:
@@ -630,6 +630,11 @@ def main():
 
     start_idx = STAGE_KEYS.index(args.start_from_stage)
     stop_idx = STAGE_KEYS.index(args.stop_after_stage) if args.stop_after_stage else None
+    if stop_idx is not None and stop_idx < start_idx:
+        fail(f"--stop_after_stage {args.stop_after_stage!r} comes before "
+             f"--start_from_stage {args.start_from_stage!r} in the pipeline order "
+             f"{STAGE_KEYS} -- this would stop before any stage actually ran.")
+        sys.exit(1)
     real_cameras_arg = ",".join(sorted(v.stem for v in videos))
 
     def should_run(key):
