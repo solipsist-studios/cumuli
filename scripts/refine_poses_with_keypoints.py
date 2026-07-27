@@ -35,6 +35,7 @@ Example:
 import argparse
 import json
 import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -50,11 +51,11 @@ def load_transforms(path):
             data = json.load(f)
         frames = data['frames']
     except FileNotFoundError:
-        raise SystemExit(f'Error: {path} not found')
+        sys.exit(f'Error: {path} not found')
     except json.JSONDecodeError as e:
-        raise SystemExit(f'Error: {path} is not valid JSON: {e}')
+        sys.exit(f'Error: {path} is not valid JSON: {e}')
     except KeyError as e:
-        raise SystemExit(f'Error: {path} is missing expected key {e}')
+        sys.exit(f'Error: {path} is missing expected key {e}')
 
     cams = {}
     for fr in frames:
@@ -70,7 +71,7 @@ def load_transforms(path):
             continue
         cams[label] = {'K': K, 'w2c': w2c, 'frame': fr}
     if not cams:
-        raise SystemExit(f'Error: no usable cameras found in {path}')
+        sys.exit(f'Error: no usable cameras found in {path}')
     return data, cams
 
 
@@ -109,9 +110,9 @@ def load_keypoints(kp2d_path, cam_labels):
                 data = json.load(f)
             frames = data['frames']
         except json.JSONDecodeError as e:
-            raise SystemExit(f'Error: {kp2d_path} is not valid JSON: {e}')
+            sys.exit(f'Error: {kp2d_path} is not valid JSON: {e}')
         except KeyError as e:
-            raise SystemExit(f'Error: {kp2d_path} is missing expected key {e}')
+            sys.exit(f'Error: {kp2d_path} is missing expected key {e}')
         for fr in frames:
             try:
                 image_name = fr['image_name']
@@ -153,7 +154,7 @@ def load_keypoints(kp2d_path, cam_labels):
                     s = float(scores[k]) if k < len(scores) else 1.0
                     obs[(jf.stem, k)][label] = (float(pt[0]), float(pt[1]), float(s))
     else:
-        raise SystemExit(f'Error: {kp2d_path} not found (expected a file or a directory)')
+        sys.exit(f'Error: {kp2d_path} not found (expected a file or a directory)')
     return obs
 
 
@@ -237,7 +238,7 @@ def report_residuals(rvecs, tvecs, pts, obs_points, Ks_all, cam_labels, tag):
             uv = Ks_all[cam_idx] @ (x / x[2])
             errs_by_cam[cam_idx].append(np.hypot(uv[0] - u, uv[1] - v))
     if not errs_by_cam:
-        raise SystemExit(f'{tag}: no valid reprojections (all points behind cameras?)')
+        sys.exit(f'{tag}: no valid reprojections (all points behind cameras?)')
     all_errs = np.concatenate([np.asarray(v) for v in errs_by_cam.values()])
     print(f'{tag}: median {np.median(all_errs):.2f}px | mean {all_errs.mean():.2f}px | '
           f'p90 {np.percentile(all_errs, 90):.2f}px | n={len(all_errs)}')
@@ -397,7 +398,7 @@ def main():
                                           args.score_thr, args.min_views)
     print(f'{len(points)} points with >= {args.min_views} confident views.')
     if not points:
-        raise SystemExit('No usable points - check score_thr / keypoint inputs.')
+        sys.exit('No usable points - check score_thr / keypoint inputs.')
 
     Ks_all = np.array([cams[label]['K'] for label in cam_labels])
 
