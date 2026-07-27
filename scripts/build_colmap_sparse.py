@@ -222,6 +222,9 @@ def main():
     except KeyError as e:
         print(f"Error: {args.transforms} is missing expected key {e}")
         sys.exit(1)
+    except Exception as e:
+        print(f"Error: could not read {args.transforms}: {e}")
+        sys.exit(1)
 
     if not args.points_ply.is_file():
         print(f"Error: {args.points_ply} not found")
