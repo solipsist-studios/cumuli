@@ -46,7 +46,7 @@ def main():
             with open(src_path) as f:
                 data = json.load(f)
             instance = data["instance_info"][0]
-        except (OSError, json.JSONDecodeError, KeyError, IndexError) as e:
+        except Exception as e:
             # An empty instance_info (no detected instance for that
             # camera/instant -- predict_keypoints_2d.py's own
             # split_combined_predictions() already skips writing a file in
