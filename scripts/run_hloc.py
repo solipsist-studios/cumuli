@@ -97,7 +97,7 @@ def build_init_transforms(undistorted_pkl_dir: Path, camera_ids, out_path: Path,
                 w, h = int(img_size[0]), int(img_size[1])
                 fx, fy = float(K[0][0]), float(K[1][1])
                 cx, cy = float(K[0][2]), float(K[1][2])
-            except (pickle.PickleError, EOFError, OSError, KeyError, TypeError, IndexError) as e:
+            except Exception as e:
                 print(f"  WARNING: could not read calibration pkl for {cam_id} ({e}), using fallback intrinsics")
                 calib = None
         if calib is None and not pkl_path.is_file():
