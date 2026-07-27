@@ -42,7 +42,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image
 
 from image_formats import SUPPORTED_IMAGE_EXTS
 
@@ -69,6 +69,9 @@ def main():
         sys.exit(1)
     except KeyError as e:
         print(f"Error: {args.transforms} is missing expected key {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: could not read {args.transforms}: {e}")
         sys.exit(1)
 
     args.out_images_flat.mkdir(parents=True, exist_ok=True)
@@ -100,7 +103,7 @@ def main():
                 shutil.copy(src_img, dst_img)
             else:
                 Image.open(src_img).convert("RGB").save(dst_img)
-        except (OSError, UnidentifiedImageError) as e:
+        except Exception as e:
             print(f"  WARNING: could not read/convert image for {old_label} at {src_img} ({e}), skipping")
             skipped.append(old_label)
             continue
