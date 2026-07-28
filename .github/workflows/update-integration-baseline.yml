@@ -1,0 +1,77 @@
+name: Update integration baseline
+
+# Post-merge companion to .github/workflows/integration-tests.yml, which
+# gates every PR (on: pull_request) against the CURRENT golden_baseline.json.
+# This workflow runs AFTER a merge lands on main -- not on every PR attempt
+# -- re-measures the merged code's real pipeline output, and writes the
+# fresh numbers back as the new baseline for future PRs to be checked
+# against. See tests/integration/update_golden_baseline.py for the full
+# reasoning (measure-only, no comparison/gating against the old numbers --
+# that already happened pre-merge; the baseline is always the single most
+# recent result, never an average across runs).
+#
+# Needs the same real GPU/conda-envs/brush_app/checkpoints as
+# integration-tests.yml, hence the same `self-hosted, gpu` runner label.
+
+on:
+  push:
+    branches: [main]
+    # Same path scoping as integration-tests.yml, for the same measured
+    # ~20min/run cost reason: a merge that can't have changed pipeline
+    # output (docs-only, unit-test-only) doesn't need a fresh baseline --
+    # the existing one still describes current behavior.
+    paths:
+      - 'scripts/**'
+      - 'deps/**'
+      - 'configs/**'
+      - 'envs/**'
+      - 'tests/integration/**'
+      - 'requirements-dev.txt'
+      - '.github/workflows/update-integration-baseline.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-integration-baseline
+  cancel-in-progress: false
+
+jobs:
+  update-baseline:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Re-measure merged code against the fixture and update the baseline
+        run: python3 tests/integration/update_golden_baseline.py --commit "${{ github.sha }}"
+
+      - name: Commit and push the updated baseline
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add tests/integration/fixtures/heidi_11cam/golden_baseline.json \
+                  tests/integration/fixtures/heidi_11cam/baseline_history.jsonl
+          if git diff --cached --quiet; then
+            echo "No baseline changes to commit."
+            exit 0
+          fi
+          git commit -m "chore: update integration baseline from ${{ github.sha }} [skip ci]"
+          # Another merge may have landed on main during the ~20-minute
+          # pipeline run above; rebase onto it rather than failing the
+          # push (safe: this workflow is the only writer of these files).
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      - name: Upload run artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-update-failure-artifacts
+          path: tests/integration/artifacts/
+          if-no-files-found: ignore
