@@ -143,6 +143,15 @@ python3 scripts/extract_synced_frames.py <movies_dir> <sync_offsets.json> <out_d
 
 Continue through `docs/pipeline.md` for the rest of the pipeline.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request --
+note especially that there is no test suite, so the PR description carries
+the burden of showing a change works, and that external contributions
+cannot be merged until the CLA is finalized. Participation is governed by
+the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go to
+[SECURITY.md](SECURITY.md), not the public tracker.
+
 ## License
 
 Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
