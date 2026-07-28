@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """Per-camera RawTherapee color correction, used by extract_synced_frames.py's
 --pp3_dir option. Matches a .pp3 profile to a camera by filename stem (e.g.
 thumbs/0001.mp4.thumb.jpg.pp3 for 0001.mp4) and applies it via rawtherapee-cli.
