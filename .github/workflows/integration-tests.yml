@@ -1,0 +1,98 @@
+name: Integration tests
+
+# Real, unmocked pipeline run against the committed heidi_11cam fixture --
+# see tests/integration/. Path-filtered (below): only runs on PRs that
+# touch something that could plausibly change real pipeline output --
+# not every PR. Real cost measured directly (see
+# INTEGRATION_TESTS_COMMIT_PLAN.md): ~19-20 minutes per run, and with only
+# one self-hosted GPU runner (see below), every push to every open PR
+# would otherwise queue behind whatever's already running -- a docs-only
+# or unrelated-CI-config PR shouldn't pay that cost or contend for the
+# one runner. Deliberately still triggers on EVERY push within the
+# filtered paths (not debounced further, e.g. to ready-for-review only):
+# that would trade away real pre-merge safety, which path-filtering
+# doesn't -- see INTEGRATION_TESTS_COMMIT_PLAN.md for the fuller
+# reasoning on why "only run on merge to main" was considered and
+# rejected (that's what update-integration-baseline.yml is for, and it
+# doesn't gate anything, just re-measures after the fact).
+#
+# This needs a real GPU, the hloc/diffuman4d/sapiens2 conda envs, a
+# compiled brush_app, and Sapiens checkpoints -- none of which exist on a
+# GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below. The
+# tests themselves are environment-gated (see tests/integration/conftest.py)
+# and skip cleanly if a runner picks this up without those prerequisites,
+# so this workflow is safe to merge even before any such runner is
+# registered -- it'll just sit queued until one is.
+#
+# Registering an actual self-hosted runner is a deliberate separate
+# decision, not done as part of adding this workflow: once this repo is
+# public, a self-hosted runner executes whatever code a triggering PR
+# checks out, so it needs its own sign-off (and likely a required-reviewer
+# gate for fork PRs) rather than being switched on silently here.
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'deps/**'
+      - 'configs/**'
+      - 'envs/**'
+      - 'tests/integration/**'
+      - 'requirements-dev.txt'
+      - '.github/workflows/integration-tests.yml'
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    env:
+      # A runner carrying the gpu label is supposed to have everything
+      # this suite needs -- fail loudly if it doesn't, instead of the
+      # local-machine behavior (skip cleanly), which here would show up
+      # as a green check with zero tests run. See
+      # tests/integration/conftest.py's pipeline_prereqs.
+      VCP_REQUIRE_PIPELINE_PREREQS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run integration tests (real pipeline, JUnit XML)
+        run: pytest tests/integration -q --junitxml=junit-integration.xml
+
+      - name: Publish test results as inline PR annotations
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: junit-integration.xml
+          check_name: Integration test results
+
+      - name: Upload JUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-integration-xml
+          path: junit-integration.xml
+
+      - name: Upload run artifacts (pipeline log, trained splat, eval renders, PSNR report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-run-artifacts
+          path: |
+            tests/integration/artifacts/pipeline_run.log
+            tests/integration/artifacts/*.ply
+            tests/integration/artifacts/eval_renders/
+            tests/integration/artifacts/psnr_report.json
+          if-no-files-found: ignore
