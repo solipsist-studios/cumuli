@@ -76,6 +76,8 @@ import numpy as np
 from scipy.io import wavfile
 from scipy.signal import butter, correlate, hilbert, sosfiltfilt
 
+from image_formats import SUPPORTED_VIDEO_EXTS
+
 
 SAMPLE_RATE = 16000  # downsample target -- plenty for sync correlation, much faster than 48kHz
 CORRELATION_WINDOW_SECONDS = 30  # how much audio find_offset_seconds() actually compares
@@ -351,9 +353,10 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    mp4_files = sorted(movies_dir.glob("*.mp4"))
+    mp4_files = sorted(p for p in movies_dir.iterdir() if p.suffix.lower() in SUPPORTED_VIDEO_EXTS)
     if not mp4_files:
-        print(f"Error: no .mp4 files found in {movies_dir}")
+        print(f"Error: no video files found in {movies_dir} "
+              f"(supported: {', '.join(SUPPORTED_VIDEO_EXTS)}, case-insensitive)")
         sys.exit(1)
 
     if forced_reference:
@@ -409,11 +412,12 @@ def main():
         est = sol["estimate"]
         fps = fps_by_name[name]
         frame_offset = round(est.offset_seconds * fps)
-        flag = ""
+        reasons = []
         if not est.is_confident:
-            flag = "  <-- LOW CONFIDENCE, verify visually"
-        elif sol["solver"] == "reference_fallback":
-            flag = "  <-- no confident pairwise path, verify visually"
+            reasons.append("LOW CONFIDENCE, verify visually")
+        if sol["solver"] == "reference_fallback":
+            reasons.append("no confident pairwise path, verify visually")
+        flag = "  <-- " + "; ".join(reasons) if reasons else ""
         offsets[name] = {
             "timecode": None,
             "fps": fps,

@@ -1,0 +1,71 @@
+name: Tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write  # action-junit-report posts a check run with inline PR annotations
+
+# Superseded pushes to the same PR cancel the in-flight run instead of queueing.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff, advisory -- does not fail the build)
+        run: ruff check scripts/ tests/
+        continue-on-error: true
+
+      - name: Type check (mypy, advisory -- does not fail the build)
+        run: mypy scripts/
+        continue-on-error: true
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Submodules (deps/*) are deliberately NOT fetched: the unit suite
+      # monkeypatches subprocess.run before any deps/ path is touched. A test
+      # that imports from deps/ directly will need `submodules: true` here.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run unit tests (parallel, JUnit XML)
+        run: pytest tests/unit -q -n auto --junitxml=junit.xml
+
+      - name: Publish test results as inline PR annotations
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: junit.xml
+
+      - name: Upload JUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-xml
+          path: junit.xml

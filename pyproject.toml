@@ -2,4 +2,24 @@
 minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["scripts"]
-addopts = "-ra"
+addopts = "-ra --strict-markers --strict-config --durations=10"
+filterwarnings = ["error"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# tests/unit/*.py deliberately do `hypothesis = pytest.importorskip("hypothesis")`
+# before importing from it, so hypothesis-based tests skip cleanly on a machine
+# without it installed rather than failing collection outright.
+"tests/unit/*.py" = ["E402"]
+
+# Mutation testing: run tests/run_mutation_testing.sh (NOT `mutmut run` here --
+# mutmut 3.x only supports ./, src/, or source/ layouts, so the script stages a
+# src/-layout copy and runs mutmut there; its [tool.mutmut] config lives in the
+# staged pyproject the script generates).
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+mypy_path = "scripts"

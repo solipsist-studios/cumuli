@@ -63,10 +63,12 @@ Output:
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
-from plyfile import PlyData
+from PIL import Image, UnidentifiedImageError
+from plyfile import PlyData, PlyParseError
 from scipy.spatial.transform import Rotation
 
 
@@ -82,13 +84,33 @@ def opengl_c2w_to_colmap_w2c(c2w: np.ndarray):
     return R, t
 
 
+REQUIRED_CAMERA_KEYS = ("w", "h", "fl_x", "fl_y", "cx", "cy")
+
+
+def validate_frame(fr):
+    """Returns None if fr has everything write_cameras_txt/write_images_txt
+    need, or a reason string to skip it otherwise. Checked once up front
+    (rather than separately inside each writer) so cameras.txt/images.txt
+    stay 1:1 by position -- both are written by enumerate(frames, start=1)
+    over the SAME filtered list."""
+    missing = [k for k in REQUIRED_CAMERA_KEYS if k not in fr]
+    for key in ("transform_matrix", "file_path"):
+        if key not in fr:
+            missing.append(key)
+    if missing:
+        return f"missing key(s) {missing}"
+    try:
+        opengl_c2w_to_colmap_w2c(np.array(fr["transform_matrix"]))
+    except np.linalg.LinAlgError as e:
+        return f"transform_matrix is not invertible ({e})"
+    return None
+
+
 def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
-    from PIL import Image
-    import numpy as np
     img = Image.open(image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
     if mask.size != img.size:
-        mask = mask.resize(img.size, Image.NEAREST)
+        mask = mask.resize(img.size, Image.Resampling.NEAREST)
     img_arr = np.array(img)
     mask_arr = np.array(mask)
     # Zero RGB wherever fully transparent. The source photo's background isn't
@@ -116,7 +138,12 @@ def bake_masks(frames, masks_dir: Path, images_dir: Path, out_dir: Path, rgba_su
         if not image_path.is_file() or not mask_path.is_file():
             n_missing.append(label)
             continue
-        bake_rgba(image_path, mask_path, out_path)
+        try:
+            bake_rgba(image_path, mask_path, out_path)
+        except (OSError, UnidentifiedImageError) as e:
+            print(f"  WARNING: could not bake {label} ({e}), treating as missing")
+            n_missing.append(label)
+            continue
         n_baked += 1
     print(f"  Baked {n_baked}/{len(frames)} cameras.")
     if n_missing:
@@ -185,13 +212,35 @@ def main():
                          help="Subdir under out_dir to write baked RGBA images (only used with --masks_dir)")
     args = parser.parse_args()
 
-    with open(args.transforms) as f:
-        tf = json.load(f)
+    try:
+        with open(args.transforms) as f:
+            tf = json.load(f)
+        frames = sorted(tf["frames"], key=lambda fr: fr["camera_label"])
+    except json.JSONDecodeError as e:
+        print(f"Error: {args.transforms} is not valid JSON: {e}")
+        sys.exit(1)
+    except KeyError as e:
+        print(f"Error: {args.transforms} is missing expected key {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: could not read {args.transforms}: {e}")
+        sys.exit(1)
+
+    if not args.points_ply.is_file():
+        print(f"Error: {args.points_ply} not found")
+        sys.exit(1)
+
+    valid_frames = []
+    for fr in frames:
+        reason = validate_frame(fr)
+        if reason:
+            print(f"  WARNING: skipping camera {fr.get('camera_label', '<unknown>')}: {reason}")
+            continue
+        valid_frames.append(fr)
+    frames = valid_frames
 
     sparse_dir = args.out_dir / "sparse" / "0"
     sparse_dir.mkdir(parents=True, exist_ok=True)
-
-    frames = sorted(tf["frames"], key=lambda fr: fr["camera_label"])
 
     if args.masks_dir is not None:
         images_dir = args.images_dir or (args.out_dir / args.image_subdir)
@@ -199,12 +248,16 @@ def main():
 
     write_cameras_txt(sparse_dir, frames)
     write_images_txt(sparse_dir, frames, args.image_subdir, args.masks_dir, args.rgba_subdir)
-    verts = write_points3d_txt(sparse_dir, args.points_ply)
+    try:
+        verts = write_points3d_txt(sparse_dir, args.points_ply)
+    except (PlyParseError, KeyError) as e:
+        print(f"Error: {args.points_ply} could not be read as a point cloud: {e}")
+        sys.exit(1)
 
     print(f"Wrote COLMAP sparse/0 to {sparse_dir}")
     print(f"  {len(frames)} cameras/images, {len(verts)} 3D points")
     if args.masks_dir is not None:
-        print(f"  Masks baked into alpha -- Brush auto-detects this, no special training flag needed")
+        print("  Masks baked into alpha -- Brush auto-detects this, no special training flag needed")
 
 
 if __name__ == "__main__":

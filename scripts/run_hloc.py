@@ -61,8 +61,9 @@ def restructure_flat_to_percam(undistorted_dir: Path, image_ext: str):
         cam_dir = undistorted_dir / f"Camera_{cam_id}"
         cam_dir.mkdir(exist_ok=True)
         target = cam_dir / f"0000{image_ext}"
-        if not target.exists():
-            f.rename(target)
+        # Always overwrite: a stale Camera_<id>/0000.jpg left over from a
+        # prior run must not silently win over this run's fresh frame.
+        f.replace(target)
         camera_ids.append(cam_id)
     return camera_ids
 
@@ -80,22 +81,28 @@ def build_init_transforms(undistorted_pkl_dir: Path, camera_ids, out_path: Path,
     multiframe_sfm.py matches init_transforms.json frames to cameras by
     that exact label (or a file_path/prefix match).
     """
-    init_tf = {"camera_model": "PINHOLE", "frames": []}
+    init_tf: dict = {"camera_model": "PINHOLE", "frames": []}
 
     for cam_id in camera_ids:
         pkl_path = undistorted_pkl_dir / f"Camera_{cam_id}.pkl"
         label = f"Camera_{cam_id}"
 
+        calib = None
         if pkl_path.is_file():
-            with open(pkl_path, "rb") as f:
-                calib = pickle.load(f)
-            K = calib["camera_matrix"]
-            img_size = calib["image_size"]  # (width, height)
-            w, h = int(img_size[0]), int(img_size[1])
-            fx, fy = float(K[0][0]), float(K[1][1])
-            cx, cy = float(K[0][2]), float(K[1][2])
-        else:
+            try:
+                with open(pkl_path, "rb") as f:
+                    calib = pickle.load(f)
+                K = calib["camera_matrix"]
+                img_size = calib["image_size"]  # (width, height)
+                w, h = int(img_size[0]), int(img_size[1])
+                fx, fy = float(K[0][0]), float(K[1][1])
+                cx, cy = float(K[0][2]), float(K[1][2])
+            except Exception as e:
+                print(f"  WARNING: could not read calibration pkl for {cam_id} ({e}), using fallback intrinsics")
+                calib = None
+        if calib is None and not pkl_path.is_file():
             print(f"  WARNING: no calibration pkl for {cam_id}, using fallback intrinsics")
+        if calib is None:
             w, h = fallback_w, fallback_h
             fx, fy = fallback_fx, fallback_fy
             cx, cy = fallback_cx, fallback_cy
@@ -151,6 +158,9 @@ def main():
     if not args.skip_setup:
         print("Restructuring flat undistorted images into per-camera folders...")
         camera_ids = restructure_flat_to_percam(args.undistorted_dir, args.image_ext)
+        if not camera_ids:
+            print(f"Error: no {args.image_ext} files found in {args.undistorted_dir}")
+            sys.exit(1)
         print(f"  {len(camera_ids)} cameras: {camera_ids}")
 
         print("Building bootstrap init_transforms.json...")

@@ -34,6 +34,14 @@ def main():
     output_path = Path(sys.argv[2])
     thumb_width = int(sys.argv[3]) if len(sys.argv) == 4 else 480
 
+    if thumb_width <= 0:
+        # Without this check, a degenerate thumb_width makes every image's
+        # own resize() raise ValueError -- caught below as "could not be
+        # read as an image", which would misattribute the real problem
+        # (the thumb_width argument) to the image files themselves.
+        print(f"Error: thumb_width must be > 0, got {thumb_width}")
+        sys.exit(1)
+
     if not frames_dir.is_dir():
         print(f"Error: {frames_dir} is not a directory")
         sys.exit(1)
@@ -48,12 +56,22 @@ def main():
     print(f"Found {len(image_files)} frames. Building grid...")
 
     thumbs = []
+    failed = []
     for img_path in image_files:
-        img = Image.open(img_path)
-        aspect = img.height / img.width
-        thumb_height = int(thumb_width * aspect)
-        thumb = img.convert("RGB").resize((thumb_width, thumb_height), Image.LANCZOS)
+        try:
+            img = Image.open(img_path)
+            aspect = img.height / img.width
+            thumb_height = int(thumb_width * aspect)
+            thumb = img.convert("RGB").resize((thumb_width, thumb_height), Image.LANCZOS)
+        except (OSError, ValueError, ZeroDivisionError) as e:
+            print(f"  WARNING: {img_path.name} could not be read as an image ({e}), skipping")
+            failed.append(img_path.name)
+            continue
         thumbs.append((img_path.stem, thumb))
+
+    if not thumbs:
+        print("Error: no readable images remained after skipping unreadable files")
+        sys.exit(1)
 
     n = len(thumbs)
     cols = 4
@@ -82,6 +100,9 @@ def main():
 
     grid_img.save(output_path, quality=90)
     print(f"Saved grid image to {output_path}")
+    if failed:
+        print(f"Skipped unreadable images: {failed}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

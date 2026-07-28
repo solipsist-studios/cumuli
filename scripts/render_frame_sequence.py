@@ -177,7 +177,6 @@ def build_parser():
                              "--calib_run_dir is omitted).")
 
     parser.add_argument("--sapiens_env", default="sapiens2")
-    parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None)
     parser.add_argument("--triangulate_env", default="queen")
     parser.add_argument("--generic_env", default="queen")
@@ -214,6 +213,9 @@ def main():
         sys.exit(1)
     if not args.calib_dir.is_dir():
         unified.fail(f"--calib_dir {args.calib_dir} is not a directory")
+        sys.exit(1)
+    if args.target_pkl_dir and not args.target_pkl_dir.is_dir():
+        unified.fail(f"--target_pkl_dir {args.target_pkl_dir} is not a directory")
         sys.exit(1)
 
     if args.calib_run_dir is not None:

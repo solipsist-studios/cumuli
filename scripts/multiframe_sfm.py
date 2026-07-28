@@ -24,7 +24,6 @@ Example:
 import argparse
 import json
 import pickle
-import shutil
 import subprocess
 from collections import defaultdict
 from pathlib import Path
@@ -137,23 +136,40 @@ def robust_pose_average(cam_from_world_list, max_rot_spread_deg=10.0):
     mad = np.median(dists) + 1e-9
     keep = dists <= max(5 * mad, 1e-6)
 
-    # chordal-mean rotation on inliers, then reject rotational outliers once
     def mean_rotation(R_stack):
         M = R_stack.sum(axis=0)
         U, _, Vt = np.linalg.svd(M)
         D = np.diag([1.0, 1.0, np.sign(np.linalg.det(U @ Vt))])
         return U @ D @ Vt
 
-    R_mean = mean_rotation(Rs[keep])
-    rot_errs = np.array([
-        np.degrees(np.arccos(np.clip((np.trace(R @ R_mean.T) - 1) / 2, -1, 1)))
-        for R in Rs
-    ])
-    keep &= rot_errs <= max_rot_spread_deg
-    if keep.sum() == 0:
-        keep = np.ones(len(Rs), dtype=bool)
+    def rotation_angle_deg(Ra, Rb):
+        return np.degrees(np.arccos(np.clip((np.trace(Ra @ Rb.T) - 1) / 2, -1, 1)))
+
+    # Vote-based rotation-inlier detection: for each position-inlier
+    # candidate, count how many OTHER position-inliers are within
+    # max_rot_spread_deg of it; whichever candidate has the most support
+    # defines the inlier set. A plain "average everyone, then see who's
+    # close to the average" approach lets a single extreme outlier drag the
+    # average far enough that even the good poses fail the deviation check
+    # (verified: this broke down for a single outlier beyond ~50-60 degrees,
+    # ironically making MORE extreme outliers more likely to survive than
+    # moderate ones). Voting never computes a mean contaminated by the
+    # outlier in the first place, so it correctly isolates it regardless of
+    # magnitude.
+    candidates = np.flatnonzero(keep)
+    best_support = keep & False
+    for i in candidates:
+        support = np.zeros(len(Rs), dtype=bool)
+        for j in candidates:
+            if rotation_angle_deg(Rs[i], Rs[j]) <= max_rot_spread_deg:
+                support[j] = True
+        if support.sum() > best_support.sum():
+            best_support = support
+    if best_support.sum() > 0:
+        keep = best_support
 
     R_mean = mean_rotation(Rs[keep])
+    rot_errs = np.array([rotation_angle_deg(R, R_mean) for R in Rs])
     center_mean = centers[keep].mean(axis=0)
 
     T = np.eye(4)
@@ -353,7 +369,9 @@ def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
     feature_path = extract_features.main(feature_conf, frames_dir, outputs_dir, image_list=all_images)
     sfm_pairs = outputs_dir / 'pairs-exhaustive.txt'
     pairs_from_exhaustive.main(sfm_pairs, image_list=all_images)
-    print(f'Matching {sum(1 for _ in open(sfm_pairs))} pairs...')
+    with open(sfm_pairs) as f:
+        n_pairs = sum(1 for _ in f)
+    print(f'Matching {n_pairs} pairs...')
     match_path = match_features.main(matcher_conf, sfm_pairs, feature_conf['output'], outputs_dir)
     return feature_path, sfm_pairs, match_path
 

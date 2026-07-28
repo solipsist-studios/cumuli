@@ -47,7 +47,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from scipy import ndimage
 
 from image_formats import SUPPORTED_IMAGE_EXTS
@@ -166,10 +166,21 @@ def main():
                          help="Extension for retry crops (default .png)")
     args = parser.parse_args()
 
+    if args.min_hits < 1:
+        print("Error: --min_hits must be >= 1 (0 would silently disable all bystander-component "
+              "filtering, keeping every component regardless of keypoint hits)")
+        sys.exit(1)
+
+    if not args.fmasks_dir.is_dir():
+        print(f"Error: {args.fmasks_dir} is not a directory")
+        sys.exit(1)
     mask_paths = sorted(p for p in args.fmasks_dir.iterdir()
                         if p.suffix.lower() in SUPPORTED_IMAGE_EXTS)
     if not mask_paths:
         print(f"Error: no masks found in {args.fmasks_dir}")
+        sys.exit(1)
+    if args.out_dir.exists() and not args.out_dir.is_dir():
+        print(f"Error: --out_dir {args.out_dir} already exists and is not a directory")
         sys.exit(1)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,15 +189,24 @@ def main():
     retries = {}
     for mask_path in mask_paths:
         cam = mask_path.stem
+        try:
+            with Image.open(mask_path) as im:
+                mask = np.asarray(im.convert("L"))
+        except (OSError, UnidentifiedImageError) as e:
+            print(f"  WARNING {cam}: could not read mask file {mask_path} ({e}), skipping.")
+            continue
+
         kp_json = find_keypoints_json(args.kp2d_dir, cam)
         if kp_json is None:
             print(f"  WARNING {cam}: no keypoints JSON found -- copying raw mask unfiltered.")
-            with Image.open(mask_path) as im:
-                im.convert("L").save(args.out_dir / f"{cam}.png")
+            Image.fromarray(mask).save(args.out_dir / f"{cam}.png")
             continue
-        kpts = load_keypoints(kp_json, args.score_thr)
-        with Image.open(mask_path) as im:
-            mask = np.asarray(im.convert("L"))
+        try:
+            kpts = load_keypoints(kp_json, args.score_thr)
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"  WARNING {cam}: malformed keypoints JSON {kp_json} ({e}) -- copying raw mask unfiltered.")
+            Image.fromarray(mask).save(args.out_dir / f"{cam}.png")
+            continue
         mask_bool = mask > MASK_FOREGROUND_THRESHOLD
         cov = coverage(mask_bool, kpts)
         cams[cam] = {"mask": mask_bool, "kpts": kpts, "coverage_before": cov}
@@ -210,11 +230,17 @@ def main():
         for cam, (crop_mask, box) in run_birefnet_on_crops(retries, args.image_ext).items():
             x0, y0, x1, y1 = box
             region = cams[cam]["mask"][y0:y1, x0:x1]
-            cams[cam]["mask"][y0:y1, x0:x1] = region | (crop_mask[:y1 - y0, :x1 - x0] > MASK_FOREGROUND_THRESHOLD)
+            crop_fg = crop_mask > MASK_FOREGROUND_THRESHOLD
+            if crop_fg.shape != region.shape:
+                print(f"  WARNING {cam}: retry mask shape {crop_fg.shape} doesn't match "
+                      f"crop region shape {region.shape}, skipping merge.")
+                continue
+            cams[cam]["mask"][y0:y1, x0:x1] = region | crop_fg
             print(f"  {cam}: merged retry mask into crop region {box}")
 
     # Pass 2: component filtering + save. No dilation.
     report = {}
+    emptied_cams = []
     for cam in sorted(cams):
         entry = cams[cam]
         cleaned, kept, total = filter_components(entry["mask"], entry["kpts"], args.min_hits)
@@ -222,6 +248,7 @@ def main():
         Image.fromarray((cleaned * MASK_WRITE_VALUE).astype(np.uint8)).save(args.out_dir / f"{cam}.png")
         flag = ""
         if kept == 0 and total > 0:
+            emptied_cams.append(cam)
             flag = ("  <-- MASK EMPTIED: no component had enough confident keypoint hits, "
                     "this camera's cleaned mask is now fully blank -- inspect by hand, "
                     "lower --min_hits/--score_thr, or exclude this camera")
@@ -244,6 +271,10 @@ def main():
     print(f"\nDone. Cleaned masks in {args.out_dir}, report at {report_path}")
     print("Use the CLEANED masks for all downstream stages and eval scoring --")
     print("raw BiRefNet masks can contain bystanders and make good models look broken.")
+
+    if emptied_cams:
+        print(f"\nERROR: {len(emptied_cams)} camera(s) have a fully blank cleaned mask: {emptied_cams}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

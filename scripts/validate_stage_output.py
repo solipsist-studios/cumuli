@@ -49,16 +49,30 @@ def validate_sync(L, real_cameras):
         raise ValidationError(
             f"sync_offsets.json covers {offset_cams}, expected {sorted(real_cameras)}")
 
+    # compute_sync_offsets.py keeps a camera whose audio failed in the json
+    # as an {"error": ...} stub, so name coverage alone isn't enough -- every
+    # entry must actually be a usable offset.
+    for name, entry in data["offsets"].items():
+        if "error" in entry:
+            raise ValidationError(
+                f"{name} has no usable sync data (compute_sync_offsets.py recorded: {entry['error']})")
+        if "frame_offset" not in entry or "fps" not in entry:
+            raise ValidationError(f"{name}'s sync entry is missing frame_offset/fps: {entry}")
+        if not (np.isfinite(entry["frame_offset"]) and np.isfinite(entry["fps"]) and entry["fps"] > 0):
+            raise ValidationError(f"{name} has a non-finite/degenerate sync entry: {entry}")
+
 
 def validate_production(L, real_cameras):
-    found = sorted(p.stem for p in L["production_undist"].glob("*.jpg"))
+    # .jpg normally, .png when the run went through --pp3_dir color correction
+    # (run_unified_pipeline.py's image_ext) -- accept either.
+    frames = {p.stem: p for ext in ("*.jpg", "*.png") for p in L["production_undist"].glob(ext)}
+    found = sorted(frames)
     if found != sorted(real_cameras):
         raise ValidationError(
             f"expected one undistorted frame per camera {sorted(real_cameras)}, got {found}")
 
     for cam in real_cameras:
-        path = L["production_undist"] / f"{cam}.jpg"
-        with Image.open(path) as im:
+        with Image.open(frames[cam]) as im:
             w, h = im.size
         if w < 1000 or h < 1000:
             raise ValidationError(f"{cam}: suspiciously small undistorted frame ({w}x{h})")
@@ -83,6 +97,19 @@ def validate_poses(L, real_cameras):
         m = np.asarray(fr["transform_matrix"], dtype=np.float64)
         if m.shape != (4, 4) or not np.all(np.isfinite(m)):
             raise ValidationError(f"{fr['camera_label']} has an invalid transform_matrix")
+        if not np.allclose(m[3], [0.0, 0.0, 0.0, 1.0], atol=1e-6):
+            raise ValidationError(
+                f"{fr['camera_label']}'s transform_matrix bottom row is {m[3].tolist()}, "
+                "not [0, 0, 0, 1] -- not a valid homogeneous c2w transform")
+        # The 3x3 block must be a proper rotation (det +1, orthonormal) --
+        # HLOC/refinement output rigid c2w transforms, so anything else
+        # (sheared, scaled, reflected, zeroed) means a corrupted solve.
+        R = m[:3, :3]
+        det = np.linalg.det(R)
+        if det < 0.5 or not np.allclose(R @ R.T, np.eye(3), atol=0.05):
+            raise ValidationError(
+                f"{fr['camera_label']}'s transform_matrix rotation block is not a "
+                f"proper rotation (det={det:.3f}) -- corrupted pose solve")
         positions.append(m[:3, 3])
 
     # Cameras physically surround the subject -- poses collapsing to (near)
@@ -104,6 +131,8 @@ def validate_masks(L, real_cameras):
     if len(labels) != len(real_cameras):
         raise ValidationError(
             f"transforms.json (flattened) has {len(labels)} cameras, expected {len(real_cameras)}")
+    if len(labels) != len(set(labels)):
+        raise ValidationError(f"duplicate camera_label in flattened transforms.json: {labels}")
 
     for label in labels:
         mask_path = L["flat_fmasks_clean"] / f"{label}.png"
@@ -126,10 +155,10 @@ def validate_branch(L, real_cameras):
         if not (sparse_dir / name).is_file():
             raise ValidationError(f"{sparse_dir / name} was not produced")
 
-    cam_lines = [l for l in (sparse_dir / "cameras.txt").read_text().splitlines() if not l.startswith("#")]
-    img_lines = [l for l in (sparse_dir / "images.txt").read_text().splitlines()
-                 if l.strip() and not l.startswith("#")]
-    pts_lines = [l for l in (sparse_dir / "points3D.txt").read_text().splitlines() if not l.startswith("#")]
+    cam_lines = [line for line in (sparse_dir / "cameras.txt").read_text().splitlines() if not line.startswith("#")]
+    img_lines = [line for line in (sparse_dir / "images.txt").read_text().splitlines()
+                 if line.strip() and not line.startswith("#")]
+    pts_lines = [line for line in (sparse_dir / "points3D.txt").read_text().splitlines() if not line.startswith("#")]
 
     if len(cam_lines) != len(real_cameras):
         raise ValidationError(f"cameras.txt has {len(cam_lines)} entries, expected {len(real_cameras)}")
@@ -141,6 +170,26 @@ def validate_branch(L, real_cameras):
     plys = sorted(L["brush_output"].glob("*.ply"))
     if not plys:
         raise ValidationError(f"no .ply exported under {L['brush_output']}")
+
+    # An empty/truncated export (Brush crashing mid-write) still leaves a
+    # .ply on disk -- require the newest one to declare at least one splat.
+    newest = max(plys, key=lambda p: p.stat().st_mtime)
+    if ply_vertex_count(newest) < 1:
+        raise ValidationError(f"{newest} declares zero splats (truncated/failed export?)")
+
+
+def ply_vertex_count(path):
+    """Vertex count from a .ply header (ascii or binary body), or -1 if the
+    header is missing/unparseable."""
+    with path.open("rb") as f:
+        header = f.read(4096).decode("ascii", errors="replace")
+    if not header.startswith("ply"):
+        return -1
+    for line in header.splitlines():
+        parts = line.split()
+        if parts[:2] == ["element", "vertex"] and len(parts) == 3 and parts[2].isdigit():
+            return int(parts[2])
+    return -1
 
 
 VALIDATORS = {

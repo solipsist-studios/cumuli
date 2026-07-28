@@ -38,7 +38,6 @@ Output:
 """
 
 import argparse
-import json
 import shutil
 import subprocess
 import sys
@@ -63,6 +62,7 @@ def merge_instants(kp2d_dirs, merged_dir: Path):
         for cam_dir in cam_dirs:
             jsons = sorted(cam_dir.glob("*.json"))
             if not jsons:
+                print(f"  WARNING: no keypoints json found in {cam_dir} (instant {k}), skipping this camera for this instant")
                 continue
             out_cam_dir = merged_dir / cam_dir.name
             out_cam_dir.mkdir(exist_ok=True)
@@ -94,7 +94,11 @@ def main():
         print(f"Error: {args.refine_script} not found. Pass --refine_script to point at a different copy.")
         sys.exit(1)
 
-    kp2d_dirs = [Path(p) for p in args.kp2d_dirs.split(",")]
+    raw_kp2d_dirs = args.kp2d_dirs.split(",")
+    if any(not p.strip() for p in raw_kp2d_dirs):
+        print(f"Error: --kp2d_dirs contains an empty path (check for a stray comma): {args.kp2d_dirs!r}")
+        sys.exit(1)
+    kp2d_dirs = [Path(p) for p in raw_kp2d_dirs]
     for d in kp2d_dirs:
         if not d.is_dir():
             print(f"Error: {d} is not a directory")
@@ -105,6 +109,9 @@ def main():
               "10+ instants is recommended.")
 
     merged_dir = args.merged_dir or (args.out_transforms.parent / "poses_2d_merged")
+    if merged_dir.exists() and not merged_dir.is_dir():
+        print(f"Error: --merged_dir {merged_dir} exists and is not a directory")
+        sys.exit(1)
     print(f"Merging {len(kp2d_dirs)} instant(s) into {merged_dir} ...")
     cam_labels = merge_instants(kp2d_dirs, merged_dir)
     print(f"  {len(cam_labels)} cameras: {sorted(cam_labels)}")

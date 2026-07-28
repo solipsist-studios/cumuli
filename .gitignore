@@ -3,3 +3,7 @@ __pycache__/
 target/
 .venv/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+mutants/
+.hypothesis/
