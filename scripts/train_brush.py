@@ -71,6 +71,16 @@ def main():
                          help="Weight of L1 loss on alpha for RGBA (masked) datasets. "
                               "Brush auto-detects the alpha channel; this just tunes how "
                               "strongly it's matched (Brush's own default: 0.1).")
+    parser.add_argument("--eval_split_every", type=int, default=None,
+                         help="Hold out every Nth image as an eval view instead of training "
+                              "on it (passed straight through to brush_app's own "
+                              "--eval-split-every). Off by default -- opt in for quality "
+                              "measurement (e.g. PSNR against the held-out photo), not needed "
+                              "for a normal training run.")
+    parser.add_argument("--eval_save_to_disk", action="store_true",
+                         help="Render held-out eval views to --export_path during training "
+                              "(brush_app's --eval-save-to-disk). Only meaningful together "
+                              "with --eval_split_every.")
     parser.add_argument("--display", default=":2",
                          help="X DISPLAY brush_app connects to (default ':2').")
     args = parser.parse_args()
@@ -107,6 +117,10 @@ def main():
         cmd.insert(2, "--with-viewer")
     if args.match_alpha_weight is not None:
         cmd += ["--match-alpha-weight", str(args.match_alpha_weight)]
+    if args.eval_split_every is not None:
+        cmd += ["--eval-split-every", str(args.eval_split_every)]
+    if args.eval_save_to_disk:
+        cmd += ["--eval-save-to-disk"]
 
     env = dict(os.environ)
     if args.with_viewer:

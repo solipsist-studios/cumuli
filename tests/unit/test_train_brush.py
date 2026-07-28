@@ -195,6 +195,45 @@ def test_main_match_alpha_weight_added_when_given(tmp_path, monkeypatch):
     assert cmd[cmd.index("--match-alpha-weight") + 1] == "0.25"
 
 
+def test_main_eval_flags_omitted_by_default(tmp_path, monkeypatch):
+    brush_app = tmp_path / "brush_app"
+    brush_app.write_text("")
+    no_sleep(monkeypatch)
+    calls = []
+    proc = FakeProcess(poll_results=[0])
+    def fake_popen(cmd, env=None):
+        calls.append(cmd)
+        return proc
+    monkeypatch.setattr(tb.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sys, "argv", base_argv(tmp_path / "data", brush_app, tmp_path / "export", []))
+    with pytest.raises(SystemExit):
+        tb.main()
+    cmd = calls[0]
+    assert "--eval-split-every" not in cmd
+    assert "--eval-save-to-disk" not in cmd
+
+
+def test_main_eval_split_every_and_save_to_disk_added_when_given(tmp_path, monkeypatch):
+    brush_app = tmp_path / "brush_app"
+    brush_app.write_text("")
+    no_sleep(monkeypatch)
+    calls = []
+    proc = FakeProcess(poll_results=[0])
+    def fake_popen(cmd, env=None):
+        calls.append(cmd)
+        return proc
+    monkeypatch.setattr(tb.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sys, "argv", base_argv(
+        tmp_path / "data", brush_app, tmp_path / "export",
+        ["--eval_split_every", "8", "--eval_save_to_disk"],
+    ))
+    with pytest.raises(SystemExit):
+        tb.main()
+    cmd = calls[0]
+    assert cmd[cmd.index("--eval-split-every") + 1] == "8"
+    assert "--eval-save-to-disk" in cmd
+
+
 def test_main_explicit_total_steps_overrides_default(tmp_path, monkeypatch):
     brush_app = tmp_path / "brush_app"
     brush_app.write_text("")
