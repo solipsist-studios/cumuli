@@ -618,9 +618,10 @@ def test_stage_masks_reuses_all_cached_steps_but_always_triangulates(monkeypatch
 # stage_branch_direct -- --with_viewer/--no_viewer flag translation
 # --------------------------------------------------------------------------
 
-def _branch_args(with_viewer):
+def _branch_args(with_viewer, eval_split_every=None, eval_save_to_disk=False):
     return NS(generic_env="queen", total_train_iters=100, export_every=50,
-              brush_app=Path("/brush"), run_name="myrun", display=":2", with_viewer=with_viewer)
+              brush_app=Path("/brush"), run_name="myrun", display=":2", with_viewer=with_viewer,
+              eval_split_every=eval_split_every, eval_save_to_disk=eval_save_to_disk)
 
 
 def test_stage_branch_direct_with_viewer_true(monkeypatch, tmp_path):
@@ -647,6 +648,36 @@ def test_stage_branch_direct_with_viewer_false(monkeypatch, tmp_path):
     unified.stage_branch_direct(_branch_args(False), unified.build_layout(tmp_path / "out"))
     assert "--no_viewer" in captured["args"]
     assert "--with_viewer" not in captured["args"]
+
+
+def test_stage_branch_direct_eval_flags_off_by_default(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        if script_name == "train_brush.py":
+            captured["args"] = [str(a) for a in args]
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+
+    unified.stage_branch_direct(_branch_args(True), unified.build_layout(tmp_path / "out"))
+    assert "--eval_split_every" not in captured["args"]
+    assert "--eval_save_to_disk" not in captured["args"]
+
+
+def test_stage_branch_direct_eval_flags_passed_through(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        if script_name == "train_brush.py":
+            captured["args"] = [str(a) for a in args]
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+
+    unified.stage_branch_direct(
+        _branch_args(True, eval_split_every=8, eval_save_to_disk=True),
+        unified.build_layout(tmp_path / "out"),
+    )
+    i = captured["args"].index("--eval_split_every")
+    assert captured["args"][i + 1] == "8"
+    assert "--eval_save_to_disk" in captured["args"]
 
 
 # --------------------------------------------------------------------------

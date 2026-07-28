@@ -452,7 +452,7 @@ def stage_branch_direct(args, L):
         "--masks_dir", L["flat_fmasks_clean"],
     ], conda_env=args.generic_env, label="build_colmap_sparse.py (COLMAP sparse + RGBA mask bake)")
 
-    run_script("train_brush.py", [
+    train_args = [
         "--data", L["train_set"],
         "--total_steps", str(args.total_train_iters), "--max_resolution", "4096",
         "--export_every", str(args.export_every),
@@ -460,7 +460,12 @@ def stage_branch_direct(args, L):
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
         "--display", args.display,
         "--with_viewer" if args.with_viewer else "--no_viewer",
-    ], label="train_brush.py (train Brush, 4K masked)")
+    ]
+    if args.eval_split_every is not None:
+        train_args += ["--eval_split_every", str(args.eval_split_every)]
+    if args.eval_save_to_disk:
+        train_args += ["--eval_save_to_disk"]
+    run_script("train_brush.py", train_args, label="train_brush.py (train Brush, 4K masked)")
 
 
 # ------------------------------------------------------------------------ CLI
@@ -544,6 +549,15 @@ def build_parser():
     parser.add_argument("--total_train_iters", type=int, default=30000)
     parser.add_argument("--export_every", type=int, default=5000,
                         help="Brush checkpoint export interval in steps (also always exports once at completion)")
+    parser.add_argument("--eval_split_every", type=int, default=None,
+                        help="Hold out every Nth training image as an eval view instead of "
+                             "training on it, passed through to train_brush.py/brush_app. Off "
+                             "by default -- opt in for quality measurement (e.g. PSNR against "
+                             "the held-out photo), not needed for a normal production run.")
+    parser.add_argument("--eval_save_to_disk", action="store_true",
+                        help="Render held-out eval views to disk during training (brush_app's "
+                             "--eval-save-to-disk). Only meaningful together with "
+                             "--eval_split_every.")
     parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
                         help="Open Brush's live viewer during training. On by default -- this is "
                              "the tested, working configuration; --no_viewer hasn't been "
