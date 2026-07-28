@@ -204,9 +204,22 @@ def main():
     centroid = np.mean([np.linalg.inv(c['w2c'])[:3, 3] for c in cams.values()], axis=0)
     span = max(np.ptp([np.linalg.inv(c['w2c'])[:3, 3] for c in cams.values()], axis=0)) or 4.0
     lo0, hi0 = centroid - span, centroid + span
-    cand = rng.uniform(lo0, hi0, size=(500_000, 3))
-    good = cand[hull_votes(cams, intr, masks, cand) >= args.hull_min_views]
-    if len(good) < 100:
+    # The camera-span box is orders of magnitude larger than the subject, so
+    # coarse hits are rare — shrink the box around whatever lands, then
+    # re-densify. Repeat until the estimate stops growing sample yield.
+    good = np.empty((0, 3))
+    for attempt in range(4):
+        cand = rng.uniform(lo0, hi0, size=(500_000, 3))
+        hits = cand[hull_votes(cams, intr, masks, cand) >= args.hull_min_views]
+        good = np.concatenate([good, hits]) if len(good) else hits
+        print(f'  bbox pass {attempt}: {len(hits):,} hits in '
+              f'{np.round(lo0, 2)} .. {np.round(hi0, 2)}')
+        if len(good) >= 20:
+            pad = 0.25 * (good.max(0) - good.min(0)) + 0.1
+            lo0, hi0 = good.min(0) - pad, good.max(0) + pad
+        if len(hits) >= 50_000:
+            break
+    if len(good) < 1000:
         sys.exit(f'ERROR: bbox discovery found only {len(good)} hull points — '
                  'check mask/pose consistency')
     pad = 0.15 * (good.max(0) - good.min(0)) + 0.05
