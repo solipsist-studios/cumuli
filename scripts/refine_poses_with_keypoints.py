@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """Refine static multi-camera poses using 2D human keypoints ("human as calibration wand").
 
 Background SfM features live on distant walls/windows, so camera poses can fit the

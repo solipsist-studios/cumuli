@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """
 queen_pkl_to_queen.py – Convert a QUEEN compressed 4DGS model (folder of
 per-frame .pkl files) to the web-friendly .queen binary format consumed by

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """Multi-timestamp SfM for static multi-camera rigs.
 
 Instead of estimating camera poses from a single time instant (12 images, weak

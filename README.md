@@ -53,6 +53,49 @@ git submodule update --init --recursive
 - `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
 - `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today; also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
 - `deps/brush` -- gaussian splat trainer
+- `deps/LichtFeld-Studio` -- alternative gaussian splat trainer (`train_lfs.py`); GPL-3.0, invoked as a separate compiled binary
+
+### Third-party model licenses
+
+This repository's own code is PolyForm Noncommercial 1.0.0
+([LICENSE.md](LICENSE.md)). The external tools it wraps are **not**
+covered by that license -- you obtain each of them directly from its
+own project under its own terms. Two of them restrict commercial use,
+and neither restriction is lifted by buying a commercial license to
+this pipeline:
+
+- **SuperPoint** -- the default HLOC feature type
+  (`--feature_type superpoint`) uses Magic Leap's SuperPoint detector
+  and its `superpoint_v1.pth` weights, licensed "ACADEMIC OR NON-PROFIT
+  ORGANIZATION NONCOMMERCIAL RESEARCH USE ONLY". Note that this holds
+  even though HLOC and LightGlue are both Apache-2.0: the SuperPoint
+  source file carries its own Magic Leap proprietary notice, and a
+  repository-level Apache-2.0 label does not relicense it. Use
+  `--feature_type aliked` (ALIKED, BSD-3-Clause, paired with LightGlue,
+  Apache-2.0) for a fully permissive feature/matcher stack.
+- **Sapiens (legacy path)** -- `deps/sapiens` and
+  `--model coco_wholebody133` are CC BY-NC 4.0, non-commercial only.
+
+The default keypoint path (`--model goliath308`) uses **Sapiens2**,
+which is under Meta's own Sapiens2 License rather than CC BY-NC. That
+agreement *does* permit commercial use, but it carries an acceptable-use
+list that prohibits, among other things, surveillance, **biometric
+processing**, deepfakes and impersonation, and inferring sensitive
+personal information without the required consents. It also grants Meta
+audit rights and lets Meta amend the terms unilaterally. Because
+"biometric processing" is not defined in the agreement and this is a
+human capture pipeline, anyone deploying it commercially should read
+the agreement and take their own legal advice rather than relying on
+this summary.
+
+`deps/LichtFeld-Studio` is GPL-3.0. It is invoked as a separate
+compiled binary, never linked or vendored, so it imposes no obligation
+on this repository's code.
+
+Everything else wrapped by the pipeline (Brush: Apache-2.0, BiRefNet:
+MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
+HLOC: Apache-2.0, LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP:
+BSD-3) is permissively licensed.
 
 ## Conda environments
 
@@ -99,3 +142,20 @@ python3 scripts/extract_synced_frames.py <movies_dir> <sync_offsets.json> <out_d
 ```
 
 Continue through `docs/pipeline.md` for the rest of the pipeline.
+
+## License
+
+Licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE.md).
+
+This is a **source-available** license, not an OSI-approved open source
+one. Any noncommercial purpose is permitted, and use by charitable
+organizations, educational institutions, public research organizations,
+and government institutions is permitted regardless of how that work is
+funded -- so academic and hobbyist use is unrestricted. Commercial use
+requires a separate license; contact <jeff@solipsist.studio>.
+
+A commercial license covers this repository's code only. It does not
+grant rights to the third-party models the pipeline invokes -- see
+[Third-party model licenses](#third-party-model-licenses) above, and
+note that the default `--feature_type superpoint` is itself restricted
+to noncommercial research by Magic Leap.
