@@ -84,11 +84,15 @@ conda create -n sapiens2 python=3.12 -y
 conda activate sapiens2
 pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
 pip install transformers
+pip install git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4  # predict_keypoints_2d.py imports sapiens.pose
 ```
 
 Known-good combination: Python 3.12.13, torch 2.12.0+cu130, torchvision
 0.27.0+cu130, transformers 5.12.1, numpy 2.4.6, scipy 1.17.1, Pillow
-12.2.0.
+12.2.0, sapiens 2.0.0 (commit 7e5bae8 above -- this package was missing
+from both this doc and envs/sapiens2.yml until 2026-07-28; recovered
+from pip's own direct_url.json on the working dev env, since neither
+file had recorded it).
 
 Requires the `SAPIENS_CHECKPOINT_ROOT` env var pointed at a directory
 laid out like:

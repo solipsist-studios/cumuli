@@ -17,3 +17,9 @@ dependencies:
       - numpy==2.4.6
       - scipy==1.17.1
       - Pillow==12.2.0
+      # predict_keypoints_2d.py imports `sapiens.pose` -- this was missing
+      # from this file entirely (found 2026-07-28 while setting up CI:
+      # provenance recovered from pip's own direct_url.json on the working
+      # dev env, since neither this file nor docs/environment.md recorded
+      # it anywhere).
+      - git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4
