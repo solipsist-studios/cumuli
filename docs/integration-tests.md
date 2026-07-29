@@ -140,25 +140,27 @@ across all 5 stages on every PR, but its PSNR numbers are **not**
 comparable to the GPU golden baseline (different resolution, different
 rasterizer) -- see the CPU-rendering section above.
 
-`.github/workflows/integration-tests.yml` runs the full GPU-accurate path
-on PRs that touch
-something that could plausibly change real pipeline output (see the
-workflow's `paths:` filter) -- a docs-only PR doesn't pay the ~20-minute
-run cost or contend for the one GPU runner. It targets a
-`self-hosted, gpu`-labeled runner, since none of the above exists on
-GitHub's own hosted runners. The workflow sets
-`VCP_REQUIRE_PIPELINE_PREREQS=1`, which flips the skip-cleanly behavior
-above into a hard failure: on the CI runner specifically, a missing
-prerequisite means the runner's setup broke, and skipping there would
-show up as a green check with zero tests run.
+`.github/workflows/integration-tests.yml` runs the full GPU-accurate path,
+targeting a `self-hosted, gpu`-labeled runner since none of its
+prerequisites exist on GitHub's own hosted runners. **Manual-dispatch
+only** (`workflow_dispatch`, not `on: pull_request`) -- no runner with
+that label has ever been registered, so an automatic trigger would just
+queue forever on every PR with nothing to ever pick it up. Real GPU
+validation happens locally today (`pytest tests/integration -q`, see
+above) instead. The workflow sets `VCP_REQUIRE_PIPELINE_PREREQS=1`, which
+flips the skip-cleanly behavior above into a hard failure: on a real CI
+runner, a missing prerequisite means the runner's setup broke, and
+skipping there would show up as a green check with zero tests run.
 
 Registering an actual runner with that label is a separate, deliberate
 decision (not bundled into this workflow) -- once this repo is public, a
 self-hosted runner executes whatever code a triggering PR checks out, so
 it needs its own sign-off (and likely a required-reviewer gate for PRs
-from forks). When that happens, also enable branch protection on `main`
-requiring this workflow's check to pass: without it, a direct push to
-`main` bypasses the PR gate entirely but still triggers the rolling
+from forks). When that happens, switch the trigger back to `pull_request`
+(with a `paths:` filter, so a docs-only PR doesn't pay the ~20-minute run
+cost or contend for the one GPU runner) and enable branch protection on
+`main` requiring this workflow's check to pass: without it, a direct push
+to `main` bypasses the PR gate entirely but still triggers the rolling
 baseline update below, letting unreviewed output become the new baseline.
 
 ## Rolling baseline
