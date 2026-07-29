@@ -300,6 +300,7 @@ def build_v3_meta(
     shn_codebook=None,
     motion_degree: int = 1,
     segments=None,
+    cov2d_scale=None,
     generator: str = 'volumetric-capture-pipeline xz_to_omg4',
 ) -> dict:
     """Assemble the version-3 meta.json dictionary.
@@ -347,6 +348,9 @@ def build_v3_meta(
         }
     if segments:
         meta['segments'] = segments
+    if cov2d_scale is not None:
+        # screen-space 2D-covariance compensation (see write_omg4_v2_header)
+        meta['cov2d_scale'] = [float(cov2d_scale[0]), float(cov2d_scale[1])]
     return meta
 
 

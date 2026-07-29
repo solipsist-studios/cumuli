@@ -66,7 +66,12 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from splat4d_io import OMG4_MAGIC, write_omg4_v2_header, report_output
+from splat4d_io import OMG4_MAGIC, OMG4_V2_FIELDS, write_omg4_v2_header, report_output
+
+# Set by main() when --v3 is given: {'shn_count': int, 'webp_method': int}.
+# finish_export() then writes the SOG-compressed v3 container instead of
+# the raw-float v2 layout (same filters, same field data).
+V3_EXPORT_OPTIONS = None
 
 try:
     import dahuffman
@@ -457,12 +462,20 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
     print(f"    |velocity| p50/p95/p99: {np.percentile(vmag, [50, 95, 99]).round(4)}")
     print(f"    t_sigma    p50/p95    : {np.percentile(t_sigma[keep], [50, 95]).round(3)}")
 
-    flags = 1 if f_rest is not None else 0
-    with open(out_path, 'wb') as fp:
-        write_omg4_v2_header(fp, OMG4_MAGIC, kept, time_min, time_max, fps, flags,
-                             cov2d_scale=cov2d_scale)
-        for a in arrays:
-            fp.write(a.tobytes())
+    if V3_EXPORT_OPTIONS is not None:
+        from sog_pack import pack_v3
+        fields = {name: arrays[i] for i, name in enumerate(OMG4_V2_FIELDS)}
+        if f_rest is not None:
+            fields['f_rest'] = np.stack(arrays[len(OMG4_V2_FIELDS):], axis=1)
+        pack_v3(out_path, fields, time_min, time_max, fps,
+                cov2d_scale=cov2d_scale, **V3_EXPORT_OPTIONS)
+    else:
+        flags = 1 if f_rest is not None else 0
+        with open(out_path, 'wb') as fp:
+            write_omg4_v2_header(fp, OMG4_MAGIC, kept, time_min, time_max, fps, flags,
+                                 cov2d_scale=cov2d_scale)
+            for a in arrays:
+                fp.write(a.tobytes())
 
     report_output(out_path)
 
@@ -784,7 +797,19 @@ if __name__ == '__main__':
                              'test against the ground-truth subject segmentation masks; splats that fall '
                              'outside the mask in most views that can see them are floaters, not real '
                              'subject geometry). Applied before covariance slicing.')
+    parser.add_argument('--v3', action='store_true',
+                        help='Write the SOG-compressed v3 container (webp textures + codebooks, '
+                             '~5-7x smaller) instead of the raw-float v2 layout. Higher-order SH '
+                             'is vector-quantized rather than dropped; combine with --no_sh to '
+                             'omit it entirely.')
+    parser.add_argument('--shn_count', type=int, default=65536,
+                        help='v3 only: VQ centroid count for higher-order SH (default: 65536)')
+    parser.add_argument('--webp_method', type=int, default=4, choices=range(7),
+                        help='v3 only: libwebp effort 0-6 (default: 4; 6 is smallest/slowest)')
     args = parser.parse_args()
+
+    if args.v3:
+        V3_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method}
 
     aniso = None
     cam_rots = None

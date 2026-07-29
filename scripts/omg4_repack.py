@@ -97,8 +97,14 @@ def read_omg4_v2_tiled(path):
             arrays[f][start:start + count] = np.frombuffer(raw, dtype=np.float32, count=count, offset=offset)
             offset += count * 4
 
+    cov2d_scale = None
+    if flags & OMG4_V2_FLAG_COV2D:
+        halves = np.array([reserved & 0xFFFF, (reserved >> 16) & 0xFFFF], dtype=np.uint16).view(np.float16)
+        cov2d_scale = (float(halves[0]), float(halves[1]))
+
     header = {'num_splats': n, 'flags': flags, 'tile_size': tile_size,
-              'time_min': time_min, 'time_max': time_max, 'fps': fps}
+              'time_min': time_min, 'time_max': time_max, 'fps': fps,
+              'cov2d_scale': cov2d_scale}
     return header, arrays
 
 

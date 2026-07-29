@@ -254,7 +254,7 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
 def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
             fps: float, shn_count: int = 65536, webp_method: int = 4,
             generator: str = 'volumetric-capture-pipeline sog_pack v1',
-            segments=None, reorder: bool = True) -> dict:
+            segments=None, cov2d_scale=None, reorder: bool = True) -> dict:
     """Quantize v2-style field arrays and write a version-3 .omg4 archive.
 
     `fields` maps OMG4_V2_FIELDS names to float32[N] arrays, plus optional
@@ -313,7 +313,7 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
         scales_codebook=scales_cb, sh0_codebook=sh0_cb,
         motion_mins=v_mins, motion_maxs=v_maxs,
         trbf_center_codebook=tc_cb, trbf_sigma_codebook=ts_cb,
-        segments=segments, generator=generator, **shn_kwargs)
+        segments=segments, cov2d_scale=cov2d_scale, generator=generator, **shn_kwargs)
 
     write_omg4_v3(out_path, meta, textures)
     return meta
@@ -422,7 +422,8 @@ def main():
           f"{' (stripped)' if args.strip_sh and has_sh else ''}")
 
     meta = pack_v3(args.output, fields, header['time_min'], header['time_max'],
-                   header['fps'], shn_count=args.shn_count, webp_method=args.webp_method)
+                   header['fps'], shn_count=args.shn_count, webp_method=args.webp_method,
+                   cov2d_scale=header.get('cov2d_scale'))
 
     report_output(args.output)
     import os
