@@ -71,14 +71,33 @@ def mask_coverage(L, real_camera: str) -> float:
     return float((mask > 127).mean())
 
 
+def clean_artifact_name(name: str) -> str:
+    """Collapse brush main's doubled eval-render extension ("00.png.png")
+    down to a single ".png" -- cosmetic only, for a human-facing copy (e.g.
+    a CI artifact upload); callers that need the real on-disk filename
+    (as held_out_psnr does) must not use this."""
+    if name.endswith(".png.png"):
+        return name[:-len(".png")]
+    return name
+
+
 def held_out_psnr(L, total_train_iters: int, held_out_real_camera: str) -> tuple[float, Path]:
     """Masked PSNR between Brush's held-out eval render (excluded from
     training via --eval_split_every) and the real photo from that same
     camera. Returns (score, render_path) -- the caller may want
-    render_path to copy the render out as a CI artifact."""
+    render_path to copy the render out as a CI artifact (see
+    clean_artifact_name for a human-facing filename)."""
     held_out_flat = flat_label_for(L, held_out_real_camera)
     eval_dir = L["brush_output"] / f"eval_{total_train_iters}"
     render_path = eval_dir / f"{held_out_flat}.png"
+    if not render_path.is_file():
+        # brush main (source builds, required for CPU-rendering mode) names
+        # eval renders after the full source image filename plus .png --
+        # e.g. "00.png.png" -- where the v0.3.0 release wrote "00.png".
+        # Accept either so both binary generations work.
+        alt = eval_dir / f"{held_out_flat}.png.png"
+        if alt.is_file():
+            render_path = alt
     if not render_path.is_file():
         raise FileNotFoundError(
             f"expected brush_app's --eval-save-to-disk render at {render_path} -- "

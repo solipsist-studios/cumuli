@@ -106,7 +106,7 @@ from pathlib import Path
 import pytest
 
 import run_unified_pipeline as unified
-from baseline_metrics import held_out_psnr, mask_coverage, parse_reprojection_error
+from baseline_metrics import clean_artifact_name, held_out_psnr, mask_coverage, parse_reprojection_error
 from validate_stage_output import ply_vertex_count
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -382,7 +382,7 @@ def test_psnr_meets_baseline(pipeline_run):
     import shutil
     eval_renders_dir = ARTIFACTS_DIR / "eval_renders"
     eval_renders_dir.mkdir(exist_ok=True)
-    shutil.copy(render_path, eval_renders_dir / render_path.name)
+    shutil.copy(render_path, eval_renders_dir / clean_artifact_name(render_path.name))
 
     assert score >= baseline - PSNR_MARGIN_DB, (
         f"masked PSNR on held-out camera {HELD_OUT_REAL_CAMERA} ({score:.2f}dB) dropped more than "
