@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+-->
+
 # Contributing
 
 Thanks for your interest. Please read this before opening a pull request --
