@@ -1,4 +1,9 @@
 <!--
+SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+-->
+
+<!--
 Please read CONTRIBUTING.md first. Note in particular that external
 contributions cannot be merged until the CLA is finalized — open the PR
 anyway if you want to discuss the approach, we just cannot merge yet.

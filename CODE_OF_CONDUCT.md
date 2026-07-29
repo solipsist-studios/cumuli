@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: CC-BY-SA-4.0
+Adapted from the Contributor Covenant 3.0
+-->
+
 # Contributor Covenant 3.0 Code of Conduct
 
 ## Our Pledge
