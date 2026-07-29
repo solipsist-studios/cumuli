@@ -225,6 +225,12 @@ jobs:
           conda env create -f envs/diffuman4d.yml
           conda run -n diffuman4d pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.7.1 torchvision==0.22.1
+          # --no-deps: remove_background.py (generate_masks.py/clean_masks.py's
+          # real work) needs easyvolcap.utils.console_utils/.parallel_utils --
+          # same treatment as queen's easyvolcap install below, see its
+          # comment for why --no-deps and why this is safe.
+          conda run -n diffuman4d pip install --no-deps \
+            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
           conda clean -afy
 
           conda env create -f envs/sapiens2.yml

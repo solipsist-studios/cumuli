@@ -23,3 +23,12 @@ dependencies:
       # dev env, since neither this file nor docs/environment.md recorded
       # it anywhere).
       - git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4
+      # predict_keypoints_2d.py drives deps/Diffuman4D's predict_keypoints.py
+      # -> sapiens/2/demo/vis_pose.py, which needs these two directly --
+      # opencv-python and tqdm are also imported there but come in
+      # transitively via the sapiens package's own declared dependencies
+      # above, so they don't need listing separately. Found 2026-07-29 via
+      # systematic import tracing (not another CI round-trip) after the
+      # same undocumented-local-env pattern hit twice already today.
+      - fire==0.7.1
+      - huggingface_hub==1.19.0

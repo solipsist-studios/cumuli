@@ -46,3 +46,17 @@ dependencies:
       - ipykernel
       - huggingface-hub>0.25
       - accelerate
+      # remove_background.py (generate_masks.py/clean_masks.py's real
+      # work) imports easyvolcap.utils.console_utils/.parallel_utils --
+      # same real gap as triangulate_skeleton.py's (see envs/queen.yml),
+      # found 2026-07-29 via systematic import tracing after the same
+      # undocumented-local-env pattern hit twice already that day.
+      # --no-deps for the same reason as queen.yml -- can't apply
+      # per-package in this batched pip section, done as a separate CI
+      # step instead. fire/opencv-python/tqdm/huggingface-hub above
+      # already cover easyvolcap's other real needs; these 4 don't
+      # overlap with anything already listed.
+      - pdbr==0.9.7
+      - rich==15.0.0
+      - ujson==5.13.0
+      - ruamel.yaml==0.19.1
