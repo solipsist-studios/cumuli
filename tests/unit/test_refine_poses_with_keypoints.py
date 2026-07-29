@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """Tests real math (triangulation, similarity alignment, bundle adjustment) against
 synthetic camera rigs with known ground truth, rather than mocking scipy/numpy away --
 the whole point of this script is that the math is correct, so the tests check the

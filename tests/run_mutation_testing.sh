@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 # Mutation-test the unit suite with mutmut (quality check on the tests
 # themselves: mutmut mutates the code and re-runs the suite; every mutant no
 # test kills is a concrete gap where a bug could slip through unnoticed).

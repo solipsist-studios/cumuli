@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """
 Tests real math/data-structure logic against a REAL pycolmap (installed as a
 dev dependency, see requirements-dev.txt) rather than mocking it away --
