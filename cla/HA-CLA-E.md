@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: CC-BY-3.0
+Adapted from the Harmony HA-CLA-E v1.0
+-->
+
 # Harmony Entity Contributor License Agreement
 
 > **Status: draft pending legal review.** This document is the Harmony
