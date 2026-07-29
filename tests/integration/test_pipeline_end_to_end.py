@@ -125,16 +125,22 @@ PIPELINE_TIMEOUT_S_GPU = 3000  # 50min -- comfortably above the ~15-20min real G
                                  # failure fires first. brush_app has genuinely hung on this
                                  # project's own dev machine before; without this, a hang stalls
                                  # pytest forever on a local run.
-PIPELINE_TIMEOUT_S_CPU = 7200  # 2h -- CPU rendering is dramatically slower than GPU, not just for
+PIPELINE_TIMEOUT_S_CPU = 14400  # 4h -- CPU rendering is dramatically slower than GPU, not just for
                                  # Brush training itself: Sapiens pose estimation (predict_keypoints_2d.py)
                                  # is CPU-bound regardless of Brush and runs once per sync-correction
                                  # candidate frame batch (several) plus once for the real production
                                  # frames, so most of the added wall time here is Sapiens, not Brush.
                                  # Observed empirically (2026-07-28): sync-correction alone (candidate
                                  # scoring, before the main pipeline even starts) took >45min on a
-                                 # 32-core dev machine and hadn't finished -- comfortably below
-                                 # integration-tests-cpu.yml's job timeout so this cleaner failure
-                                 # fires first there too.
+                                 # 32-core dev machine and hadn't finished. Raised from the original
+                                 # 2h (2026-07-29) after a real run on this shared machine hit that
+                                 # ceiling -- not because the pipeline itself was slow, but because an
+                                 # unrelated concurrent workload (another user's own process, real and
+                                 # legitimate, not something to kill) was eating a large fraction of
+                                 # the machine's cores at the same time. 4h gives real headroom against
+                                 # that kind of shared-machine contention without masking a genuine
+                                 # hang -- comfortably below integration-tests-cpu.yml's job timeout
+                                 # (also raised, see that file) so this cleaner failure fires first.
 
 REAL_CAMERAS = ["0001", "0002", "0003", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
 

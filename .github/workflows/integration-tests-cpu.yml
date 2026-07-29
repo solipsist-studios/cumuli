@@ -103,13 +103,16 @@ jobs:
     needs: build-cpu-brush
     runs-on: ubuntu-latest
     # Well above tests/integration/test_pipeline_end_to_end.py's own
-    # PIPELINE_TIMEOUT_S_CPU (2h) so that cleaner, more diagnosable
+    # PIPELINE_TIMEOUT_S_CPU (4h) so that cleaner, more diagnosable
     # failure fires first -- plus real headroom for setup (conda env
     # creation + checkpoint download on a cache miss) and because a
     # GitHub-hosted runner has fewer/slower cores than the 32-core
     # machine PIPELINE_TIMEOUT_S_CPU was calibrated against, so the same
-    # pipeline run will likely take longer here.
-    timeout-minutes: 180
+    # pipeline run will likely take longer here. 350 (not more) because
+    # GitHub Actions hard-caps a single job's timeout-minutes at 360
+    # regardless of plan -- this is as much headroom above 4h as the
+    # platform allows.
+    timeout-minutes: 350
     env:
       # A runner running this workflow is supposed to have everything the
       # suite needs (once this job's setup steps finish) -- fail loudly on
