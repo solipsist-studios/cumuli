@@ -69,9 +69,79 @@ any machine, doing the real thing where the environment supports it and
 skipping cleanly everywhere else, rather than needing CI-side conditionals
 to know when it's safe to run.
 
+### Running without a GPU
+
+```bash
+VCP_ALLOW_CPU_RENDERING=1 VCP_BRUSH_APP=/path/to/source-built/brush-cli pytest tests/integration -q
+```
+
+(`VCP_BRUSH_APP` must point at a `brush-cli` built from source -- see
+finding 2 below; the pinned commit `integration-tests-cpu.yml` builds is
+a known-good one to match locally.)
+
+`VCP_ALLOW_CPU_RENDERING=1` opts into running the whole pipeline without a
+real GPU at all -- `_check_gpu()` stops requiring `nvidia-smi`, and
+`pipeline_run` forces genuine software rendering plus `CUDA_VISIBLE_DEVICES=""`
+(hides any real GPU from PyTorch too, so masks/keypoints exercise the same
+CPU fallback a genuinely GPU-less machine would use, even when testing this
+locally on a machine that does have a GPU).
+
+**Two hard-won findings, both from 2026-07-28** (an earlier version of this
+doc got the first one wrong -- corrected here):
+
+1. `WGPU_BACKEND=gl` **alone does not avoid the GPU** on a machine with an
+   NVIDIA driver installed -- it only picks the OpenGL API, not the
+   implementation; glvnd still hands OpenGL to the NVIDIA stack. Forcing
+   genuine software rendering also requires `LIBGL_ALWAYS_SOFTWARE=1` and
+   pointing `__EGL_VENDOR_LIBRARY_FILENAMES` at Mesa's own EGL ICD (see
+   `pipeline_run`'s env construction in `test_pipeline_end_to_end.py` for
+   the exact recipe). An earlier claim in this doc that a fast, good-PSNR
+   run had validated `WGPU_BACKEND=gl` alone was based on a run that, it
+   turned out, had silently used the real NVIDIA GPU the whole time.
+2. The **released `brush_app` v0.3.0 binary cannot run CPU-only at all**,
+   independent of the above -- on genuine Mesa llvmpipe it hits (a) a panic
+   launching GPU subgroup/"plane" kernels llvmpipe doesn't support, then
+   (b) a `BufferTooBig` panic at the production 4096 resolution, and even
+   past both of those, (c) a real, non-deterministic deadlock: one thread
+   spins forever on a `spin::Mutex` inside burn-fusion
+   (`MutexFusionClient::register_tensor`) that another, parked thread never
+   releases -- confirmed via instruction-pointer sampling, not inferred.
+   That code path has since been removed from burn's `main` branch (the
+   `client/mutex.rs` module doesn't exist there anymore). **CPU-rendering
+   mode therefore requires `brush-cli` built from source** at a commit
+   newer than that fix (`VCP_BRUSH_APP` pointed at the build) -- the
+   release binary will not work here. `--max-resolution` is also capped
+   lower for CPU mode (`--brush_max_resolution`, wired through
+   `run_unified_pipeline.py`) since llvmpipe rejects the buffer sizes 4096
+   needs.
+
+Confirmed end-to-end (2026-07-28/29): full `pytest tests/integration -q`
+runs (all 8 tests, real pipeline, source-built binary) pass CPU-only,
+completing in ~1h20-25min. Reprojection error and mask coverage matched
+the GPU golden baseline exactly (both are CPU-bound regardless of
+rendering backend, so no drift is expected there); masked PSNR landed
+within 0.5dB of the golden baseline on the first run, comfortably inside
+PSNR_MARGIN_DB's 1.5dB floor. A small additional-runs variance check
+(matching how the original GPU margins were validated) is tracked
+separately -- see the reproducibility note in this fixture's own
+golden_baseline.json for that methodology.
+
 ## CI
 
-`.github/workflows/integration-tests.yml` runs this on PRs that touch
+`.github/workflows/integration-tests-cpu.yml` runs the CPU-rendering path
+above on **every** pull request, entirely on GitHub's own free hosted
+runners -- no self-hosted GPU runner required. It builds `brush-cli` from
+source (pinned to a specific validated commit, not a moving `main`
+target -- see the workflow's own comments for why) and provisions the
+conda envs + Sapiens checkpoints from scratch, each layer cached so only
+the first run (or a cache-busting dependency change) pays the full cost.
+This is the always-on safety net: it catches plumbing/logic regressions
+across all 5 stages on every PR, but its PSNR numbers are **not**
+comparable to the GPU golden baseline (different resolution, different
+rasterizer) -- see the CPU-rendering section above.
+
+`.github/workflows/integration-tests.yml` runs the full GPU-accurate path
+on PRs that touch
 something that could plausibly change real pipeline output (see the
 workflow's `paths:` filter) -- a docs-only PR doesn't pay the ~20-minute
 run cost or contend for the one GPU runner. It targets a
