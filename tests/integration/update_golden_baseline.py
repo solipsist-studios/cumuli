@@ -73,14 +73,39 @@ def run_pipeline(out_dir: Path, sapiens_checkpoint_root: str, brush_app: str) ->
         "--eval_split_every", str(t.EVAL_SPLIT_EVERY),
         "--eval_save_to_disk",
     ]
+
+    env = dict(os.environ)
+    if os.environ.get("VCP_ALLOW_CPU_RENDERING") == "1":
+        # Not exercised by CI today -- update-integration-baseline.yml
+        # always targets the self-hosted GPU runner and never sets this,
+        # so golden_baseline.json stays GPU-only (its numbers aren't
+        # comparable to a CPU/llvmpipe run's -- see
+        # tests/integration/conftest.py's module docstring). Kept correct
+        # for local/manual use, matching test_pipeline_end_to_end.py's
+        # pipeline_run fixture exactly (see its comments for why each of
+        # these matters -- WGPU_BACKEND=gl alone does NOT avoid a real
+        # GPU on a machine with an NVIDIA driver installed).
+        env["WGPU_BACKEND"] = "gl"
+        env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+        mesa_icd = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+        if mesa_icd.is_file():
+            env["__EGL_VENDOR_LIBRARY_FILENAMES"] = str(mesa_icd)
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        cmd += ["--no_viewer", "--brush_max_resolution", str(t.CPU_MAX_RESOLUTION)]
+
+    timeout_s = t.PIPELINE_TIMEOUT_S_CPU if os.environ.get("VCP_ALLOW_CPU_RENDERING") == "1" else t.PIPELINE_TIMEOUT_S_GPU
     try:
-        result = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True,
-                                timeout=t.PIPELINE_TIMEOUT_S)
+        result = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, capture_output=True, text=True,
+                                timeout=timeout_s)
         returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired as e:
+        # e.stdout/e.stderr can be raw bytes here even with text=True above
+        # -- see the matching comment in test_pipeline_end_to_end.py's
+        # pipeline_run fixture for why.
         returncode = -1
-        stdout = e.stdout or ""
-        stderr = (e.stderr or "") + f"\npipeline killed after exceeding PIPELINE_TIMEOUT_S ({t.PIPELINE_TIMEOUT_S}s)"
+        stdout = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        stderr += f"\npipeline killed after exceeding its timeout ({timeout_s}s)"
 
     # Persist the full log to the same artifacts dir the test fixture uses
     # -- update-integration-baseline.yml uploads that dir when this script

@@ -98,6 +98,7 @@ caught (see docs/integration-tests.md).
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -115,10 +116,25 @@ ARTIFACTS_DIR = Path(__file__).resolve().parent / "artifacts"
 TARGET_TIME = "1500ms"
 TOTAL_TRAIN_ITERS = 1000  # small on purpose -- see docs/integration-tests.md
 EVAL_SPLIT_EVERY = 11  # holds out exactly 1 of the fixture's 11 cameras
-PIPELINE_TIMEOUT_S = 3000  # 50min -- comfortably above the ~15-20min real runs take, below CI's
-                            # 60-min job timeout so this cleaner failure fires first. brush_app has
-                            # genuinely hung on this project's own dev machine before; without this,
-                            # a hang stalls pytest forever on a local run.
+CPU_MAX_RESOLUTION = 1024  # CPU-rendering mode only -- llvmpipe rejects the buffer
+                            # sizes the production 4096 needs (BufferTooBig), and 16x
+                            # the pixels under software rendering would be impractically
+                            # slow. GPU runs keep the orchestrator's 4096 default.
+PIPELINE_TIMEOUT_S_GPU = 3000  # 50min -- comfortably above the ~15-20min real GPU runs take,
+                                 # below integration-tests.yml's 60-min job timeout so this cleaner
+                                 # failure fires first. brush_app has genuinely hung on this
+                                 # project's own dev machine before; without this, a hang stalls
+                                 # pytest forever on a local run.
+PIPELINE_TIMEOUT_S_CPU = 7200  # 2h -- CPU rendering is dramatically slower than GPU, not just for
+                                 # Brush training itself: Sapiens pose estimation (predict_keypoints_2d.py)
+                                 # is CPU-bound regardless of Brush and runs once per sync-correction
+                                 # candidate frame batch (several) plus once for the real production
+                                 # frames, so most of the added wall time here is Sapiens, not Brush.
+                                 # Observed empirically (2026-07-28): sync-correction alone (candidate
+                                 # scoring, before the main pipeline even starts) took >45min on a
+                                 # 32-core dev machine and hadn't finished -- comfortably below
+                                 # integration-tests-cpu.yml's job timeout so this cleaner failure
+                                 # fires first there too.
 
 REAL_CAMERAS = ["0001", "0002", "0003", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
 
@@ -165,7 +181,7 @@ PSNR_MARGIN_DB = 1.5  # subtracted from the golden masked PSNR for the floor; ob
 
 
 @pytest.fixture(scope="session")
-def pipeline_run(tmp_path_factory, sapiens_checkpoint_root, brush_app, fixture_dir):
+def pipeline_run(tmp_path_factory, sapiens_checkpoint_root, brush_app, fixture_dir, allow_cpu_rendering):
     """Runs the real orchestrator once, for the whole test session, as an
     actual subprocess (matching how anyone would really invoke it -- the
     orchestrator itself dispatches each stage into its own conda env via
@@ -187,14 +203,63 @@ def pipeline_run(tmp_path_factory, sapiens_checkpoint_root, brush_app, fixture_d
         "--eval_split_every", str(EVAL_SPLIT_EVERY),
         "--eval_save_to_disk",
     ]
+
+    env = dict(os.environ)
+    if allow_cpu_rendering:
+        # Force brush onto Mesa's llvmpipe software rasterizer -- ALL
+        # THREE of these matter, discovered the hard way (2026-07-28):
+        #
+        # WGPU_BACKEND=gl alone only picks the OpenGL API, NOT the
+        # implementation -- on a machine with an NVIDIA driver installed,
+        # glvnd hands OpenGL to the NVIDIA stack and training silently
+        # runs on the real GPU (verified: the process held /dev/nvidia*
+        # fds and 281MiB of GPU memory while nvidia-smi read 0%
+        # utilization -- an earlier claim here that WGPU_BACKEND=gl had
+        # been "empirically verified" to avoid the GPU was based on
+        # exactly that misreading). LIBGL_ALWAYS_SOFTWARE requests
+        # software rendering from Mesa, and pointing
+        # __EGL_VENDOR_LIBRARY_FILENAMES at Mesa's own ICD stops glvnd
+        # from ever offering the NVIDIA implementation -- set only when
+        # that file exists (dual-driver dev machines); a real GPU-less CI
+        # runner has no NVIDIA ICD to exclude.
+        #
+        # CUDA_VISIBLE_DEVICES="" additionally hides any real GPU from
+        # PyTorch (masks/keypoints stages) -- without it, a machine that
+        # DOES have a GPU (unlike the CI runner this is actually for)
+        # would silently keep using it for those stages, making a local
+        # test here unrepresentative of what a real GPU-less runner sees.
+        env["WGPU_BACKEND"] = "gl"
+        env["LIBGL_ALWAYS_SOFTWARE"] = "1"
+        mesa_icd = Path("/usr/share/glvnd/egl_vendor.d/50_mesa.json")
+        if mesa_icd.is_file():
+            env["__EGL_VENDOR_LIBRARY_FILENAMES"] = str(mesa_icd)
+        env["CUDA_VISIBLE_DEVICES"] = ""
+        # Headless (no viewer window -- there's no display on a CI
+        # runner) and 1024 res instead of the production 4096: llvmpipe
+        # rejects the GL buffer sizes 4096 needs (BufferTooBig), and
+        # software-rendering 16x the pixels would be impractically slow.
+        # This makes the CPU profile's PSNR NOT directly comparable to
+        # the golden baseline recorded at 4096 -- see test_psnr_meets_baseline.
+        cmd += ["--no_viewer", "--brush_max_resolution", str(CPU_MAX_RESOLUTION)]
+
+    timeout_s = PIPELINE_TIMEOUT_S_CPU if allow_cpu_rendering else PIPELINE_TIMEOUT_S_GPU
     try:
-        result = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True,
-                                timeout=PIPELINE_TIMEOUT_S)
+        result = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, capture_output=True, text=True,
+                                timeout=timeout_s)
         returncode, stdout, stderr = result.returncode, result.stdout, result.stderr
     except subprocess.TimeoutExpired as e:
+        # e.stdout/e.stderr can be raw bytes here even though text=True was
+        # passed to subprocess.run above -- on POSIX, a timeout interrupts
+        # Popen.communicate() before its normal text-decoding step runs, so
+        # whatever was buffered so far is packaged into the exception as-is.
+        # Discovered the hard way: a run that genuinely timed out (the exact
+        # case this handler exists for) crashed here instead with an
+        # unrelated "can't concat str to bytes" TypeError, masking the real
+        # timeout as a confusing pytest ERROR.
         returncode = -1
-        stdout = e.stdout or ""
-        stderr = (e.stderr or "") + f"\npipeline killed after exceeding PIPELINE_TIMEOUT_S ({PIPELINE_TIMEOUT_S}s)"
+        stdout = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        stderr = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        stderr += f"\npipeline killed after exceeding its timeout ({timeout_s}s)"
 
     log_path = ARTIFACTS_DIR / "pipeline_run.log"
     log_path.write_text(stdout + "\n" + stderr)

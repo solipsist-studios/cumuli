@@ -454,7 +454,7 @@ def stage_branch_direct(args, L):
 
     train_args = [
         "--data", L["train_set"],
-        "--total_steps", str(args.total_train_iters), "--max_resolution", "4096",
+        "--total_steps", str(args.total_train_iters), "--max_resolution", str(args.brush_max_resolution),
         "--export_every", str(args.export_every),
         "--brush_app", args.brush_app, "--export_path", L["brush_output"],
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
@@ -547,6 +547,13 @@ def build_parser():
                         help="Max keypoints per image for HLOC feature extraction.")
     parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
     parser.add_argument("--total_train_iters", type=int, default=30000)
+    parser.add_argument("--brush_max_resolution", type=int, default=4096,
+                        help="Passed to train_brush.py --max_resolution. The 4096 default is the "
+                             "validated production configuration; lower it only for constrained "
+                             "environments (e.g. the integration tests' CPU-rendering mode uses "
+                             "1024 -- llvmpipe caps GL buffer allocations well below what 4096 "
+                             "needs, and software rendering at 4096 would be impractically slow "
+                             "anyway).")
     parser.add_argument("--export_every", type=int, default=5000,
                         help="Brush checkpoint export interval in steps (also always exports once at completion)")
     parser.add_argument("--eval_split_every", type=int, default=None,

@@ -8,8 +8,22 @@ test here goes through `pipeline_prereqs` (autouse), which probes for what
 it actually needs and skips with a specific reason when something's
 missing. Same test file, same behavior, on any machine: it does the real
 thing where the environment supports it, and skips cleanly everywhere else.
+
+VCP_ALLOW_CPU_RENDERING=1 opts into training without a real GPU at all,
+via Mesa's llvmpipe software rasterizer -- see pipeline_run's env
+construction in test_pipeline_end_to_end.py for the full recipe and the
+hard-won findings behind it (2026-07-28): WGPU_BACKEND=gl alone does NOT
+avoid the GPU (an earlier claim here that it had been verified to was
+wrong -- that run had silently used the NVIDIA OpenGL driver), and the
+v0.3.0 release brush binary cannot run on llvmpipe at all (burn-fusion
+spinlock deadlock, a nondeterministic race, plus two hard startup
+panics). CPU mode therefore requires a brush binary built from source
+newer than 2026-07 (VCP_BRUSH_APP) -- verified end-to-end on genuine
+llvmpipe with that build. Off by default -- opt-in only, existing
+GPU-required behavior is unchanged unless this is explicitly set.
 """
 
+import ctypes.util
 import json
 import os
 import shutil
@@ -31,9 +45,22 @@ def _check_ffmpeg():
     return None
 
 
-def _check_gpu():
+def _check_gpu(allow_cpu_rendering):
+    if allow_cpu_rendering:
+        # Real GPU not required in this mode -- brush_app trains via Mesa's
+        # software OpenGL rasterizer instead (see module docstring). This is
+        # only a lightweight sanity check that OpenGL is present at all
+        # (same "check it exists, not that it works" philosophy as
+        # _check_brush_app below) -- the real verification is the pipeline
+        # run itself.
+        if ctypes.util.find_library("GL") is None:
+            return ("VCP_ALLOW_CPU_RENDERING=1 but no OpenGL library found on this machine "
+                    "(needed for Mesa's software rasterizer) -- install mesa-utils/libgl1-mesa-dri")
+        return None
     if shutil.which("nvidia-smi") is None:
-        return "nvidia-smi not found on PATH -- no NVIDIA GPU tooling present"
+        return ("nvidia-smi not found on PATH -- no NVIDIA GPU tooling present "
+                "(or set VCP_ALLOW_CPU_RENDERING=1 to train via software rendering instead -- "
+                "see docs/integration-tests.md)")
     try:
         result = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -92,6 +119,13 @@ def _check_fixture():
 
 
 @pytest.fixture(scope="session")
+def allow_cpu_rendering():
+    """VCP_ALLOW_CPU_RENDERING=1 opts into training without a real GPU --
+    see module docstring."""
+    return os.environ.get("VCP_ALLOW_CPU_RENDERING") == "1"
+
+
+@pytest.fixture(scope="session")
 def brush_app():
     """brush_app binary path: VCP_BRUSH_APP if set (as docs/integration-tests.md
     documents), else the orchestrator's own default -- resolved once here so
@@ -119,12 +153,12 @@ def sapiens_checkpoint_root():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def pipeline_prereqs(sapiens_checkpoint_root, brush_app):
+def pipeline_prereqs(sapiens_checkpoint_root, brush_app, allow_cpu_rendering):
     """Skips the whole tests/integration session (not a failure) if this
     machine can't actually run the real pipeline. See module docstring."""
     reasons = list(filter(None, [
         _check_ffmpeg(),
-        _check_gpu(),
+        _check_gpu(allow_cpu_rendering),
         _check_conda_envs(),
         _check_brush_app(brush_app),
         _check_sapiens_checkpoints(sapiens_checkpoint_root),
