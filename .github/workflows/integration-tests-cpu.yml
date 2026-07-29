@@ -169,10 +169,10 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CONDA_BASE }}/envs
-          # Hashes every envs/*.yml (hloc, diffuman4d, sapiens2) -- any
-          # pin change in any of them busts all three, which is the safe
-          # default (cheap to over-invalidate, expensive to silently run
-          # stale deps).
+          # Hashes every envs/*.yml (hloc, diffuman4d, sapiens2, queen) --
+          # any pin change in any of them busts all four, which is the
+          # safe default (cheap to over-invalidate, expensive to silently
+          # run stale deps).
           key: conda-envs-${{ runner.os }}-${{ hashFiles('envs/*.yml') }}
 
       - name: Create conda envs (cache miss only)
@@ -182,6 +182,23 @@ jobs:
           conda env create -f envs/hloc.yml
           conda env create -f envs/diffuman4d.yml
           conda env create -f envs/sapiens2.yml
+          conda env create -f envs/queen.yml
+
+      - name: Install easyvolcap --no-deps into queen (cache miss only)
+        # Can't live in envs/queen.yml -- --no-deps has to apply to just
+        # this one package, but a conda env yml's pip section installs
+        # everything in one batched call. Skips easyvolcap's own heavy
+        # declared dependencies (torch+torchaudio+torchvision+cuda-python+
+        # tensorboard+trimesh+open3d+...); the real code actually touched
+        # here (easyvolcap.utils.console_utils/.parallel_utils/.base_utils)
+        # only needs the lightweight packages envs/queen.yml already lists
+        # -- traced import-by-import, recursively, by hand. See that
+        # file's own comments for the full story.
+        if: steps.conda-cache.outputs.cache-hit != 'true'
+        shell: bash -l {0}
+        run: |
+          conda run -n queen pip install --no-deps \
+            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
 
       - name: Force CPU-only torch wheels (cache miss only)
         # The env YAMLs pin plain torch==X.Y.Z -- on a real GPU dev
@@ -200,6 +217,8 @@ jobs:
             torch==2.7.1 torchvision==0.22.1
           conda run -n sapiens2 pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.0 torchvision==0.27.0
+          conda run -n queen pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.12.0
 
       - name: Reclaim conda/pip package caches (cache miss only)
         # Real CI failure (2026-07-29): the run genuinely ran out of disk
@@ -214,6 +233,7 @@ jobs:
           conda run -n hloc pip cache purge
           conda run -n diffuman4d pip cache purge
           conda run -n sapiens2 pip cache purge
+          conda run -n queen pip cache purge
 
       - name: Restore cached Sapiens checkpoints
         id: sapiens-cache

@@ -36,7 +36,7 @@ import run_unified_pipeline as unified
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "heidi_11cam"
 
-REQUIRED_CONDA_ENVS = ("hloc", "diffuman4d", "sapiens2")
+REQUIRED_CONDA_ENVS = ("hloc", "diffuman4d", "sapiens2", "queen")
 
 
 def _check_ffmpeg():

@@ -1,6 +1,6 @@
 # Environment setup
 
-Precise setup instructions for the three conda environments and system
+Precise setup instructions for the four conda environments and system
 tools this pipeline needs, plus known-good versions this has actually
 been tested against. `README.md` and `docs/pipeline.md` mention which
 env each stage needs; this doc is the "how do I actually create them"
@@ -112,15 +112,40 @@ weights and place them in that layout; pass the root via
 `--sapiens_checkpoint_root` to the orchestrator (or set
 `SAPIENS_CHECKPOINT_ROOT` directly for standalone predict_keypoints_2d.py runs).
 
-### Everything else
+### `queen` -- generic scripts + triangulation (`--generic_env`/`--triangulate_env`)
 
-Most other scripts (compute_sync_offsets.py, extract_synced_frames.py,
-make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
-split_keypoints_per_camera.py, triangulate_and_project_keypoints.py,
-train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py)
-have no special conda env requirement beyond numpy/scipy/Pillow/plyfile
--- run them from any env with those installed (`base`/`hloc`/etc. all
-work).
+```bash
+conda env create -f envs/queen.yml
+conda run -n queen pip install --no-deps git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
+```
+
+This is `run_unified_pipeline.py`'s default target for `--generic_env`
+(make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
+build_colmap_sparse.py, run_pose_refinement.py, compute_sync_offsets.py)
+and `--triangulate_env` (triangulate_and_project_keypoints.py, which
+wraps Diffuman4D's triangulate_skeleton.py). The orchestrator never runs
+these bare with its own launching Python -- always through this named
+env -- so it has to actually exist, unlike a genuinely env-agnostic
+script. Missing from every committed env spec entirely until 2026-07-29
+(found when a fresh CI checkout failed with "Not a conda environment:
+.../envs/queen").
+
+Deliberately narrower than the real local `queen` env this was recovered
+from (which is much larger -- also used for unrelated local
+experimentation): this lists only what's actually imported by the real
+code path, traced by hand, import by import, recursively, through to
+easyvolcap's own internal utility modules. Notably, `open3d` isn't
+imported anywhere in this path despite an earlier version of this repo's
+own `--triangulate_env` help text claiming it's needed.
+
+Known-good combination (verified 2026-07-29): Python 3.11.15, numpy
+2.4.4, scipy 1.17.1, Pillow 12.2.0, plyfile 1.1.3, opencv-python
+4.13.0.92, fire 0.7.1, torch 2.12.0 (CPU-safe -- the one real usage,
+Diffuman4D's camera_parser.py, is plain tensor math, no `.cuda()`/device
+placement), easyvolcap 0.0.0 (commit 4cb3c00 above, `--no-deps` --
+skips its own heavy declared dependencies, none of which the real code
+path here touches), pdbr 0.9.7, rich 15.0.0, ujson 5.13.0, ruamel.yaml
+0.19.1, tqdm 4.67.3.
 
 ## System-level tools (no conda env)
 

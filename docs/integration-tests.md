@@ -56,7 +56,7 @@ pytest tests/integration -q
 
 Needs, on the machine running it:
 - An NVIDIA GPU (`nvidia-smi`)
-- The `hloc`, `diffuman4d`, and `sapiens2` conda envs (see `docs/environment.md`)
+- The `hloc`, `diffuman4d`, `sapiens2`, and `queen` conda envs (see `docs/environment.md`)
 - `ffmpeg` on PATH
 - A compiled `brush_app` binary (same default path `run_unified_pipeline.py`
   uses, or set `VCP_BRUSH_APP`)
