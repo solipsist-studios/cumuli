@@ -153,6 +153,28 @@ jobs:
           print(f'Patched {path}')
           "
 
+      - name: Work around missing CPU fallback in Diffuman4D submodule
+        # TEMPORARY, same situation as the camera-calibration workaround
+        # above. Real CI failure (2026-07-29): deps/Diffuman4D's pinned
+        # commit (eaa46c9f) has no CPU fallback in remove_background.py --
+        # on a GPU-less runner, torch.cuda.device_count() is 0, so
+        # gpu_ids/devices ends up empty and num_workers (num_workers *
+        # len(devices)) becomes 0, crashing multiprocessing.Pool with
+        # "Number of processes must be at least 1". A real fix (adds a
+        # ["cpu"] fallback + skips CUDA-only fp16) exists but couldn't be
+        # pushed to solipsist-studios/Diffuman4D directly (no write access
+        # from this account) -- applying it as a patch file here instead.
+        # patches/*.patch is checked in to this repo, not the submodule.
+        # Remove this step once the submodule pointer is updated to a
+        # commit with the real fix upstream. --check first so this fails
+        # loudly (not a silent no-op) if the patch no longer applies
+        # cleanly, rather than masking a different problem.
+        run: |
+          cd deps/Diffuman4D
+          git apply --check ../../patches/diffuman4d-remove_background-cpu-fallback.patch
+          git apply ../../patches/diffuman4d-remove_background-cpu-fallback.patch
+          echo "Patched scripts/preprocess/remove_background.py"
+
       - name: Download brush-cli artifact
         uses: actions/download-artifact@v4
         with:
