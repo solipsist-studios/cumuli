@@ -233,7 +233,7 @@ def build_layout(out_dir: Path):
 # ------------------------------------------------------- candidate window prep
 def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: str,
                               raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir,
-                              tag: str, start_time_s: float = None):
+                              tag: str, start_time_s: float | None = None):
     """Extract a --window-frame candidate instant set starting at start_time_s
     (defaults to target_time_s) using sync_json, then run
     undistort/masks/keypoints/split on each instant. Returns the list of
@@ -290,8 +290,7 @@ def undistort_args(args, frames_dir, out_dir, out_pkl_dir, image_ext):
 
 
 def keypoint_args(args, images_dir, out_kp2d_dir, fmasks_dir):
-    a = ["--images_dir", images_dir, "--out_kp2d_dir", out_kp2d_dir, "--fmasks_dir", fmasks_dir,
-         "--model", args.keypoint_model]
+    a = ["--images_dir", images_dir, "--out_kp2d_dir", out_kp2d_dir, "--fmasks_dir", fmasks_dir]
     if args.sapiens_checkpoint_root:
         a += ["--sapiens_checkpoint_root", args.sapiens_checkpoint_root]
     return a
@@ -509,13 +508,15 @@ def build_parser():
                         help="Stop once this stage completes, instead of running through 'branch'. "
                              "Useful to checkpoint and inspect (e.g. the sync grid) before committing "
                              "to the rest of the pipeline.")
+    parser.add_argument("--no_validate", action="store_true",
+                        help="Skip validate_stage_output.py's on-disk sanity checks after each stage "
+                             "(camera counts, non-degenerate masks/poses, non-empty COLMAP/splat output). "
+                             "On by default so a stage that exits 0 but produced garbage doesn't silently "
+                             "waste GPU time on the next (often more expensive) stage.")
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
-    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for predict_keypoints_2d.py (sapiens2 or sapiens_lite)")
-    parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308",
-                        help="308kp Sapiens2 Goliath (default, needs the Diffuman4D fork's Sapiens2 support) "
-                             "or the legacy 133kp COCO-WholeBody model (needs mmdet, --sapiens_env sapiens_lite)")
+    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for predict_keypoints_2d.py")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
                              "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
@@ -573,8 +574,12 @@ def apply_config_defaults(parser):
     if not pre_args.config.is_file():
         fail(f"--config {pre_args.config} not found")
         sys.exit(1)
-    with open(pre_args.config) as f:
-        config = json.load(f)
+    try:
+        with open(pre_args.config) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        fail(f"--config {pre_args.config} is not valid JSON: {e}")
+        sys.exit(1)
 
     unknown = set(config) - CONFIGURABLE_DEFAULTS
     if unknown:
@@ -614,7 +619,11 @@ def main():
              "will fail. Pass --sapiens_checkpoint_root, or export it before running, e.g. "
              "export SAPIENS_CHECKPOINT_ROOT=~/sapiens")
 
-    videos = discover_cameras(args.video_dir)
+    try:
+        videos = discover_cameras(args.video_dir)
+    except StageError as e:
+        fail(str(e))
+        sys.exit(1)
     n_real = len(videos)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     L = build_layout(args.out_dir)
@@ -624,6 +633,12 @@ def main():
 
     start_idx = STAGE_KEYS.index(args.start_from_stage)
     stop_idx = STAGE_KEYS.index(args.stop_after_stage) if args.stop_after_stage else None
+    if stop_idx is not None and stop_idx < start_idx:
+        fail(f"--stop_after_stage {args.stop_after_stage!r} comes before "
+             f"--start_from_stage {args.start_from_stage!r} in the pipeline order "
+             f"{STAGE_KEYS} -- this would stop before any stage actually ran.")
+        sys.exit(1)
+    real_cameras_arg = ",".join(sorted(v.stem for v in videos))
 
     def should_run(key):
         return STAGE_KEYS.index(key) >= start_idx
@@ -634,11 +649,19 @@ def main():
             return True
         return False
 
+    def validate_stage(key):
+        if args.no_validate:
+            return
+        run_script("validate_stage_output.py", [
+            "--stage", key, "--out_dir", args.out_dir, "--real_cameras", real_cameras_arg,
+        ], conda_env=args.generic_env, label=f"validate_stage_output.py ({key})")
+
     try:
         if should_run("sync"):
             sync_json = stage_sync(args, L, image_ext)
             with open(args.out_dir / "resolved_sync_json.txt", "w") as f:
                 f.write(str(sync_json))
+            validate_stage("sync")
         else:
             info("Skipping stage 'sync' (--start_from_stage)")
             resolved_path = args.out_dir / "resolved_sync_json.txt"
@@ -650,6 +673,7 @@ def main():
 
         if should_run("production"):
             stage_production(args, L, image_ext, sync_json)
+            validate_stage("production")
         else:
             info("Skipping stage 'production' (--start_from_stage)")
             check_expected(L["production_undist"], "production")
@@ -658,6 +682,7 @@ def main():
 
         if should_run("poses"):
             stage_poses(args, L, image_ext, sync_json)
+            validate_stage("poses")
         else:
             info("Skipping stage 'poses' (--start_from_stage)")
             check_expected(L["transforms_refined"], "poses")
@@ -666,6 +691,7 @@ def main():
 
         if should_run("masks"):
             stage_masks(args, L, image_ext)
+            validate_stage("masks")
         else:
             info("Skipping stage 'masks' (--start_from_stage)")
             check_expected(L["flat_fmasks_clean"], "masks")
@@ -674,13 +700,14 @@ def main():
 
         if should_run("branch"):
             stage_branch_direct(args, L)
+            validate_stage("branch")
         else:
             info("Skipping stage 'branch' (--start_from_stage)")
 
     except StageError as e:
         fail(str(e))
-        fail(f"Pipeline stopped. Re-run with --start_from_stage <stage> to resume "
-             f"(completed stages up to and including the one before the failure are reusable).")
+        fail("Pipeline stopped. Re-run with --start_from_stage <stage> to resume "
+             "(completed stages up to and including the one before the failure are reusable).")
         sys.exit(1)
 
     banner("PIPELINE COMPLETE")

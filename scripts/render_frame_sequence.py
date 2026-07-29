@@ -180,7 +180,6 @@ def build_parser():
                              "--calib_run_dir is omitted).")
 
     parser.add_argument("--sapiens_env", default="sapiens2")
-    parser.add_argument("--keypoint_model", choices=["goliath308", "coco_wholebody133"], default="goliath308")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None)
     parser.add_argument("--triangulate_env", default="queen")
     parser.add_argument("--generic_env", default="queen")
@@ -218,6 +217,9 @@ def main():
     if not args.calib_dir.is_dir():
         unified.fail(f"--calib_dir {args.calib_dir} is not a directory")
         sys.exit(1)
+    if args.target_pkl_dir and not args.target_pkl_dir.is_dir():
+        unified.fail(f"--target_pkl_dir {args.target_pkl_dir} is not a directory")
+        sys.exit(1)
 
     if args.calib_run_dir is not None:
         transforms_refined = args.calib_run_dir / "transforms_refined.json"
@@ -246,7 +248,11 @@ def main():
                          "sub-stages are reusable via their own on-disk resume checks).")
             sys.exit(1)
 
-    videos = unified.discover_cameras(args.video_dir)
+    try:
+        videos = unified.discover_cameras(args.video_dir)
+    except unified.StageError as e:
+        unified.fail(str(e))
+        sys.exit(1)
     n_real = len(videos)
 
     unified.banner(f"FRAME SEQUENCE RENDER -- {len(times)} frames, {n_real} cameras")

@@ -63,10 +63,19 @@ def main():
                          help="Extension to save flat images as")
     args = parser.parse_args()
 
-    with open(args.transforms) as f:
-        tf = json.load(f)
-
-    frames = sorted(tf["frames"], key=lambda fr: fr["camera_label"])
+    try:
+        with open(args.transforms) as f:
+            tf = json.load(f)
+        frames = sorted(tf["frames"], key=lambda fr: fr["camera_label"])
+    except json.JSONDecodeError as e:
+        print(f"Error: {args.transforms} is not valid JSON: {e}")
+        sys.exit(1)
+    except KeyError as e:
+        print(f"Error: {args.transforms} is missing expected key {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: could not read {args.transforms}: {e}")
+        sys.exit(1)
 
     args.out_images_flat.mkdir(parents=True, exist_ok=True)
     args.out_transforms.parent.mkdir(parents=True, exist_ok=True)
@@ -92,10 +101,15 @@ def main():
         new_label = f"{len(new_frames):02d}"
         dst_img = args.out_images_flat / f"{new_label}{args.out_image_ext}"
 
-        if args.out_image_ext.lower() == args.image_ext.lower():
-            shutil.copy(src_img, dst_img)
-        else:
-            Image.open(src_img).convert("RGB").save(dst_img)
+        try:
+            if args.out_image_ext.lower() == args.image_ext.lower():
+                shutil.copy(src_img, dst_img)
+            else:
+                Image.open(src_img).convert("RGB").save(dst_img)
+        except Exception as e:
+            print(f"  WARNING: could not read/convert image for {old_label} at {src_img} ({e}), skipping")
+            skipped.append(old_label)
+            continue
 
         label_map[new_label] = old_label
         print(f"  {old_label} (cam {cam_id}) -> {new_label}{args.out_image_ext}")

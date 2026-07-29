@@ -122,11 +122,28 @@ def main():
     out_ext = args.output_ext or (".png" if rt_cmd else ".jpg")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(args.offsets_path) as f:
-        sync_data = json.load(f)
+    try:
+        with open(args.offsets_path) as f:
+            sync_data = json.load(f)
+        offsets = sync_data["offsets"]
+        reference_camera = sync_data["reference_camera"]
+    except json.JSONDecodeError as e:
+        print(f"Error: {args.offsets_path} is not valid JSON: {e}")
+        sys.exit(1)
+    except KeyError as e:
+        print(f"Error: {args.offsets_path} is missing expected key {e}")
+        sys.exit(1)
 
-    offsets = sync_data["offsets"]
-    reference_camera = sync_data["reference_camera"]
+    stems = {}
+    for name in offsets:
+        stems.setdefault((args.movies_dir / name).stem, []).append(name)
+    collisions = {stem: names for stem, names in stems.items() if len(names) > 1}
+    if collisions:
+        print("Error: multiple camera files share the same output filename stem "
+              "(they would silently overwrite each other's extracted frame):")
+        for stem, names in collisions.items():
+            print(f"  {stem!r}: {', '.join(names)}")
+        sys.exit(1)
 
     print(f"Reference camera: {reference_camera}")
     print(f"Extracting {args.window} frame(s) at {args.seconds_into_clip:.2f}s (reference camera time) for all cameras...\n")

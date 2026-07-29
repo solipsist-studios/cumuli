@@ -22,6 +22,7 @@ Usage:
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 
@@ -40,13 +41,25 @@ def main():
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     count = 0
+    skipped = []
     for src_path in json_paths:
         label = src_path.stem  # e.g. "00", "01", ...
 
-        with open(src_path) as f:
-            data = json.load(f)
+        try:
+            with open(src_path) as f:
+                data = json.load(f)
+            instance = data["instance_info"][0]
+        except Exception as e:
+            # An empty instance_info (no detected instance for that
+            # camera/instant -- predict_keypoints_2d.py's own
+            # split_combined_predictions() already skips writing a file in
+            # that case, but the coco_wholebody133 path writes files
+            # directly and can produce one) must skip just this camera,
+            # not crash the whole batch.
+            print(f"  WARNING: skipping {label} ({src_path}): {e}")
+            skipped.append(label)
+            continue
 
-        instance = data["instance_info"][0]
         if "keypoint_depths" not in instance:
             instance["keypoint_depths"] = [0.0] * len(instance["keypoints"])
 
@@ -60,6 +73,9 @@ def main():
         print(f"  {label} -> {out_path}")
 
     print(f"\nDone. Wrote structured 2D keypoints for {count} cameras to {args.out_dir}")
+    if skipped:
+        print(f"Skipped cameras: {skipped}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

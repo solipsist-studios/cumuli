@@ -64,13 +64,17 @@ Key flags:
   Resuming assumes the earlier stages' outputs already exist under
   `--out_dir`.
 - **Sync: verify once, reuse, don't re-trust automatically every run.**
-  `compute_sync_offsets.py`'s only sync method, raw audio
-  cross-correlation (always runs unless `--initial_sync_json` is given),
-  hasn't been reliable enough in real-world testing to trust unverified
-  -- it can silently converge on a wrong offset for periodic/rhythmic
-  audio; `compute_sync_offsets.py` just produces the QA grid below for
-  manual verification. The workflow that's actually worked every time
-  this session:
+  `compute_sync_offsets.py`'s sync method (envelope cross-correlation,
+  always runs unless `--initial_sync_json` is given) had a sign-inversion
+  bug and a confidence metric that couldn't tell a correct lock from a
+  lucky one on periodic/rhythmic audio -- both fixed and validated against
+  a hand-verified sync file, and periodic-audio ambiguity is now flagged
+  via `peak_ratio` rather than passing silently. Nothing in the pipeline
+  auto-gates on that flag yet though (`validate_stage_output.py` only
+  checks that every camera is present, not its confidence), so still
+  treat the live result as a draft to visually confirm rather than
+  something the pipeline itself will catch if wrong. The workflow that's
+  actually worked every time this session:
   1. Run `compute_sync_offsets.py` once, inspect `make_sync_grid.py`'s
      sync grid by eye, hand-tune any camera's `frame_offset` that's
      visibly off, save the result (e.g. `sync_offsets_v5.json`).

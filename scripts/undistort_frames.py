@@ -93,6 +93,22 @@ def resolve_calib_path(calib_dir: Path, cam_id: str) -> Path:
     return candidates[0]
 
 
+def check_camera_matrix_sane(K: np.ndarray, label: str = "camera_matrix"):
+    """Reject a malformed or degenerate camera matrix (wrong shape, NaN/Inf,
+    or a non-positive focal length) loudly. Without this, a bad matrix
+    silently passes through into cv2, which can produce a garbage (e.g.
+    all-black, or structurally destroyed) output frame while the run still
+    reports success -- applies equally to a source calibration and a
+    single-warp TARGET calibration, since cv2 doesn't validate either.
+    """
+    if K.shape != (3, 3):
+        raise ValueError(f"{label} has shape {K.shape}, expected (3, 3)")
+    if not np.all(np.isfinite(K)):
+        raise ValueError(f"{label} contains NaN/Inf values")
+    if K[0, 0] <= 0 or K[1, 1] <= 0:
+        raise ValueError(f"{label} has non-positive focal length (fx={K[0, 0]}, fy={K[1, 1]})")
+
+
 def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, allow_rescale: bool):
     """Check calibration against the actual frame resolution.
 
@@ -100,6 +116,8 @@ def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, a
     cannot be reconciled with the media resolution.
     """
     K = np.asarray(calib["camera_matrix"], dtype=np.float64)
+    check_camera_matrix_sane(K)
+
     img_size = calib.get("image_size")
 
     if img_size is not None and None not in tuple(img_size):
@@ -147,6 +165,14 @@ def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: st
     K_t = np.asarray(target["camera_matrix"], dtype=np.float64)
     t_w, t_h = (int(v) for v in target["image_size"])
 
+    # K was already checked by validate_and_rescale() in the normal
+    # main() call path, but single_warp_undistort() can be called
+    # directly -- re-check defensively. K_t (the TARGET matrix) never
+    # goes through validate_and_rescale() at all, so this is the only
+    # place it gets validated.
+    check_camera_matrix_sane(K, "camera_matrix")
+    check_camera_matrix_sane(K_t, "target camera_matrix")
+
     img = cv2.imread(str(frame_path), flags=cv2.IMREAD_COLOR + cv2.IMREAD_IGNORE_ORIENTATION)
     if img is None:
         raise ValueError(f"could not read {frame_path}")
@@ -181,6 +207,10 @@ def main():
         print(f"Error: {UNDISTORT_SCRIPT} not found -- is the camera-calibration submodule checked out?")
         sys.exit(1)
 
+    for label, path in (("--out_dir", args.out_dir), ("--out_pkl_dir", args.out_pkl_dir)):
+        if path.exists() and not path.is_dir():
+            print(f"Error: {label} {path} exists and is not a directory")
+            sys.exit(1)
     args.out_dir.mkdir(parents=True, exist_ok=True)
     args.out_pkl_dir.mkdir(parents=True, exist_ok=True)
 
@@ -202,14 +232,28 @@ def main():
                 failed.append(cam_id)
                 continue
 
-            with Image.open(frame_path) as im:
-                media_w, media_h = im.size
+            try:
+                with Image.open(frame_path) as im:
+                    media_w, media_h = im.size
+            except OSError as e:
+                print(f"  ERROR {cam_id}: could not read {frame_path}: {e}")
+                failed.append(cam_id)
+                continue
 
             try:
                 calib = load_pkl(calib_path)
                 calib, rescaled = validate_and_rescale(calib, media_w, media_h, cam_id,
                                                        allow_rescale=not args.no_rescale)
-            except ValueError as e:
+            except Exception as e:
+                # Broad on purpose, matching the single-warp branch's own
+                # per-camera catch below: a calibration file can fail in
+                # ways beyond validate_and_rescale's own ValueError --
+                # permission-denied or corrupted/truncated (OSError/
+                # pickle.PickleError/EOFError), or a pickle that loads fine
+                # but isn't the expected dict shape at all (TypeError/
+                # KeyError, e.g. a stray file from a different pipeline
+                # version). Any of these must skip just this camera, not
+                # crash the whole batch.
                 print(f"  ERROR {cam_id}: {e}")
                 failed.append(cam_id)
                 continue
