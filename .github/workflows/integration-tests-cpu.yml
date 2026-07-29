@@ -201,6 +201,20 @@ jobs:
           conda run -n sapiens2 pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.0 torchvision==0.27.0
 
+      - name: Reclaim conda/pip package caches (cache miss only)
+        # Real CI failure (2026-07-29): the run genuinely ran out of disk
+        # space downloading the ~6GB Sapiens checkpoints, on top of 3 fresh
+        # conda envs + their pip package caches. conda and pip both keep
+        # downloaded package files around by default after install -- safe
+        # to clear now, nothing here needs them again this run.
+        if: steps.conda-cache.outputs.cache-hit != 'true'
+        shell: bash -l {0}
+        run: |
+          conda clean -afy
+          conda run -n hloc pip cache purge
+          conda run -n diffuman4d pip cache purge
+          conda run -n sapiens2 pip cache purge
+
       - name: Restore cached Sapiens checkpoints
         id: sapiens-cache
         uses: actions/cache@v4
@@ -226,13 +240,21 @@ jobs:
           conda run -n sapiens2 pip install huggingface_hub
           conda run -n sapiens2 python -c "
           from huggingface_hub import snapshot_download, hf_hub_download
-          import os, shutil
+          import os
           root = os.environ['SAPIENS_CHECKPOINT_ROOT']
           snapshot_download(repo_id='facebook/detr-resnet-101-dc5', local_dir=f'{root}/detector')
-          pose_file = hf_hub_download(repo_id='facebook/sapiens2-pose-1b', filename='sapiens2_1b_pose.safetensors')
-          os.makedirs(f'{root}/pose', exist_ok=True)
-          shutil.copyfile(pose_file, f'{root}/pose/sapiens2_1b_pose.safetensors')
+          hf_hub_download(repo_id='facebook/sapiens2-pose-1b', filename='sapiens2_1b_pose.safetensors', local_dir=f'{root}/pose')
           "
+          # Real CI failure (2026-07-29): the pose file used to go through
+          # hf_hub_download's global cache (~/.cache/huggingface/hub) and
+          # then get shutil.copyfile'd into place -- storing this ~6GB
+          # checkpoint TWICE at once on an already-tight free-tier disk
+          # budget, which ran it out of space mid-copy. local_dir= above
+          # (matching how the detector snapshot already worked) downloads
+          # straight to the destination instead. Clean up the cache dir
+          # regardless, as a second line of defense against library-version
+          # differences in exactly how local_dir is implemented.
+          rm -rf ~/.cache/huggingface
 
       - uses: actions/setup-python@v5
         with:
