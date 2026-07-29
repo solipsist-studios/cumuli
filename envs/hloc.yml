@@ -17,7 +17,13 @@ dependencies:
       - scipy==1.15.3
       - Pillow==12.2.0
       - pycolmap==4.0.4
-      - hloc==1.5
+      # hloc==1.5 is NOT installable from plain PyPI -- there is no
+      # matching distribution there under that name/version. The working
+      # dev env installs it editable from a local clone of the real
+      # upstream repo; recovered this exact commit from pip's own
+      # direct_url.json on that env (found 2026-07-29 when a fresh CI
+      # checkout failed with "No matching distribution found for hloc==1.5").
+      - git+https://github.com/cvg/Hierarchical-Localization.git@c13273bd0ecc2917a35910fd843712a1c6243193
       - opencv-python>=4.5.0   # deps/camera-calibration/requirements.txt
       - matplotlib>=3.4.0      # deps/camera-calibration/requirements.txt
       - tqdm>=4.50.0           # deps/camera-calibration/requirements.txt

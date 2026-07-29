@@ -41,12 +41,17 @@ conda create -n hloc python=3.10 -y
 conda activate hloc
 pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
 pip install -r deps/camera-calibration/requirements.txt  # if not already covered
-pip install pycolmap hloc  # or: pip install -e deps/Hierarchical-Localization if vendored
+pip install pycolmap
+pip install git+https://github.com/cvg/Hierarchical-Localization.git@c13273bd0ecc2917a35910fd843712a1c6243193  # hloc -- NOT on plain PyPI, see envs/hloc.yml
 ```
 
 Known-good combination (verified 2026-07-13): Python 3.10.20, torch
-2.12.0+cu130, torchvision 0.27.0+cu130, pycolmap 4.0.4, hloc 1.5, numpy
-2.2.6, scipy 1.15.3, Pillow 12.2.0.
+2.12.0+cu130, torchvision 0.27.0+cu130, pycolmap 4.0.4, hloc 1.5 (commit
+c13273b above -- this exact source was missing from both this doc and
+envs/hloc.yml until 2026-07-29, when a fresh CI checkout failed trying to
+`pip install hloc==1.5` from plain PyPI, which doesn't have it; recovered
+from pip's own direct_url.json on the working dev env), numpy 2.2.6,
+scipy 1.15.3, Pillow 12.2.0.
 
 ### `diffuman4d` -- masks, Diffuman4D inference, nerfstudio conversion (generate_masks.py, the not-yet-built Diffuman4D-branch scripts, and clean_masks.py's `--retry`)
 
