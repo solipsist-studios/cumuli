@@ -73,11 +73,75 @@ viewer evaluates linear motion and Gaussian temporal opacity on the GPU):
         yields renderable splats continuously; files are written with
         splats sorted by visual importance so early tiles carry the
         most significant content (progressive densification).
+
+Version 3 (.omg4 only – SOG-compressed temporal splats):
+
+    The file is a ZIP archive (ZIP_STORED; entries are webp, already
+    compressed).  Viewers distinguish v3 from v1/v2 by the leading
+    "PK\\x03\\x04" ZIP magic instead of OMG4_MAGIC.  Static attributes
+    follow the PlayCanvas SOG v2 conventions exactly, so the engine's
+    existing SOG decoder (GSplatSogData) reconstructs them unmodified;
+    temporal attributes extend the scheme with two additional textures.
+
+    All webp entries MUST be encoded lossless: every texture carries
+    codebook indices or 16-bit halves, and a single lossy pixel decodes
+    to a wrong codebook entry.  Attribute textures are near-square
+    (width = ceil(sqrt(N)), height = ceil(N / width)); splat i lives at
+    row-major texel i.
+
+    Archive contents:
+        meta.json            – see schema below
+        means_l.webp         – RGB = low bytes of 16-bit normalized means
+        means_u.webp         – RGB = high bytes; per-axis value is
+                               lerp(mins, maxs, u16/65535) in log space
+                               (sign(x)*ln(1+|x|)); alpha unused
+        quats.webp           – smallest-three: RGB = (c/255-0.5)*sqrt(2),
+                               A = 252 + index of dropped component
+        scales.webp          – RGB = indices into scales.codebook (log-space)
+        sh0.webp             – RGB = indices into sh0.codebook (SH DC),
+                               A = linear opacity byte (0..255)
+        shN_centroids.webp   – optional VQ'd higher-order SH: 64 palette
+        shN_labels.webp        entries per row x coeffs texels (width must
+                               be 192/512/960 for 1/2/3 bands — the engine
+                               infers band count from width); labels RG =
+                               16-bit centroid id
+        motion_l.webp        – RGB = low/high bytes of 16-bit normalized
+        motion_u.webp          velocity per axis, same log-transform +
+                               mins/maxs scheme as means (NOT a codebook:
+                               256 levels visibly quantizes motion)
+        trbf.webp            – R = index into trbf.center codebook (s),
+                               G = index into trbf.sigma codebook (s),
+                               BA unused
+
+    meta.json schema (superset of SOG v2 so field conventions match):
+        {
+          "version": 3,
+          "asset":  {"generator": "..."},
+          "count":  N,
+          "time":   {"min": 0.0, "max": 10.0, "fps": 30.0},
+          "means":  {"mins": [3], "maxs": [3], "files": [2]},
+          "scales": {"codebook": [256], "files": [1]},
+          "quats":  {"files": [1]},
+          "sh0":    {"codebook": [256], "files": [1]},
+          "shN":    {"count": K, "bands": B, "codebook": [256],
+                     "files": [2]},                     # optional
+          "motion": {"degree": 1, "mins": [3], "maxs": [3],
+                     "files": [2]},
+          "trbf":   {"center": {"codebook": [256]},
+                     "sigma":  {"codebook": [256]},
+                     "files": [1]},
+          "segments": [{"start": s, "end": e,
+                        "range": [first, last]}, ...]   # optional (P1)
+        }
+
+    Reconstruction at time t is identical to version 2.
 """
 
+import json
 import os
 import struct
 import sys
+import zipfile
 from typing import BinaryIO
 
 import numpy as np
@@ -91,6 +155,12 @@ OMG4_MAGIC  = 0x34474D4F   # "OMG4" in little-endian ASCII bytes
 QUEEN_MAGIC = 0x4E455551   # "QUEN" in little-endian ASCII bytes
 FORMAT_VERSION = 1
 OMG4_V2_VERSION = 2
+OMG4_V3_VERSION = 3        # SOG-compressed ZIP container ("PK" magic)
+
+# Version 3: codebook size and the shN centroid texture widths the engine
+# accepts (it infers the SH band count from the centroids texture width)
+OMG4_V3_CODEBOOK_SIZE = 256
+OMG4_V3_SHN_WIDTHS = {1: 192, 2: 512, 3: 960}
 
 # Version 2 header flag bits
 OMG4_V2_FLAG_SH    = 1     # 45 SH arrays follow the base arrays
@@ -206,6 +276,104 @@ def write_omg4_v2_body_tiled(fp: BinaryIO, arrays, tile_size: int) -> None:
         end = min(start + tile_size, n)
         for a in arrays:
             fp.write(np.ascontiguousarray(a[start:end], dtype=np.float32).tobytes())
+
+
+# ---------------------------------------------------------------------------
+# Version 3 writer (SOG-compressed ZIP container)
+# ---------------------------------------------------------------------------
+
+def build_v3_meta(
+    count: int,
+    time_min: float,
+    time_max: float,
+    fps: float,
+    means_mins,
+    means_maxs,
+    scales_codebook,
+    sh0_codebook,
+    motion_mins,
+    motion_maxs,
+    trbf_center_codebook,
+    trbf_sigma_codebook,
+    shn_count: int = 0,
+    shn_bands: int = 0,
+    shn_codebook=None,
+    motion_degree: int = 1,
+    segments=None,
+    generator: str = 'volumetric-capture-pipeline xz_to_omg4',
+) -> dict:
+    """Assemble the version-3 meta.json dictionary.
+
+    Codebooks and mins/maxs are accepted as numpy arrays or lists; they are
+    converted to plain Python floats for JSON serialization.  `shn_*` are
+    optional — pass shn_count=0 to omit higher-order SH.  `segments` is the
+    optional temporal segment table.
+    """
+    tolist = lambda a: np.asarray(a, dtype=np.float64).tolist()
+
+    meta = {
+        'version': OMG4_V3_VERSION,
+        'asset': {'generator': generator},
+        'count': int(count),
+        'time': {'min': float(time_min), 'max': float(time_max), 'fps': float(fps)},
+        'means': {
+            'mins': tolist(means_mins),
+            'maxs': tolist(means_maxs),
+            'files': ['means_l.webp', 'means_u.webp'],
+        },
+        'scales': {'codebook': tolist(scales_codebook), 'files': ['scales.webp']},
+        'quats': {'files': ['quats.webp']},
+        'sh0': {'codebook': tolist(sh0_codebook), 'files': ['sh0.webp']},
+        'motion': {
+            'degree': int(motion_degree),
+            'mins': tolist(motion_mins),
+            'maxs': tolist(motion_maxs),
+            'files': ['motion_l.webp', 'motion_u.webp'],
+        },
+        'trbf': {
+            'center': {'codebook': tolist(trbf_center_codebook)},
+            'sigma': {'codebook': tolist(trbf_sigma_codebook)},
+            'files': ['trbf.webp'],
+        },
+    }
+    if shn_count > 0:
+        if shn_bands not in OMG4_V3_SHN_WIDTHS:
+            raise ValueError(f'shn_bands must be one of {sorted(OMG4_V3_SHN_WIDTHS)}, got {shn_bands}')
+        meta['shN'] = {
+            'count': int(shn_count),
+            'bands': int(shn_bands),
+            'codebook': tolist(shn_codebook),
+            'files': ['shN_centroids.webp', 'shN_labels.webp'],
+        }
+    if segments:
+        meta['segments'] = segments
+    return meta
+
+
+def write_omg4_v3(out_path: str, meta: dict, textures: dict) -> None:
+    """Write a version-3 .omg4 ZIP archive.
+
+    Parameters
+    ----------
+    out_path : Output .omg4 path.
+    meta     : meta.json dictionary (from build_v3_meta()).
+    textures : Maps webp filename -> encoded lossless-webp bytes.  Must
+               contain every file listed in the meta's `files` entries.
+
+    Entries are ZIP_STORED — webp payloads are already compressed, and
+    stored entries let a viewer byte-range into the archive if needed.
+    """
+    expected = set()
+    for key in ('means', 'scales', 'quats', 'sh0', 'shN', 'motion', 'trbf'):
+        expected.update(meta.get(key, {}).get('files', []))
+    missing = expected - set(textures)
+    if missing:
+        raise ValueError(f'write_omg4_v3: missing texture blobs: {sorted(missing)}')
+
+    with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr('meta.json', json.dumps(meta))
+        for name in sorted(expected):
+            zf.writestr(name, textures[name])
 
 
 # ---------------------------------------------------------------------------
