@@ -175,65 +175,50 @@ jobs:
           # run stale deps).
           key: conda-envs-${{ runner.os }}-${{ hashFiles('envs/*.yml') }}
 
-      - name: Create conda envs (cache miss only)
+      - name: Create conda envs, one at a time, CPU-only from the start (cache miss only)
+        # Real CI failure (2026-07-29): creating all 4 envs first (each
+        # pulling the default CUDA-bundled torch wheel, several GB apiece)
+        # before ever fixing/cleaning any of them stacked all four envs'
+        # worth of unused CUDA bloat simultaneously -- ran the disk out
+        # mid-creation. Structural fix, not another cleanup pass: create,
+        # immediately force CPU-only torch, immediately clean caches, one
+        # env at a time, so peak disk usage is spread out instead of
+        # stacked. PIP_NO_CACHE_DIR also stops pip from keeping its own
+        # downloaded-wheel cache around as a second copy of what's already
+        # unpacked into site-packages.
         if: steps.conda-cache.outputs.cache-hit != 'true'
         shell: bash -l {0}
+        env:
+          PIP_NO_CACHE_DIR: "1"
         run: |
           conda env create -f envs/hloc.yml
-          conda env create -f envs/diffuman4d.yml
-          conda env create -f envs/sapiens2.yml
-          conda env create -f envs/queen.yml
-
-      - name: Install easyvolcap --no-deps into queen (cache miss only)
-        # Can't live in envs/queen.yml -- --no-deps has to apply to just
-        # this one package, but a conda env yml's pip section installs
-        # everything in one batched call. Skips easyvolcap's own heavy
-        # declared dependencies (torch+torchaudio+torchvision+cuda-python+
-        # tensorboard+trimesh+open3d+...); the real code actually touched
-        # here (easyvolcap.utils.console_utils/.parallel_utils/.base_utils)
-        # only needs the lightweight packages envs/queen.yml already lists
-        # -- traced import-by-import, recursively, by hand. See that
-        # file's own comments for the full story.
-        if: steps.conda-cache.outputs.cache-hit != 'true'
-        shell: bash -l {0}
-        run: |
-          conda run -n queen pip install --no-deps \
-            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
-
-      - name: Force CPU-only torch wheels (cache miss only)
-        # The env YAMLs pin plain torch==X.Y.Z -- on a real GPU dev
-        # machine pip resolves that to a CUDA-enabled wheel, which also
-        # runs on CPU but drags in several GB of unused nvidia-*
-        # runtime-library dependencies. A GitHub-hosted runner has no
-        # GPU and no use for those, so re-resolve against PyTorch's own
-        # CPU wheel index instead. Versions must match each envs/*.yml's
-        # pin exactly -- these are NOT independent version choices.
-        if: steps.conda-cache.outputs.cache-hit != 'true'
-        shell: bash -l {0}
-        run: |
           conda run -n hloc pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.0 torchvision==0.27.0
+          conda clean -afy
+
+          conda env create -f envs/diffuman4d.yml
           conda run -n diffuman4d pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.7.1 torchvision==0.22.1
+          conda clean -afy
+
+          conda env create -f envs/sapiens2.yml
           conda run -n sapiens2 pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.0 torchvision==0.27.0
+          conda clean -afy
+
+          conda env create -f envs/queen.yml
           conda run -n queen pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.0
-
-      - name: Reclaim conda/pip package caches (cache miss only)
-        # Real CI failure (2026-07-29): the run genuinely ran out of disk
-        # space downloading the ~6GB Sapiens checkpoints, on top of 3 fresh
-        # conda envs + their pip package caches. conda and pip both keep
-        # downloaded package files around by default after install -- safe
-        # to clear now, nothing here needs them again this run.
-        if: steps.conda-cache.outputs.cache-hit != 'true'
-        shell: bash -l {0}
-        run: |
+          # --no-deps: skips easyvolcap's own heavy declared dependencies
+          # (torch+torchaudio+torchvision+cuda-python+tensorboard+trimesh+
+          # open3d+...) -- the real code actually touched here
+          # (easyvolcap.utils.console_utils/.parallel_utils/.base_utils)
+          # only needs the lightweight packages envs/queen.yml already
+          # lists, traced import-by-import, recursively, by hand. See that
+          # file's own comments for the full story.
+          conda run -n queen pip install --no-deps \
+            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
           conda clean -afy
-          conda run -n hloc pip cache purge
-          conda run -n diffuman4d pip cache purge
-          conda run -n sapiens2 pip cache purge
-          conda run -n queen pip cache purge
 
       - name: Restore cached Sapiens checkpoints
         id: sapiens-cache
