@@ -20,10 +20,8 @@ otherwise permit. A Contributor License Agreement is how that gets granted.
 We say this plainly because some people would rather not contribute under 
 those terms, and you deserve to know before you write code, not after.
 
-> **The CLA is not yet finalized.** Until it is, we cannot merge external
-> contributions. Please still open issues, and please still open draft pull
-> requests if you want to discuss an approach -- we just cannot merge them
-> yet. Watch this file for the update.
+See [Contributor License Agreement](#contributor-license-agreement) below
+for what it grants and how to sign.
 
 ## Before you write code
 
@@ -160,6 +158,81 @@ because there is no redistributable sample capture to run one against.
 Contributions toward either are especially welcome. Note that sample
 footage containing identifiable people needs signed likeness releases
 before it can be published.
+
+## Contributor License Agreement
+
+> **Not yet being collected.** The agreements below are final in substance
+> but are still awaiting sign-off from our lawyer. Until that lands we
+> cannot merge external contributions -- please still open issues, and
+> still open pull requests if you want to discuss an approach. Delete this
+> note once review is complete.
+
+We use the [Project Harmony](https://www.harmonyagreements.org/) contributor
+agreements, version 1.0, unmodified except for the choices every project
+using them has to make:
+
+- **[cla/HA-CLA-I.md](cla/HA-CLA-I.md)** -- sign this if you are
+  contributing **on your own behalf**.
+- **[cla/HA-CLA-E.md](cla/HA-CLA-E.md)** -- sign this if you are
+  contributing **on behalf of a company**, which includes the common case
+  where your employment contract assigns your work to your employer.
+
+If you are employed and unsure which applies, read your employment
+agreement's IP clause, or ask your employer. Getting this wrong is the most
+common way a CLA ends up worthless.
+
+### What it actually grants
+
+Worth reading rather than skimming, but in short:
+
+- **You keep your copyright.** Section 2.1(a) is explicit: you retain
+  ownership and keep every right you had before signing. This is a license
+  to us, not an assignment.
+- **We can license your contribution commercially.** We selected Harmony's
+  Section 2.3 **Option Five**, which lets us license contributions under
+  any terms, including proprietary ones. This is the point of the
+  agreement -- it is what makes selling commercial licenses possible, and
+  we would rather state it plainly than bury it.
+- **But we cannot take it private.** Option Five is conditional: whatever
+  else we do, we must *also* keep licensing your contribution under the
+  license the project was using when you submitted it. We cannot accept
+  your work and then make the project proprietary-only.
+- **You waive moral rights** where they apply (Section 2.4), and grant a
+  patent license (Section 2.2) limited to what your contribution
+  necessarily infringes.
+- **You warrant that you have the right to contribute** (Section 3) -- that
+  you own the work and that granting these rights does not violate an
+  agreement with someone else, typically an employer.
+
+Governing law is Quebec, Canada, where Solipsist Studios Inc. is
+incorporated.
+
+### Signing the CLA
+
+1. Read the applicable agreement in full.
+2. Email **jeff@solipsist.studio** with the subject "CLA" and tell us which
+   one applies and your GitHub username. We will send it for e-signature.
+3. Sign. We countersign and keep the executed copy on file.
+4. Mention in your pull request that you have signed.
+
+This is deliberately a manual process. We are not running a CLA bot: the
+maintained options in that space are thin right now, and your signature is
+the record that establishes our right to license the project commercially,
+so we would rather hold it ourselves than in a third-party service. You
+only sign once; it covers all your future contributions.
+
+### If you do not own the whole contribution
+
+If any part of what you are submitting was written by someone else -- code
+copied from another project, a snippet from a colleague, output you are not
+sure about -- **email jeff@solipsist.studio before opening the pull
+request** and tell us what it is and where it came from. Do not sign the
+CLA asserting ownership you do not have.
+
+This is not a formality. Because we sell commercial licenses, third-party
+code entering the tree under the wrong terms is a real problem for us and
+potentially for you. Flagging it costs a message; discovering it later
+costs a lot more.
 
 ## Scope
 

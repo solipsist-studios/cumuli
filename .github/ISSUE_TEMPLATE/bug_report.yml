@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Please do not report security issues here — see
-        [SECURITY.md](../blob/main/SECURITY.md).
+        [SECURITY.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/SECURITY.md).
 
         Bugs in the wrapped tools (COLMAP, HLOC, Brush, LichtFeld-Studio,
         Sapiens, BiRefNet, Diffuman4D) should go upstream to those projects.
@@ -97,7 +97,7 @@ body:
     attributes:
       label: Before submitting
       options:
-        - label: I read the relevant section of [docs/pipeline.md](../blob/main/docs/pipeline.md)
+        - label: I read the relevant section of [docs/pipeline.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/docs/pipeline.md)
           required: true
         - label: This is a bug in this repository's code, not in a wrapped third-party tool
           required: true

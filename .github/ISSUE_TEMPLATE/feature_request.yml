@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Please open an issue like this before writing code for anything
-        non-trivial — see [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md).
+        non-trivial — see [CONTRIBUTING.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/CONTRIBUTING.md).
         Stages in this pipeline are more coupled than they look, and a short
         conversation up front usually saves a rewritten pull request.
 
