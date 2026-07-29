@@ -67,6 +67,21 @@ def fixed_time(monkeypatch, t):
     monkeypatch.setattr(tb.time, "time", lambda: t)
 
 
+@pytest.fixture(autouse=True)
+def stub_help_probe(monkeypatch):
+    """train_brush.py now runs `brush_app --help` once before building its
+    command, to detect which CLI dialect the target binary speaks (see
+    scripts/train_brush.py). Every test in this file targets the v0.3.0-era
+    dialect (--total-steps, --opac-loss-weight) that FakeProcess/fake_popen
+    below simulate -- stub subprocess.run itself (not just Popen) so that
+    probe doesn't need its own mock in every individual test, and so it
+    can't get routed through a test's fake_popen (which raises TypeError on
+    the extra text=/timeout= kwargs subprocess.run's real Popen call uses)."""
+    class FakeHelpProbe:
+        stdout = "--total-steps ... --opac-loss-weight ..."
+    monkeypatch.setattr(tb.subprocess, "run", lambda *a, **k: FakeHelpProbe())
+
+
 # --------------------------------------------------------------------------
 # main() -- argument validation, cmd/env construction (subprocess.Popen
 # mocked throughout; brush_app itself is never runnable in this environment)

@@ -621,7 +621,8 @@ def test_stage_masks_reuses_all_cached_steps_but_always_triangulates(monkeypatch
 def _branch_args(with_viewer, eval_split_every=None, eval_save_to_disk=False):
     return NS(generic_env="queen", total_train_iters=100, export_every=50,
               brush_app=Path("/brush"), run_name="myrun", display=":2", with_viewer=with_viewer,
-              eval_split_every=eval_split_every, eval_save_to_disk=eval_save_to_disk)
+              eval_split_every=eval_split_every, eval_save_to_disk=eval_save_to_disk,
+              brush_max_resolution=4096)
 
 
 def test_stage_branch_direct_with_viewer_true(monkeypatch, tmp_path):
