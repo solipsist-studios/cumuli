@@ -50,7 +50,12 @@ paste commands and results here
 
 - [ ] `pytest tests/unit` passes locally
 - [ ] I added or updated unit tests for this change
-- [ ] I read [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md)
+- [ ] I read [CONTRIBUTING.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/CONTRIBUTING.md)
+- [ ] I have signed the [CLA](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/CONTRIBUTING.md#contributor-license-agreement)
+      (individual or entity, whichever applies), or I am a Solipsist Studios
+      employee and covered by my employment agreement
+- [ ] Everything in this PR is my own work, or I flagged what is not before
+      opening it
 - [ ] New files carry the SPDX + Required Notice header
 - [ ] Module docstrings updated if I added or changed a flag
 - [ ] I checked whether this affects `render_frame_sequence.py` as well as

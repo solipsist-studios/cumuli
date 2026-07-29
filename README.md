@@ -158,10 +158,13 @@ request. It cannot tell you whether a splat actually got better, though,
 so changes to pose, mask, or training quality still need an end-to-end
 before/after in the PR description.
 
-Note that external contributions cannot be merged until the CLA is
-finalized. Participation is governed by the
-[Code of Conduct](CODE_OF_CONDUCT.md). Security issues go to
-[SECURITY.md](SECURITY.md), not the public tracker.
+External contributions need a signed Contributor License Agreement -- we
+use the Project Harmony agreements ([individual](cla/HA-CLA-I.md),
+[entity](cla/HA-CLA-E.md)). You keep your copyright; the agreement lets us
+license contributions commercially, while requiring that they stay
+available under the project's public license too. Participation is
+governed by the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go
+to [SECURITY.md](SECURITY.md), not the public tracker.
 
 ## License
 
