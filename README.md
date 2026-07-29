@@ -145,11 +145,22 @@ Continue through `docs/pipeline.md` for the rest of the pipeline.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request --
-note especially that there is no test suite, so the PR description carries
-the burden of showing a change works, and that external contributions
-cannot be merged until the CLA is finalized. Participation is governed by
-the [Code of Conduct](CODE_OF_CONDUCT.md). Security issues go to
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/unit
+```
+
+The unit suite mocks out every wrapped tool, so it runs on any machine --
+no GPU, no capture footage, no submodules -- and it gates every pull
+request. It cannot tell you whether a splat actually got better, though,
+so changes to pose, mask, or training quality still need an end-to-end
+before/after in the PR description.
+
+Note that external contributions cannot be merged until the CLA is
+finalized. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md). Security issues go to
 [SECURITY.md](SECURITY.md), not the public tracker.
 
 ## License

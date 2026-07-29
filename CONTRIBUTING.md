@@ -82,33 +82,82 @@ New files need the license header, matching the existing scripts:
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 ```
 
-Match the surrounding style otherwise. There is no linter and no formatter
-config; the existing scripts are the style guide.
+Match the surrounding style otherwise. `ruff` and `mypy` run in CI but are
+advisory, not gates (see [Testing](#testing)); the existing scripts are
+still the practical style guide. `ruff format` is deliberately not enforced
+-- roughly 40 files would need reformatting first, and we would rather not
+bury real changes under a reformat commit.
 
-## Testing -- please read, this is unusual
+## Testing
 
-**There is no test suite.** Not "there is a small one" -- there is none.
-This is a known gap, not a standard we are hiding. It means the burden of
-demonstrating a change works falls on the pull request description.
+```bash
+pip install -r requirements-dev.txt
+pytest tests/unit                # the whole unit suite
+pytest tests/unit -n auto        # parallel, as CI runs it
+pytest tests/unit/test_clean_masks.py -k dilate    # one file, one pattern
+```
 
-For any behavioral change, tell us in the PR:
+**You do not need a GPU or any capture footage to run the unit suite.** The
+tests monkeypatch `subprocess.run` before any wrapped tool is invoked, so
+nothing in `deps/` is executed and no submodules are needed -- CI
+deliberately checks out without them. This is the cheapest way to catch a
+regression, so please run it before opening a PR.
+
+A few things about the setup that will save you confusion:
+
+- `pyproject.toml` puts `scripts/` on `pythonpath`, so tests import pipeline
+  modules directly by name (`import clean_masks as cm`), not by path.
+- `filterwarnings = ["error"]` -- **warnings are errors** in the test run. A
+  new `DeprecationWarning` from a dependency will fail the suite. That is
+  intentional; it is how the pins stay honest.
+- Property-based tests use [Hypothesis][hyp] and are guarded with
+  `pytest.importorskip("hypothesis")`, so they skip cleanly rather than
+  failing collection if it is not installed.
+- `tests/run_mutation_testing.sh` runs mutmut against a staged `src/`-layout
+  copy of the tree (mutmut 3.x only supports certain layouts). It is not
+  part of CI -- run it when you want to check whether a test actually
+  asserts anything.
+
+[hyp]: https://hypothesis.readthedocs.io/
+
+### CI
+
+`.github/workflows/tests.yml` runs on every pull request:
+
+- **unit-tests** -- `pytest tests/unit -n auto`. This gates the merge.
+- **lint** -- `ruff check` and `mypy`, both **advisory** (`continue-on-error`).
+  They will not fail your build. Please still read the annotations; we would
+  like to gate these eventually and every new warning makes that harder.
+
+### What the unit tests do and do not cover
+
+They cover the plumbing: argument construction, file and directory
+conventions, label mapping, error handling. Because they mock out every
+wrapped tool, they **cannot** tell you whether a change produces a better
+splat, a cleaner mask, or a more accurate pose. Passing CI is necessary, not
+sufficient.
+
+So for changes to pose estimation, masking, or training quality, we still
+need evidence in the PR description:
 
 1. The exact command you ran.
-2. What data you ran it on -- how many cameras, what resolution, single
-   frame or a sequence.
-3. What you compared against. A before/after on the same input is worth
-   far more than an assertion that it works.
-4. For anything touching poses, masks, or training: a number. Subject-space
-   median reprojection error is the metric this project already tracks, and
-   `run_pose_refinement.py --report_only` will print it without modifying
-   anything. "Looks the same" is not evidence; "median reprojection error
-   went from 5.1px to 5.0px" is.
+2. The data: how many cameras, what resolution, single frame or a sequence.
+3. A before/after on the same input.
+4. A number. Subject-space median reprojection error is the metric this
+   project already tracks, and `run_pose_refinement.py --report_only` prints
+   it without modifying anything. "Looks the same" is not evidence; "median
+   reprojection error went from 5.1px to 5.0px" is.
 
-If you cannot test a change -- no GPU, no multi-camera footage -- say so
-explicitly rather than implying you did. We would rather know.
+If you cannot run an end-to-end check -- no GPU, no multi-camera footage --
+say so plainly rather than implying you did. A PR that passes the unit
+suite and says "I could not verify the splat quality" is welcome and
+honest. We would rather know.
 
-Contributions of a test suite, or of a small redistributable sample capture
-that would make one possible, are especially welcome. Note that any sample
+### Known gaps
+
+`tests/integration/` exists but is empty. There is no end-to-end test,
+because there is no redistributable sample capture to run one against.
+Contributions toward either are especially welcome. Note that sample
 footage containing identifiable people needs signed likeness releases
 before it can be published.
 
