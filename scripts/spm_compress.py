@@ -132,8 +132,8 @@ def main():
         sys.path.insert(0, scripts_dir)
         from sog_pack import fields_from_v2
         header, _ = fields_from_v2(v2_path)
-        shn = sh_count_for(header['count'])
-        print(f'[4/4] pack v3 (sog_pack.py, auto --shn-count {shn} for {header["count"]} splats)')
+        shn = sh_count_for(header['num_splats'])
+        print(f'[4/4] pack v3 (sog_pack.py, auto --shn-count {shn} for {header["num_splats"]} splats)')
     else:
         print(f'[4/4] pack v3 (sog_pack.py, --shn-count {shn})')
     run([args.python, os.path.join(scripts_dir, 'sog_pack.py'),
