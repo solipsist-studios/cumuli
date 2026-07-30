@@ -95,6 +95,38 @@ that doesn't have the GPU/conda-envs/brush_app/checkpoints this needs. The
 whole pipeline runs fresh from raw video on every test session -- nothing
 is cached/resumed across runs, so a regression anywhere in the chain gets
 caught (see docs/integration-tests.md).
+
+CPU mode (VCP_ALLOW_CPU_RENDERING=1) runs a DELIBERATELY SMALLER config
+than the paragraphs above describe, and skips the three golden-baseline
+quality checks entirely (see each test's own `if allow_cpu_rendering:
+pytest.skip(...)`) -- structural completion only ("did every stage
+produce valid, non-degenerate output", not "does it match a quality
+baseline"). Real CI finding (2026-07-30): the full config's dominant cost
+is Sapiens keypoint prediction (predict_keypoints_2d.py), which runs once
+per --sync_window candidate frame (5 by default) PLUS once more for the
+production frame -- 6 total passes, ~39min each measured locally on an
+11-camera candidate set, i.e. hours of CPU wall time before Brush training
+even starts. A first real CI run of the full config ran past 2 hours
+without finishing. CPU mode cuts this via CPU_REAL_CAMERAS (3 cameras
+instead of 11 -- see CPU_REAL_CAMERAS's own comment: every 2-camera
+pair tried made HLOC's COLMAP reconstruction fail outright with
+insufficient baseline/parallax, confirmed via a fast standalone probe
+that isolates just the reconstruction step -- 3 is the real functional
+minimum, not a scope choice) and CPU_SYNC_WINDOW (2 instead of 5, so
+keypoints/masks run 3x total instead of 6x -- NOT 1, see
+CPU_SYNC_WINDOW's own comment for a real, separate bug that makes
+--sync_window 1 unusable), plus CPU_TOTAL_TRAIN_ITERS (a small
+Brush training count -- quality is unchecked in this mode, so there's no
+reason to train to convergence). The golden-baseline quality checks (and
+the full 11-camera/window-5 config) still run as-is in GPU mode --
+unchanged by any of this. Known tradeoff, not a hidden one: an earlier
+5-camera prototype (see above) failed to register a camera on its first
+HLOC attempt -- fewer cameras measurably makes multi-view registration
+less robust, not just faster, and 2 cameras genuinely isn't enough at
+all (see above, confirmed twice). 3 cameras is a real, honest test of
+"does the pipeline run end-to-end", just a structurally weaker one than
+11 -- acceptable here because CPU mode no longer claims to test
+reconstruction quality at all.
 """
 
 import json
@@ -125,24 +157,53 @@ PIPELINE_TIMEOUT_S_GPU = 3000  # 50min -- comfortably above the ~15-20min real G
                                  # failure fires first. brush_app has genuinely hung on this
                                  # project's own dev machine before; without this, a hang stalls
                                  # pytest forever on a local run.
-PIPELINE_TIMEOUT_S_CPU = 14400  # 4h -- CPU rendering is dramatically slower than GPU, not just for
-                                 # Brush training itself: Sapiens pose estimation (predict_keypoints_2d.py)
-                                 # is CPU-bound regardless of Brush and runs once per sync-correction
-                                 # candidate frame batch (several) plus once for the real production
-                                 # frames, so most of the added wall time here is Sapiens, not Brush.
-                                 # Observed empirically (2026-07-28): sync-correction alone (candidate
-                                 # scoring, before the main pipeline even starts) took >45min on a
-                                 # 32-core dev machine and hadn't finished. Raised from the original
-                                 # 2h (2026-07-29) after a real run on this shared machine hit that
-                                 # ceiling -- not because the pipeline itself was slow, but because an
-                                 # unrelated concurrent workload (another user's own process, real and
-                                 # legitimate, not something to kill) was eating a large fraction of
-                                 # the machine's cores at the same time. 4h gives real headroom against
-                                 # that kind of shared-machine contention without masking a genuine
-                                 # hang -- comfortably below integration-tests-cpu.yml's job timeout
-                                 # (also raised, see that file) so this cleaner failure fires first.
+PIPELINE_TIMEOUT_S_CPU = 7200  # 2h -- CPU mode now runs CPU_REAL_CAMERAS (3, not 11) and
+                                 # CPU_SYNC_WINDOW (2, not 5), so Sapiens keypoint prediction (the
+                                 # dominant cost -- see module docstring) runs on far less data than
+                                 # the old 4h estimate assumed (that number was calibrated against
+                                 # 11 cameras x up to 6 keypoint passes). Still real headroom above
+                                 # the reduced config's expected runtime for CI-runner variance and
+                                 # shared-machine contention, without masking a genuine hang for as
+                                 # long as the old 4h did -- comfortably below
+                                 # integration-tests-cpu.yml's job timeout so this cleaner failure
+                                 # fires first.
 
 REAL_CAMERAS = ["0001", "0002", "0003", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
+
+# CPU mode only -- see module docstring for why (Sapiens keypoint prediction
+# cost scales with camera count x sync window; 3 cameras x 2 window instead
+# of 11 x 5 is what actually makes CI wall time tractable -- every 2-camera
+# pair tried made HLOC's COLMAP reconstruction fail outright, see this
+# constant's own comment below). Real movie files for these three IDs exist
+# in the committed fixture; a CPU_REAL_CAMERAS-only subset dir is built by
+# the pipeline_run fixture below rather than adding a second, separate
+# fixture.
+CPU_REAL_CAMERAS = ["0006", "0007", "0008"]  # NOT 2 cameras -- real finding (2026-07-30):
+                     # HLOC's COLMAP reconstruction failed outright with EVERY 2-camera pair
+                     # tried (0001+0002, then 0006+0007), both "Failed to create any sparse
+                     # model" / "Could not reconstruct any model!" -- confirmed via a fast
+                     # standalone probe (run_hloc.py directly against the real 11-camera
+                     # production frame, bypassing masks/keypoints/Sapiens entirely -- seconds
+                     # per trial instead of 20+min) that this is a genuine 2-view-vs-3-view
+                     # SfM limitation, not specific to which 2 cameras: every 2-camera trial
+                     # failed, every 3-camera trial succeeded (0006+0007+0008 -> 333 3D points,
+                     # 0001+0002+0003 -> 506 points). 3 cameras is the real minimum.
+CPU_SYNC_WINDOW = 2  # NOT 1 -- real bug found running this locally (2026-07-30):
+                      # extract_synced_frames.py's --window has two different output
+                      # layouts, not just "fewer frames": window=1 writes flat files
+                      # (output_dir/0001.jpg), any window>1 writes per-instant subdirs
+                      # (output_dir/f0/, f1/, ...). run_unified_pipeline.py's
+                      # prepare_candidate_window() always expects the subdir layout, so
+                      # --sync_window 1 can never work through this path -- a genuine
+                      # pre-existing bug (affects manual --sync_window 1 use too, not
+                      # just this test), sidestepped here rather than fixed. 2 still
+                      # cuts the dominant Sapiens-keypoint cost from 5x to 2x candidate
+                      # passes and stays on the working side of the window>1 boundary.
+CPU_TOTAL_TRAIN_ITERS = 60  # clears one multiple of refine_every's default (50) with margin,
+                             # so at least one real growth/refine step executes inside brush_app,
+                             # not just export of the raw COLMAP-seeded gaussians -- quality is
+                             # unchecked in CPU mode (see module docstring), so there's no reason
+                             # to train further than that.
 
 # brush_app's --eval-split-every 11 on this 11-image dataset holds out
 # whichever image build_colmap_sparse.py wrote first as flat label "00" --
@@ -196,19 +257,46 @@ def pipeline_run(tmp_path_factory, sapiens_checkpoint_root, brush_app, fixture_d
     out_dir = tmp_path_factory.mktemp("vcp_integration_run")
     ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
+    if allow_cpu_rendering:
+        # CPU_REAL_CAMERAS-only subset: symlink just those movie files
+        # into a fresh dir rather than adding a second fixture -- see
+        # module docstring for why CPU mode uses fewer cameras.
+        # --calib_dir stays pointed at the full fixture: unused per-camera
+        # calibration files for cameras not in this subset are just
+        # ignored by whatever looks calibration up per-camera-label.
+        video_dir = tmp_path_factory.mktemp("vcp_cpu_video_subset")
+        for cam in CPU_REAL_CAMERAS:
+            src = fixture_dir / "movies" / f"{cam}.mp4"
+            (video_dir / src.name).symlink_to(src)
+    else:
+        video_dir = fixture_dir / "movies"
+
     cmd = [
         sys.executable, str(SCRIPTS_DIR / "run_unified_pipeline.py"),
-        "--video_dir", str(fixture_dir / "movies"),
+        "--video_dir", str(video_dir),
         "--calib_dir", str(fixture_dir / "calibration_pkls"),
         "--out_dir", str(out_dir),
         "--target_time", TARGET_TIME,
         "--sapiens_checkpoint_root", sapiens_checkpoint_root,
         "--brush_app", brush_app,
-        "--total_train_iters", str(TOTAL_TRAIN_ITERS),
-        "--export_every", str(TOTAL_TRAIN_ITERS),
-        "--eval_split_every", str(EVAL_SPLIT_EVERY),
-        "--eval_save_to_disk",
     ]
+    if allow_cpu_rendering:
+        cmd += [
+            "--sync_window", str(CPU_SYNC_WINDOW),
+            "--total_train_iters", str(CPU_TOTAL_TRAIN_ITERS),
+            "--export_every", str(CPU_TOTAL_TRAIN_ITERS),
+            # No --eval_split_every/--eval_save_to_disk: the PSNR check is
+            # skipped entirely in CPU mode (test_psnr_meets_baseline), so
+            # there's no reason to hold a camera out of training or render
+            # an eval frame -- trains on all of CPU_REAL_CAMERAS instead.
+        ]
+    else:
+        cmd += [
+            "--total_train_iters", str(TOTAL_TRAIN_ITERS),
+            "--export_every", str(TOTAL_TRAIN_ITERS),
+            "--eval_split_every", str(EVAL_SPLIT_EVERY),
+            "--eval_save_to_disk",
+        ]
 
     env = dict(os.environ)
     if allow_cpu_rendering:
@@ -290,15 +378,16 @@ def test_pipeline_completes_successfully(pipeline_run):
 # rather than trusting the pipeline's self-report.
 # --------------------------------------------------------------------------
 
-def test_sync_stage_produced_offsets_for_every_camera(pipeline_run):
+def test_sync_stage_produced_offsets_for_every_camera(pipeline_run, allow_cpu_rendering):
+    cameras = CPU_REAL_CAMERAS if allow_cpu_rendering else REAL_CAMERAS
     L = pipeline_run["L"]
     data = json.loads(L["sync_offsets"].read_text())
     offset_cams = sorted(Path(name).stem for name in data["offsets"])
-    assert offset_cams == sorted(REAL_CAMERAS)
+    assert offset_cams == sorted(cameras)
     assert L["sync_grid"].is_file()
 
 
-def test_production_stage_undistorted_every_camera(pipeline_run):
+def test_production_stage_undistorted_every_camera(pipeline_run, allow_cpu_rendering):
     """By the time the full run finishes, run_hloc.py's
     restructure_flat_to_percam() side effect (stage 'poses') has already
     turned production_undist/ from flat <camera>.jpg files into
@@ -306,27 +395,32 @@ def test_production_stage_undistorted_every_camera(pipeline_run):
     layout here would silently check the wrong thing once every stage has
     run (caught by running this test against real output before trusting
     it -- see INTEGRATION_TESTS_COMMIT_PLAN.md)."""
+    cameras = CPU_REAL_CAMERAS if allow_cpu_rendering else REAL_CAMERAS
     L = pipeline_run["L"]
     found = sorted(p.name for p in L["production_undist"].glob("Camera_*") if p.is_dir())
-    expected = sorted(f"Camera_{c}" for c in REAL_CAMERAS)
+    expected = sorted(f"Camera_{c}" for c in cameras)
     assert found == expected
     for cam_dir in expected:
         assert any((L["production_undist"] / cam_dir).glob("*.jpg")), f"{cam_dir} has no frame"
 
 
-def test_poses_stage_transforms_cover_every_camera(pipeline_run):
+def test_poses_stage_transforms_cover_every_camera(pipeline_run, allow_cpu_rendering):
+    cameras = CPU_REAL_CAMERAS if allow_cpu_rendering else REAL_CAMERAS
     L = pipeline_run["L"]
     data = json.loads(L["transforms_refined"].read_text())
     labels = sorted(fr["camera_label"] for fr in data["frames"])
-    assert labels == sorted(f"Camera_{c}" for c in REAL_CAMERAS)
+    assert labels == sorted(f"Camera_{c}" for c in cameras)
 
 
-def test_poses_stage_reprojection_error_within_baseline(pipeline_run):
+def test_poses_stage_reprojection_error_within_baseline(pipeline_run, allow_cpu_rendering):
     """Parses run_pose_refinement.py's own printed 'Median residual: X ->
     Y' line (there's no machine-readable report file for this) and checks
     it against golden_baseline.json's recorded value, with slack -- a
     regression guard for THIS fixture, not an absolute accuracy bar (see
-    golden_baseline.json)."""
+    golden_baseline.json). GPU-only -- see module docstring for why CPU
+    mode skips every golden-baseline quality check."""
+    if allow_cpu_rendering:
+        pytest.skip("golden-baseline quality checks are GPU-only in CPU mode -- see module docstring")
     final_median_px = parse_reprojection_error(pipeline_run["log"])
     assert final_median_px is not None, "could not find pose-refinement's 'Median residual: ... -> ...px' line in the run log"
     baseline = GOLDEN["median_reprojection_error_px"]
@@ -336,11 +430,14 @@ def test_poses_stage_reprojection_error_within_baseline(pipeline_run):
     )
 
 
-def test_masks_stage_coverage_within_baseline(pipeline_run):
+def test_masks_stage_coverage_within_baseline(pipeline_run, allow_cpu_rendering):
     """Cleaned-mask coverage fraction per camera vs. golden_baseline.json,
     with slack -- catches a mask silhouette shrinking/ballooning even
     though it'd still pass validate_stage_output.py's much looser
-    0.5%-90% sanity range."""
+    0.5%-90% sanity range. GPU-only -- see module docstring for why CPU
+    mode skips every golden-baseline quality check."""
+    if allow_cpu_rendering:
+        pytest.skip("golden-baseline quality checks are GPU-only in CPU mode -- see module docstring")
     L = pipeline_run["L"]
     for cam in REAL_CAMERAS:
         frac = mask_coverage(L, cam)
@@ -368,12 +465,18 @@ def test_branch_stage_exported_a_nonempty_splat(pipeline_run):
     shutil.copy(newest, ARTIFACTS_DIR / newest.name)
 
 
-def test_psnr_meets_baseline(pipeline_run):
+def test_psnr_meets_baseline(pipeline_run, allow_cpu_rendering):
     """Masked PSNR between Brush's held-out eval render (camera
     HELD_OUT_REAL_CAMERA, excluded from training via --eval_split_every)
     and the real photo from that same camera -- see the module docstring
     for why this is a proxy signal, not a production-quality measurement,
-    and why it's masked to the subject rather than the full frame."""
+    and why it's masked to the subject rather than the full frame.
+    GPU-only -- CPU mode doesn't hold a camera out at all (see the
+    pipeline_run fixture), so there's no eval render to score, and every
+    golden-baseline quality check is skipped in that mode regardless (see
+    module docstring)."""
+    if allow_cpu_rendering:
+        pytest.skip("golden-baseline quality checks are GPU-only in CPU mode -- see module docstring")
     L = pipeline_run["L"]
     score, render_path = held_out_psnr(L, TOTAL_TRAIN_ITERS, HELD_OUT_REAL_CAMERA)
     baseline = GOLDEN["psnr_db"]

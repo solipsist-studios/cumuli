@@ -126,9 +126,9 @@ def check_structurally_sound(run: dict) -> None:
     baseline this script is about to overwrite, which isn't "did the run
     itself work"."""
     t.test_pipeline_completes_successfully(run)
-    t.test_sync_stage_produced_offsets_for_every_camera(run)
-    t.test_production_stage_undistorted_every_camera(run)
-    t.test_poses_stage_transforms_cover_every_camera(run)
+    t.test_sync_stage_produced_offsets_for_every_camera(run, allow_cpu_rendering=False)
+    t.test_production_stage_undistorted_every_camera(run, allow_cpu_rendering=False)
+    t.test_poses_stage_transforms_cover_every_camera(run, allow_cpu_rendering=False)
     t.test_branch_stage_exported_a_nonempty_splat(run)
 
 

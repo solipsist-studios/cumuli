@@ -39,11 +39,11 @@ def test_reprojection_error_check_catches_regression(monkeypatch):
     monkeypatch.setattr(t, "REPROJECTION_ERROR_MARGIN_PX", 10.0)
 
     good_run = {"log": "some preamble\nMedian residual: 100.00px -> 8.00px\nmore log"}
-    t.test_poses_stage_reprojection_error_within_baseline(good_run)  # must not raise
+    t.test_poses_stage_reprojection_error_within_baseline(good_run, allow_cpu_rendering=False)  # must not raise
 
     bad_run = {"log": "some preamble\nMedian residual: 100.00px -> 30.00px\nmore log"}
     with pytest.raises(AssertionError, match="reprojection error"):
-        t.test_poses_stage_reprojection_error_within_baseline(bad_run)
+        t.test_poses_stage_reprojection_error_within_baseline(bad_run, allow_cpu_rendering=False)
 
 
 def test_mask_coverage_check_catches_regression(monkeypatch, tmp_path):
@@ -60,13 +60,13 @@ def test_mask_coverage_check_catches_regression(monkeypatch, tmp_path):
     good_mask = np.zeros((20, 20), dtype=np.uint8)
     good_mask[:5, :4] = 255  # 20/400 = 5%
     Image.fromarray(good_mask).save(L["flat_fmasks_clean"] / "00.png")
-    t.test_masks_stage_coverage_within_baseline(pipeline_run)  # must not raise
+    t.test_masks_stage_coverage_within_baseline(pipeline_run, allow_cpu_rendering=False)  # must not raise
 
     # Bad: subject dropped out of the mask entirely -- 0% coverage.
     bad_mask = np.zeros((20, 20), dtype=np.uint8)
     Image.fromarray(bad_mask).save(L["flat_fmasks_clean"] / "00.png")
     with pytest.raises(AssertionError, match="mask coverage"):
-        t.test_masks_stage_coverage_within_baseline(pipeline_run)
+        t.test_masks_stage_coverage_within_baseline(pipeline_run, allow_cpu_rendering=False)
 
 
 def test_psnr_check_catches_regression(monkeypatch, tmp_path):
@@ -94,11 +94,11 @@ def test_psnr_check_catches_regression(monkeypatch, tmp_path):
     good_render = np.zeros((*size[::-1], 3), dtype=np.uint8)
     good_render[4:12, 4:12] = [130, 128, 126]
     Image.fromarray(good_render, mode="RGB").save(eval_dir / "00.png")
-    t.test_psnr_meets_baseline(pipeline_run)  # must not raise
+    t.test_psnr_meets_baseline(pipeline_run, allow_cpu_rendering=False)  # must not raise
 
     # Bad: render wildly disagrees with ground truth in the subject region -> low PSNR.
     bad_render = np.zeros((*size[::-1], 3), dtype=np.uint8)
     bad_render[4:12, 4:12] = [0, 255, 0]
     Image.fromarray(bad_render, mode="RGB").save(eval_dir / "00.png")
     with pytest.raises(AssertionError, match="masked PSNR"):
-        t.test_psnr_meets_baseline(pipeline_run)
+        t.test_psnr_meets_baseline(pipeline_run, allow_cpu_rendering=False)
