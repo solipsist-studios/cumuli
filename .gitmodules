@@ -13,3 +13,6 @@
 [submodule "deps/camera-calibration"]
 	path = deps/camera-calibration
 	url = https://github.com/solipsist-studios/camera-calibration
+[submodule "deps/LichtFeld-Studio"]
+	path = deps/LichtFeld-Studio
+	url = https://github.com/MrNeRF/LichtFeld-Studio.git
