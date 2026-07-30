@@ -130,9 +130,21 @@ Version 3 (.omg4 only – SOG-compressed temporal splats):
           "trbf":   {"center": {"codebook": [256]},
                      "sigma":  {"codebook": [256]},
                      "files": [1]},
-          "segments": [{"start": s, "end": e,
-                        "range": [first, last]}, ...]   # optional (P1)
+          "segments": {                                 # optional
+            "duration": 0.25,        # segment length (s)
+            "k_sigma": 3.0,          # active-interval half-width in sigmas
+            "persistent": [0, P],    # index range of always-drawn splats
+            "list": [{"t0": s, "t1": s,        # actual time coverage
+                      "range": [first, last]}, # contiguous index range
+                     ...]
+          }
         }
+
+    Segment semantics: splats are ordered [persistent | segment 0 |
+    segment 1 | ...], with each group Morton-ordered internally.  At
+    playback time t a viewer draws [0, P) plus the contiguous index range
+    spanned by the segments whose [t0, t1] coverage contains t; everything
+    else is culled (those splats' temporal opacity is ~0 anyway).
 
     Reconstruction at time t is identical to version 2.
 """

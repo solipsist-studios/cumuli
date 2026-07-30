@@ -806,10 +806,14 @@ if __name__ == '__main__':
                         help='v3 only: VQ centroid count for higher-order SH (default: 65536)')
     parser.add_argument('--webp_method', type=int, default=4, choices=range(7),
                         help='v3 only: libwebp effort 0-6 (default: 4; 6 is smallest/slowest)')
+    parser.add_argument('--segment_duration', type=float, default=0.1,
+                        help='v3 only: temporal segment length in seconds for per-segment '
+                             'culling (default: 0.1; 0 disables segmentation)')
     args = parser.parse_args()
 
     if args.v3:
-        V3_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method}
+        V3_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
+                             'segment_duration': args.segment_duration}
 
     aniso = None
     cam_rots = None

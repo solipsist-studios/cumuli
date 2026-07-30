@@ -170,6 +170,63 @@ def vq_vectors(data: np.ndarray, k: int, iters: int = 8,
     return centroids.cpu().numpy(), labels.cpu().numpy().astype(np.uint32)
 
 
+def compute_v3_order(fields: dict, time_min: float, time_max: float,
+                     segment_duration: float = 0.1,
+                     persistent_span_mult: float = 3.0,
+                     k_sigma: float = 3.8):
+    """Compute the splat ordering and temporal segment table.
+
+    Splats whose active interval [t_center - k*sigma, t_center + k*sigma]
+    spans more than persistent_span_mult segment durations are 'persistent'
+    and placed first (always drawn).  The rest are bucketed by t_center
+    into fixed segments and each bucket is Morton-ordered, so a player can
+    draw [0, persistent_end) plus the contiguous index range of segments
+    whose coverage overlaps the current time.
+
+    Returns (order, segments) where segments is the meta.json table, or
+    (morton order, None) when segment_duration <= 0 (segmentation off).
+    """
+    xyz = np.stack([fields['x'], fields['y'], fields['z']], axis=1)
+    if not segment_duration or segment_duration <= 0:
+        return morton_order(xyz), None
+
+    tc = fields['t_center'].astype(np.float64)
+    ts = np.abs(fields['t_sigma'].astype(np.float64))
+    lo, hi = tc - k_sigma * ts, tc + k_sigma * ts
+    persistent = (hi - lo) > persistent_span_mult * segment_duration
+    n_seg = max(1, int(math.ceil((time_max - time_min) / max(segment_duration, 1e-6))))
+    bucket = np.clip(((tc - time_min) / segment_duration).astype(np.int64), 0, n_seg - 1)
+
+    idx_all = np.arange(len(tc))
+    p_idx = idx_all[persistent]
+    if len(p_idx):
+        p_idx = p_idx[morton_order(xyz[p_idx])]
+    pieces = [p_idx]
+    seg_list = []
+    cursor = len(p_idx)
+    for s in range(n_seg):
+        mask = ~persistent & (bucket == s)
+        s_idx = idx_all[mask]
+        if len(s_idx):
+            s_idx = s_idx[morton_order(xyz[s_idx])]
+            t0, t1 = float(lo[mask].min()), float(hi[mask].max())
+        else:
+            t0 = time_min + s * segment_duration
+            t1 = t0 + segment_duration
+        pieces.append(s_idx)
+        seg_list.append({'t0': t0, 't1': t1, 'range': [cursor, cursor + len(s_idx)]})
+        cursor += len(s_idx)
+
+    order = np.concatenate(pieces)
+    segments = {
+        'duration': float(segment_duration),
+        'k_sigma': float(k_sigma),
+        'persistent': [0, int(len(p_idx))],
+        'list': seg_list,
+    }
+    return order, segments
+
+
 def morton_order(xyz: np.ndarray) -> np.ndarray:
     """Permutation sorting splats by 30-bit Morton code of position —
     the spatial ordering that makes the webp textures compress well."""
@@ -254,19 +311,21 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
 def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
             fps: float, shn_count: int = 65536, webp_method: int = 4,
             generator: str = 'volumetric-capture-pipeline sog_pack v1',
-            segments=None, cov2d_scale=None, reorder: bool = True) -> dict:
+            cov2d_scale=None, segment_duration: float = 0.1,
+            order_segments=None) -> dict:
     """Quantize v2-style field arrays and write a version-3 .omg4 archive.
 
     `fields` maps OMG4_V2_FIELDS names to float32[N] arrays, plus optional
-    'f_rest' as float32[N, 45].  Returns the meta dict that was written.
+    'f_rest' as float32[N, 45].  `order_segments` accepts a precomputed
+    (order, segments) pair from compute_v3_order() (the CLI shares it with
+    verify_v3); otherwise it is computed here.  Returns the written meta.
     """
     n = len(fields['x'])
+    if order_segments is None:
+        order_segments = compute_v3_order(fields, time_min, time_max, segment_duration)
+    order, segments = order_segments
+    fields = {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
     xyz = np.stack([fields['x'], fields['y'], fields['z']], axis=1)
-
-    if reorder:
-        order = morton_order(xyz)
-        fields = {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
-        xyz = xyz[order]
 
     w, h = tex_dims(n)
     textures = {}
@@ -323,9 +382,10 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
 # Verification: decode the archive back and report quantization error
 # ---------------------------------------------------------------------------
 
-def verify_v3(v3_path: str, fields: dict):
+def verify_v3(v3_path: str, fields: dict, order: np.ndarray):
     """Decode the written archive exactly as the engine decoder would and
-    report worst-case reconstruction error per attribute."""
+    report worst-case reconstruction error per attribute.  `order` must be
+    the same permutation pack_v3 applied (from compute_v3_order)."""
     import json
     import zipfile
 
@@ -340,7 +400,6 @@ def verify_v3(v3_path: str, fields: dict):
         t = mins[col] + q * (maxs[col] - mins[col])
         return np.sign(t) * (np.exp(np.abs(t)) - 1.0)
 
-    order = morton_order(np.stack([fields['x'], fields['y'], fields['z']], axis=1))
     src = {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
 
     report = {}
@@ -409,6 +468,9 @@ def main():
     parser.add_argument('--strip-sh', action='store_true', help='Drop higher-order SH entirely')
     parser.add_argument('--webp-method', type=int, default=4, choices=range(7),
                         help='libwebp effort 0-6 (default 4; 6 is smallest/slowest)')
+    parser.add_argument('--segment-duration', type=float, default=0.1,
+                        help='Temporal segment length in seconds for per-segment culling '
+                             '(default 0.1; 0 disables segmentation)')
     parser.add_argument('--verify', action='store_true',
                         help='Decode the output and report per-attribute quantization error')
     args = parser.parse_args()
@@ -421,9 +483,29 @@ def main():
     print(f"Read {args.input}: {n:,} splats, SH={'yes' if has_sh else 'no'}"
           f"{' (stripped)' if args.strip_sh and has_sh else ''}")
 
+    order_segments = compute_v3_order(fields, header['time_min'], header['time_max'],
+                                      args.segment_duration)
     meta = pack_v3(args.output, fields, header['time_min'], header['time_max'],
                    header['fps'], shn_count=args.shn_count, webp_method=args.webp_method,
-                   cov2d_scale=header.get('cov2d_scale'))
+                   cov2d_scale=header.get('cov2d_scale'), order_segments=order_segments)
+
+    segments = order_segments[1]
+    if segments:
+        p0, p1 = segments['persistent']
+        seg_list = segments['list']
+        counts = [s['range'][1] - s['range'][0] for s in seg_list]
+        # expected drawn fraction: persistent plus the contiguous run of
+        # segments whose coverage contains t, sampled across the clip
+        drawn = []
+        for t in np.linspace(header['time_min'], header['time_max'], 21):
+            active = [s for s in seg_list if s['t0'] <= t <= s['t1']]
+            dyn = (max(s['range'][1] for s in active) - min(s['range'][0] for s in active)) if active else 0
+            drawn.append((p1 - p0 + dyn) / n)
+        print(f"  Segments: {len(seg_list)} x {segments['duration']}s, "
+              f"persistent {p1 - p0:,} ({(p1 - p0) / n:.1%}), "
+              f"per-segment median {int(np.median(counts)):,} splats")
+        print(f"  Drawn fraction with culling: mean {np.mean(drawn):.1%}, "
+              f"max {np.max(drawn):.1%} (vs 100% without)")
 
     report_output(args.output)
     import os
@@ -433,7 +515,7 @@ def main():
           f'({in_size / out_size:.1f}x, {out_size / n:.1f} bytes/splat)')
 
     if args.verify:
-        verify_v3(args.output, fields)
+        verify_v3(args.output, fields, order_segments[0])
 
 
 if __name__ == '__main__':
