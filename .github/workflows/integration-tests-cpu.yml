@@ -326,7 +326,28 @@ jobs:
 
       - name: Run integration tests (CPU-only, real pipeline, JUnit XML)
         shell: bash -l {0}
-        run: pytest tests/integration -q --junitxml=junit-integration-cpu.xml
+        # The [resmon] background loop streams memory/disk/top-process into
+        # the live log every 20s. Real CI failure (2026-07-29, twice): the
+        # runner VM died with a bare "shutdown signal" / exit 143 and zero
+        # pytest output -- root cause turned out to be BiRefNet CPU inference
+        # peaking at 21.6GB RSS (measured locally) on a 16GB VM, but nothing
+        # in the log said so. If a future stage OOMs the VM, the last [resmon]
+        # lines will show memory climbing toward 16GB right before death,
+        # instead of leaving another unexplained 143.
+        run: |
+          (
+            while true; do
+              echo "[resmon] $(date -u +%H:%M:%S)" \
+                "mem=$(free -m | awk 'NR==2{print $3"/"$2"MB"}')" \
+                "swap=$(free -m | awk 'NR==3{print $3"/"$2"MB"}')" \
+                "disk_avail=$(df -BM --output=avail / | tail -1 | tr -d ' ')" \
+                "top=$(ps -eo rss,comm --sort=-rss --no-headers | head -1 | awk '{printf "%s:%dMB", $2, $1/1024}')"
+              sleep 20
+            done
+          ) &
+          RESMON_PID=$!
+          trap 'kill "$RESMON_PID" 2>/dev/null || true' EXIT
+          pytest tests/integration -q --junitxml=junit-integration-cpu.xml
 
       - name: Publish test results as inline PR annotations
         if: always()
