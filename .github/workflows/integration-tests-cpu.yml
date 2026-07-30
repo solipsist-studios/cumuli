@@ -240,6 +240,28 @@ jobs:
           PIP_NO_CACHE_DIR: "1"
         run: |
           conda env create -f envs/hloc.yml
+          # Real CI failure (2026-07-30, this PR's first genuine cache-miss
+          # conda-env build to ever reach real HLOC feature extraction --
+          # every earlier CI attempt failed upstream of this point, so this
+          # gap was never exercised until now): envs/hloc.yml's `pip install
+          # git+https://...@<commit>` line installs hloc's own code, but
+          # `pip install git+URL` never fetches git submodules -- and hloc's
+          # SuperPoint extractor (hloc/extractors/superpoint.py) imports
+          # from third_party/SuperGluePretrainedNetwork, one of several
+          # submodules of the Hierarchical-Localization repo, so that plain
+          # pip install produces a package that crashes the instant SuperPoint
+          # feature extraction runs: "ModuleNotFoundError: No module named
+          # 'SuperGluePretrainedNetwork'". This exact gap is why the working
+          # local dev env's hloc install is editable from a real clone
+          # instead (see envs/hloc.yml's own comment) -- reproducing that
+          # here: clone the SAME pinned commit git+ already installed above
+          # WITH submodules, then reinstall editable (--no-deps: the plain
+          # install above already resolved every real dependency correctly,
+          # this is only replacing hloc's own code with a submodule-complete
+          # copy, not re-resolving anything).
+          git clone --recurse-submodules https://github.com/cvg/Hierarchical-Localization.git /tmp/hloc-src
+          (cd /tmp/hloc-src && git checkout c13273bd0ecc2917a35910fd843712a1c6243193 && git submodule update --init --recursive)
+          conda run -n hloc pip install --no-deps -e /tmp/hloc-src
           conda run -n hloc pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.0 torchvision==0.27.0
           conda clean -afy
