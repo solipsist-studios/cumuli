@@ -228,6 +228,22 @@ def build_layout(out_dir: Path):
 
 
 # ------------------------------------------------------- candidate window prep
+def _instant_dirs(base_dirs: tuple[Path, ...], window: int, k: int) -> tuple[Path, ...]:
+    """The k-th candidate instant's set of per-purpose dirs, matching
+    whichever output layout extract_synced_frames.py actually produces for
+    this window size: window==1 writes flat (directly into each base dir,
+    no subdir at all -- see that script's own --window==1 special case),
+    any window>1 writes per-instant f0/../f{N-1}/ subdirs. Real bug found
+    running this locally (2026-07-30): --sync_window 1 through this
+    orchestrator always assumed the subdir layout unconditionally, so it
+    looked for an f0/ dir extract_synced_frames.py never created, and
+    crashed immediately -- window==1 is genuinely a different code path in
+    that script, not just "fewer frames"."""
+    if window == 1:
+        return base_dirs
+    return tuple(d / f"f{k}" for d in base_dirs)
+
+
 def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: str,
                               raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir,
                               tag: str, start_time_s: float | None = None):
@@ -245,8 +261,9 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
 
     poses2d_dirs = []
     for k in range(window):
-        f_raw, f_undist, f_pkl = raw_dir / f"f{k}", undist_dir / f"f{k}", pkl_dir / f"f{k}"
-        f_fmask, f_kp2d, f_poses2d = fmasks_dir / f"f{k}", kp2d_dir / f"f{k}", poses2d_dir / f"f{k}"
+        f_raw, f_undist, f_pkl, f_fmask, f_kp2d, f_poses2d = _instant_dirs(
+            (raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir), window, k
+        )
 
         if f_poses2d.is_dir() and any(f_poses2d.rglob("*.json")):
             info(f"f{k} ({tag}) already fully processed on disk -- reusing "
@@ -352,7 +369,8 @@ def stage_production(args, L, image_ext, sync_json: Path):
 def stage_poses(args, L, image_ext, sync_json: Path):
     banner("STAGE: POSES (background estimation & keypoint refine)")
 
-    poses2d_dirs = [L["cand_corr_poses2d"] / f"f{k}" for k in range(args.sync_window)]
+    poses2d_dirs = [_instant_dirs((L["cand_corr_poses2d"],), args.sync_window, k)[0]
+                     for k in range(args.sync_window)]
     if all(d.is_dir() and any(d.rglob("*.json")) for d in poses2d_dirs):
         info("Corrected-sync candidate window already complete on disk -- reusing it "
              "(delete sync_candidates_corrected*/ under --out_dir to force a redo).")

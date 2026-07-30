@@ -392,10 +392,12 @@ def test_prepare_candidate_window_reuses_already_processed_frame(monkeypatch, tm
         calls.append(script_name)
     monkeypatch.setattr(unified, "run_script", fake_run_script)
 
+    # window=1 uses the flat layout (no f0/ subdir) -- matches
+    # extract_synced_frames.py's own --window==1 special case, see
+    # _instant_dirs's docstring for the real bug this guards against.
     poses2d_dir = tmp_path / "poses2d"
-    f0 = poses2d_dir / "f0"
-    f0.mkdir(parents=True)
-    (f0 / "Camera_0000.json").write_text("{}")
+    poses2d_dir.mkdir(parents=True)
+    (poses2d_dir / "Camera_0000.json").write_text("{}")
 
     dirs = unified.prepare_candidate_window(
         _window_args(tmp_path), {}, tmp_path / "sync.json", 1, ".jpg",
@@ -405,7 +407,24 @@ def test_prepare_candidate_window_reuses_already_processed_frame(monkeypatch, tm
     # extract_synced_frames.py always runs; the per-frame pipeline is
     # skipped entirely for the already-processed frame
     assert calls == ["extract_synced_frames.py"]
-    assert dirs == [f0]
+    assert dirs == [poses2d_dir]
+
+
+def test_prepare_candidate_window_window_1_uses_flat_layout_not_f0_subdir(monkeypatch, tmp_path):
+    """Real bug found running this locally (2026-07-30): --sync_window 1
+    always assumed the f0/../f{N-1}/ subdir layout that extract_synced_frames.py
+    only produces for window>1 -- window==1 writes flat instead, so the
+    orchestrator looked for a dir that was never created and crashed."""
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        pass
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+
+    dirs = unified.prepare_candidate_window(
+        _window_args(tmp_path), {}, tmp_path / "sync.json", 1, ".jpg",
+        tmp_path / "raw", tmp_path / "undist", tmp_path / "pkl",
+        tmp_path / "fmasks", tmp_path / "kp2d", tmp_path / "poses2d", tag="test",
+    )
+    assert dirs == [tmp_path / "poses2d"]
 
 
 def test_prepare_candidate_window_forwards_pp3_dir(monkeypatch, tmp_path):

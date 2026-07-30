@@ -112,10 +112,11 @@ instead of 11 -- see CPU_REAL_CAMERAS's own comment: every 2-camera
 pair tried made HLOC's COLMAP reconstruction fail outright with
 insufficient baseline/parallax, confirmed via a fast standalone probe
 that isolates just the reconstruction step -- 3 is the real functional
-minimum, not a scope choice) and CPU_SYNC_WINDOW (2 instead of 5, so
-keypoints/masks run 3x total instead of 6x -- NOT 1, see
-CPU_SYNC_WINDOW's own comment for a real, separate bug that makes
---sync_window 1 unusable), plus CPU_TOTAL_TRAIN_ITERS (a small
+minimum, not a scope choice) and CPU_SYNC_WINDOW (1 instead of 5, so
+keypoints/masks run 2x total instead of 6x -- see CPU_SYNC_WINDOW's own
+comment: this required a real fix to run_unified_pipeline.py, not just
+a config value, since --sync_window 1 crashed outright before that fix),
+plus CPU_TOTAL_TRAIN_ITERS (a small
 Brush training count -- quality is unchecked in this mode, so there's no
 reason to train to convergence). The golden-baseline quality checks (and
 the full 11-camera/window-5 config) still run as-is in GPU mode --
@@ -158,7 +159,7 @@ PIPELINE_TIMEOUT_S_GPU = 3000  # 50min -- comfortably above the ~15-20min real G
                                  # project's own dev machine before; without this, a hang stalls
                                  # pytest forever on a local run.
 PIPELINE_TIMEOUT_S_CPU = 7200  # 2h -- CPU mode now runs CPU_REAL_CAMERAS (3, not 11) and
-                                 # CPU_SYNC_WINDOW (2, not 5), so Sapiens keypoint prediction (the
+                                 # CPU_SYNC_WINDOW (1, not 5), so Sapiens keypoint prediction (the
                                  # dominant cost -- see module docstring) runs on far less data than
                                  # the old 4h estimate assumed (that number was calibrated against
                                  # 11 cameras x up to 6 keypoint passes). Still real headroom above
@@ -188,17 +189,20 @@ CPU_REAL_CAMERAS = ["0006", "0007", "0008"]  # NOT 2 cameras -- real finding (20
                      # SfM limitation, not specific to which 2 cameras: every 2-camera trial
                      # failed, every 3-camera trial succeeded (0006+0007+0008 -> 333 3D points,
                      # 0001+0002+0003 -> 506 points). 3 cameras is the real minimum.
-CPU_SYNC_WINDOW = 2  # NOT 1 -- real bug found running this locally (2026-07-30):
+CPU_SYNC_WINDOW = 1  # Real bug found running this locally (2026-07-30):
                       # extract_synced_frames.py's --window has two different output
                       # layouts, not just "fewer frames": window=1 writes flat files
                       # (output_dir/0001.jpg), any window>1 writes per-instant subdirs
                       # (output_dir/f0/, f1/, ...). run_unified_pipeline.py's
-                      # prepare_candidate_window() always expects the subdir layout, so
-                      # --sync_window 1 can never work through this path -- a genuine
-                      # pre-existing bug (affects manual --sync_window 1 use too, not
-                      # just this test), sidestepped here rather than fixed. 2 still
-                      # cuts the dominant Sapiens-keypoint cost from 5x to 2x candidate
-                      # passes and stays on the working side of the window>1 boundary.
+                      # prepare_candidate_window()/stage_poses() always assumed the
+                      # subdir layout, so --sync_window 1 crashed immediately (affected
+                      # manual --sync_window 1 use too, not just this test). FIXED
+                      # (2026-07-30) in run_unified_pipeline.py's new _instant_dirs()
+                      # helper, which matches whichever layout extract_synced_frames.py
+                      # actually produces. 1 cuts the dominant Sapiens-keypoint cost
+                      # from 5x to 1x candidate pass -- measured locally: 22.7min total
+                      # vs 27.8min at window=2, real end-to-end pipeline success
+                      # (including the triangulate_and_project_keypoints.py step).
 CPU_TOTAL_TRAIN_ITERS = 60  # clears one multiple of refine_every's default (50) with margin,
                              # so at least one real growth/refine step executes inside brush_app,
                              # not just export of the raw COLMAP-seeded gaussians -- quality is
