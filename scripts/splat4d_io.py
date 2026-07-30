@@ -413,32 +413,44 @@ def write_omg4_v3_streamed(out_path: str, meta: dict, entries, reveal_through: i
     def local_size(name: str, data: bytes) -> int:
         return 30 + len(name) + len(data)
 
-    # meta.json contains reveal_bytes, whose digit count feeds back into
-    # its own size — iterate to a fixed point (converges in <= 3 passes).
+    # meta.json contains reveal_bytes / geometry_bytes, whose digit counts
+    # feed back into its own size — iterate to a fixed point (converges in
+    # a few passes).  geometry_bytes marks the end of the last geometry
+    # entry (before shN_centroids/labels): players use it with measured
+    # bandwidth to hold the playhead until gap-free playback is possible.
     streams = meta.setdefault('streams', {})
-    for _ in range(4):
+    geometry_through = next(
+        (i for i in range(len(entries) - 1, -1, -1)
+         if '/shN_labels' not in entries[i][0] and entries[i][0] != 'shN_centroids.webp'),
+        len(entries) - 1)
+    for _ in range(6):
         meta_bytes = json.dumps(meta).encode()
+        prev = (streams.get('reveal_bytes'), streams.get('geometry_bytes'))
         pos = local_size('meta.json', meta_bytes)
-        for name, data in entries[:reveal_through + 1]:
+        for i, (name, data) in enumerate(entries):
             pos += local_size(name, data)
-        if streams.get('reveal_bytes') == pos:
+            if i == reveal_through:
+                streams['reveal_bytes'] = pos
+            if i == geometry_through:
+                streams['geometry_bytes'] = pos
+        if prev == (streams['reveal_bytes'], streams['geometry_bytes']):
             break
-        streams['reveal_bytes'] = pos
 
     with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_STORED) as zf:
         zf.writestr('meta.json', json.dumps(meta))
         for name, data in entries:
             zf.writestr(name, data)
 
-    # Verify the analytic reveal offset against the real layout: the entry
-    # after reveal_through must start exactly at reveal_bytes.
-    if reveal_through + 1 < len(entries):
-        with zipfile.ZipFile(out_path) as zf:
-            info = zf.getinfo(entries[reveal_through + 1][0])
-            if info.header_offset != streams['reveal_bytes']:
-                raise AssertionError(
-                    f'write_omg4_v3_streamed: reveal_bytes {streams["reveal_bytes"]} != '
-                    f'actual offset {info.header_offset} (zip writer added extra fields?)')
+    # Verify the analytic offsets against the real layout: the entry after
+    # each marker must start exactly at the stored byte offset.
+    with zipfile.ZipFile(out_path) as zf:
+        for key, idx in (('reveal_bytes', reveal_through), ('geometry_bytes', geometry_through)):
+            if idx + 1 < len(entries):
+                info = zf.getinfo(entries[idx + 1][0])
+                if info.header_offset != streams[key]:
+                    raise AssertionError(
+                        f'write_omg4_v3_streamed: {key} {streams[key]} != '
+                        f'actual offset {info.header_offset} (zip writer added extra fields?)')
 
 
 # ---------------------------------------------------------------------------
