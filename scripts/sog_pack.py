@@ -32,6 +32,7 @@ from splat4d_io import (
     OMG4_V3_SHN_WIDTHS,
     build_v3_meta,
     write_omg4_v3,
+    write_omg4_v3_streamed,
     report_output,
 )
 from omg4_repack import read_omg4_v2, read_omg4_v2_tiled
@@ -246,21 +247,21 @@ def morton_order(xyz: np.ndarray) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Attribute packers (each returns textures + meta fragments)
+# Attribute packers
 # ---------------------------------------------------------------------------
 
-def pack_split16_pair(values3: np.ndarray, w: int, h: int, n: int):
-    """Shared means/motion packer: log-transform, per-axis 16-bit split."""
+def compute_split16_planes(values3: np.ndarray):
+    """Shared means/motion quantizer: log-transform, per-axis 16-bit split.
+    Returns (lo[N,3], hi[N,3], mins, maxs) byte planes."""
     t = log_transform(values3.astype(np.float64))
     mins, maxs = t.min(axis=0), t.max(axis=0)
     lo, hi = split16(t, mins, maxs)
-    tex_l = to_rgba(w, h, (lo[:, 0], lo[:, 1], lo[:, 2], 255), n)
-    tex_u = to_rgba(w, h, (hi[:, 0], hi[:, 1], hi[:, 2], 255), n)
-    return tex_l, tex_u, mins, maxs
+    return lo, hi, mins, maxs
 
 
-def pack_quats(rot_wxyz: np.ndarray, w: int, h: int, n: int) -> np.ndarray:
-    """Smallest-three quaternion encoding, mode in alpha (252 + dropped)."""
+def compute_quat_planes(rot_wxyz: np.ndarray):
+    """Smallest-three quaternion encoding.  Returns (bytes[N,3], mode[N])
+    where mode = 252 + dropped-component code (texture alpha channel)."""
     q = rot_wxyz.astype(np.float64)
     q /= np.linalg.norm(q, axis=1, keepdims=True)
     # decoder component order is (x, y, z, w); v2 stores (w, x, y, z)
@@ -277,7 +278,7 @@ def pack_quats(rot_wxyz: np.ndarray, w: int, h: int, n: int) -> np.ndarray:
     stored = np.take_along_axis(xyzw, keep[dropped], axis=1)
     b = np.clip(np.rint((stored / SQRT2 + 0.5) * 255.0), 0, 255).astype(np.uint8)
     mode = (252 + (dropped + 1) % 4).astype(np.uint8)
-    return to_rgba(w, h, (b[:, 0], b[:, 1], b[:, 2], mode), n)
+    return b, mode
 
 
 def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
@@ -312,13 +313,20 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
             fps: float, shn_count: int = 65536, webp_method: int = 4,
             generator: str = 'volumetric-capture-pipeline sog_pack v1',
             cov2d_scale=None, segment_duration: float = 0.1,
-            order_segments=None) -> dict:
+            order_segments=None, stream: bool = True) -> dict:
     """Quantize v2-style field arrays and write a version-3 .omg4 archive.
 
     `fields` maps OMG4_V2_FIELDS names to float32[N] arrays, plus optional
     'f_rest' as float32[N, 45].  `order_segments` accepts a precomputed
     (order, segments) pair from compute_v3_order() (the CLI shares it with
     verify_v3); otherwise it is computed here.  Returns the written meta.
+
+    With stream=True (and segmentation on), the archive uses the streamed
+    layout: one webp texture set per group (persistent, then one per
+    temporal segment), written in play order so a sequential download can
+    decode and reveal the scene progressively.  Quantization is global
+    either way — codebooks, mins/maxs and shN centroids live in meta.json
+    and are shared by every group.
     """
     n = len(fields['x'])
     if order_segments is None:
@@ -327,44 +335,53 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
     fields = {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
     xyz = np.stack([fields['x'], fields['y'], fields['z']], axis=1)
 
-    w, h = tex_dims(n)
-    textures = {}
-
-    means_l, means_u, m_mins, m_maxs = pack_split16_pair(xyz, w, h, n)
-    textures['means_l.webp'] = encode_webp(means_l, webp_method)
-    textures['means_u.webp'] = encode_webp(means_u, webp_method)
+    # -- global quantization: per-splat byte planes + shared codebooks -----
+    m_lo, m_hi, m_mins, m_maxs = compute_split16_planes(xyz)
 
     rot = np.stack([fields[f'rot_{i}'] for i in range(4)], axis=1)
-    textures['quats.webp'] = encode_webp(pack_quats(rot, w, h, n), webp_method)
+    q_b, q_mode = compute_quat_planes(rot)
 
     scales = np.stack([fields[f'scale_{i}'] for i in range(3)], axis=1)
     scales_cb, scales_idx = kmeans_1d(scales)
-    textures['scales.webp'] = encode_webp(
-        to_rgba(w, h, (scales_idx[:, 0], scales_idx[:, 1], scales_idx[:, 2], 255), n), webp_method)
 
     f_dc = np.stack([fields[f'f_dc_{i}'] for i in range(3)], axis=1)
     sh0_cb, sh0_idx = kmeans_1d(f_dc)
     alpha = np.clip(np.rint(255.0 / (1.0 + np.exp(-fields['opacity'].astype(np.float64)))), 0, 255).astype(np.uint8)
-    textures['sh0.webp'] = encode_webp(
-        to_rgba(w, h, (sh0_idx[:, 0], sh0_idx[:, 1], sh0_idx[:, 2], alpha), n), webp_method)
 
     vel = np.stack([fields['vx'], fields['vy'], fields['vz']], axis=1)
-    motion_l, motion_u, v_mins, v_maxs = pack_split16_pair(vel, w, h, n)
-    textures['motion_l.webp'] = encode_webp(motion_l, webp_method)
-    textures['motion_u.webp'] = encode_webp(motion_u, webp_method)
+    v_lo, v_hi, v_mins, v_maxs = compute_split16_planes(vel)
 
     tc_cb, tc_idx = kmeans_1d(fields['t_center'])
     ts_cb, ts_idx = kmeans_1d(fields['t_sigma'], log_domain=True)
-    textures['trbf.webp'] = encode_webp(to_rgba(w, h, (tc_idx, ts_idx, None, 255), n), webp_method)
 
     shn_kwargs = {}
+    cent_blob = None
+    labels = None
     if fields.get('f_rest') is not None and shn_count > 0:
         cent_img, labels, shn_cb, k = pack_shn(fields['f_rest'], shn_count)
-        textures['shN_centroids.webp'] = encode_webp(cent_img, webp_method)
-        textures['shN_labels.webp'] = encode_webp(
-            to_rgba(w, h, ((labels & 0xFF).astype(np.uint8),
-                           (labels >> 8).astype(np.uint8), None, 255), n), webp_method)
+        cent_blob = encode_webp(cent_img, webp_method)
         shn_kwargs = {'shn_count': k, 'shn_bands': 3, 'shn_codebook': shn_cb}
+
+    # -- texture emission for an index range [a, b) ------------------------
+    def group_textures(a: int, b: int) -> dict:
+        w, h = tex_dims(b - a)
+        m = b - a
+        s = slice(a, b)
+        images = {
+            'means_l.webp': to_rgba(w, h, (m_lo[s, 0], m_lo[s, 1], m_lo[s, 2], 255), m),
+            'means_u.webp': to_rgba(w, h, (m_hi[s, 0], m_hi[s, 1], m_hi[s, 2], 255), m),
+            'quats.webp': to_rgba(w, h, (q_b[s, 0], q_b[s, 1], q_b[s, 2], q_mode[s]), m),
+            'scales.webp': to_rgba(w, h, (scales_idx[s, 0], scales_idx[s, 1], scales_idx[s, 2], 255), m),
+            'sh0.webp': to_rgba(w, h, (sh0_idx[s, 0], sh0_idx[s, 1], sh0_idx[s, 2], alpha[s]), m),
+            'motion_l.webp': to_rgba(w, h, (v_lo[s, 0], v_lo[s, 1], v_lo[s, 2], 255), m),
+            'motion_u.webp': to_rgba(w, h, (v_hi[s, 0], v_hi[s, 1], v_hi[s, 2], 255), m),
+            'trbf.webp': to_rgba(w, h, (tc_idx[s], ts_idx[s], None, 255), m),
+        }
+        if labels is not None:
+            images['shN_labels.webp'] = to_rgba(
+                w, h, ((labels[s] & 0xFF).astype(np.uint8),
+                       (labels[s] >> 8).astype(np.uint8), None, 255), m)
+        return {name: encode_webp(img, webp_method) for name, img in images.items()}
 
     meta = build_v3_meta(
         count=n, time_min=time_min, time_max=time_max, fps=fps,
@@ -374,7 +391,41 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
         trbf_center_codebook=tc_cb, trbf_sigma_codebook=ts_cb,
         segments=segments, cov2d_scale=cov2d_scale, generator=generator, **shn_kwargs)
 
-    write_omg4_v3(out_path, meta, textures)
+    if segments and stream:
+        # streamed layout: [meta | shN_centroids | persistent/* | seg_NNN/*]
+        p_end = segments['persistent'][1]
+        groups = [('persistent', 0, p_end)]
+        prefixes = []
+        for i, seg in enumerate(segments['list']):
+            a, b = seg['range']
+            prefix = f'seg_{i:03d}' if b > a else None
+            prefixes.append(prefix)
+            if prefix:
+                groups.append((prefix, a, b))
+
+        entries = []
+        if cent_blob is not None:
+            entries.append(('shN_centroids.webp', cent_blob))
+        reveal_prefix = next((p for p in prefixes if p), None)
+        reveal_through = 0
+        for prefix, a, b in groups:
+            if b <= a and prefix == 'persistent':
+                continue
+            for name, blob in group_textures(a, b).items():
+                entries.append((f'{prefix}/{name}', blob))
+            if prefix in ('persistent', reveal_prefix):
+                reveal_through = len(entries) - 1
+
+        meta['streams'] = {
+            'persistent': 'persistent' if p_end > 0 else None,
+            'segments': prefixes,
+        }
+        write_omg4_v3_streamed(out_path, meta, entries, reveal_through)
+    else:
+        textures = group_textures(0, n)
+        if cent_blob is not None:
+            textures['shN_centroids.webp'] = cent_blob
+        write_omg4_v3(out_path, meta, textures)
     return meta
 
 
@@ -392,8 +443,23 @@ def verify_v3(v3_path: str, fields: dict, order: np.ndarray):
     zf = zipfile.ZipFile(v3_path)
     meta = json.loads(zf.read('meta.json'))
     n = meta['count']
-    tex = {name: decode_webp(zf.read(name)).reshape(-1, 4)[:n]
-           for name in zf.namelist() if name.endswith('.webp')}
+    if meta.get('streams'):
+        # streamed layout: reassemble full-length texel planes from the
+        # per-group textures at their index ranges
+        groups = []
+        if meta['streams']['persistent']:
+            groups.append((meta['streams']['persistent'], meta['segments']['persistent']))
+        for prefix, seg in zip(meta['streams']['segments'], meta['segments']['list']):
+            if prefix:
+                groups.append((prefix, seg['range']))
+        names = {name.split('/', 1)[1] for name in zf.namelist() if '/' in name}
+        tex = {name: np.zeros((n, 4), dtype=np.uint8) for name in names}
+        for prefix, (a, b) in groups:
+            for name in names:
+                tex[name][a:b] = decode_webp(zf.read(f'{prefix}/{name}')).reshape(-1, 4)[:b - a]
+    else:
+        tex = {name: decode_webp(zf.read(name)).reshape(-1, 4)[:n]
+               for name in zf.namelist() if name.endswith('.webp')}
 
     def unsplit16(l, u, mins, maxs, col):
         q = (u[:, col].astype(np.float64) * 256 + l[:, col]) / 65535.0
@@ -471,6 +537,10 @@ def main():
     parser.add_argument('--segment-duration', type=float, default=0.1,
                         help='Temporal segment length in seconds for per-segment culling '
                              '(default 0.1; 0 disables segmentation)')
+    parser.add_argument('--monolithic', action='store_true',
+                        help='Write whole-clip textures instead of the streamed '
+                             'per-segment layout (streamed is the default when '
+                             'segmentation is on)')
     parser.add_argument('--verify', action='store_true',
                         help='Decode the output and report per-attribute quantization error')
     args = parser.parse_args()
@@ -487,7 +557,8 @@ def main():
                                       args.segment_duration)
     meta = pack_v3(args.output, fields, header['time_min'], header['time_max'],
                    header['fps'], shn_count=args.shn_count, webp_method=args.webp_method,
-                   cov2d_scale=header.get('cov2d_scale'), order_segments=order_segments)
+                   cov2d_scale=header.get('cov2d_scale'), order_segments=order_segments,
+                   stream=not args.monolithic)
 
     segments = order_segments[1]
     if segments:

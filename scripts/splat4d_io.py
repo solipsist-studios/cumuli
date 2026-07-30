@@ -392,6 +392,52 @@ def write_omg4_v3(out_path: str, meta: dict, textures: dict) -> None:
             zf.writestr(name, textures[name])
 
 
+def write_omg4_v3_streamed(out_path: str, meta: dict, entries, reveal_through: int) -> None:
+    """Write a version-3 archive in the streamed layout.
+
+    `entries` is an ordered list of (name, bytes) written verbatim after
+    meta.json — play order: shN_centroids, persistent/*, seg_000/*, ... —
+    so a sequential download yields decodable groups progressively.
+    `reveal_through` is the index of the last entry a player needs before
+    it can reveal the scene (end of the first temporal segment's group);
+    the byte offset of that point is stored as meta.streams.reveal_bytes
+    so progress bars can fill against the reveal, not the whole file.
+
+    Entries are ZIP_STORED with no extra fields, so each entry costs
+    exactly 30 + len(name) header bytes — reveal_bytes is computed
+    analytically and verified against the written file.
+    """
+    def local_size(name: str, data: bytes) -> int:
+        return 30 + len(name) + len(data)
+
+    # meta.json contains reveal_bytes, whose digit count feeds back into
+    # its own size — iterate to a fixed point (converges in <= 3 passes).
+    streams = meta.setdefault('streams', {})
+    for _ in range(4):
+        meta_bytes = json.dumps(meta).encode()
+        pos = local_size('meta.json', meta_bytes)
+        for name, data in entries[:reveal_through + 1]:
+            pos += local_size(name, data)
+        if streams.get('reveal_bytes') == pos:
+            break
+        streams['reveal_bytes'] = pos
+
+    with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_STORED) as zf:
+        zf.writestr('meta.json', json.dumps(meta))
+        for name, data in entries:
+            zf.writestr(name, data)
+
+    # Verify the analytic reveal offset against the real layout: the entry
+    # after reveal_through must start exactly at reveal_bytes.
+    if reveal_through + 1 < len(entries):
+        with zipfile.ZipFile(out_path) as zf:
+            info = zf.getinfo(entries[reveal_through + 1][0])
+            if info.header_offset != streams['reveal_bytes']:
+                raise AssertionError(
+                    f'write_omg4_v3_streamed: reveal_bytes {streams["reveal_bytes"]} != '
+                    f'actual offset {info.header_offset} (zip writer added extra fields?)')
+
+
 # ---------------------------------------------------------------------------
 # Per-frame AoS packing
 # ---------------------------------------------------------------------------
