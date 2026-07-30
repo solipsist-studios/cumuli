@@ -158,16 +158,17 @@ def load_model(path):
 
 def load_cameras(transforms_path, downscale, every):
     t = json.load(open(transforms_path))
-    fx = t['fl_x'] / downscale
-    fy = t['fl_y'] / downscale
-    cx = t['cx'] / downscale
-    cy = t['cy'] / downscale
-    w = int(round(t['w'] / downscale))
-    h = int(round(t['h'] / downscale))
     cams = []
     for i, f in enumerate(t['frames']):
         if i % every:
             continue
+        # intrinsics are global (n3v-style) or per-frame (custom rigs)
+        fx = f.get('fl_x', t.get('fl_x')) / downscale
+        fy = f.get('fl_y', t.get('fl_y')) / downscale
+        cx = f.get('cx', t.get('cx')) / downscale
+        cy = f.get('cy', t.get('cy')) / downscale
+        w = t.get('w') and int(round(t['w'] / downscale))
+        h = t.get('h') and int(round(t['h'] / downscale))
         c2w = np.asarray(f['transform_matrix'], dtype=np.float64)
         # OpenGL c2w (nerfstudio/blender) -> OpenCV: flip the y/z axes
         c2w = c2w.copy()
@@ -254,6 +255,17 @@ def main():
         means = xyz + vel * dt[:, None]
         alpha = torch.sigmoid(op_logit) * torch.exp(-0.5 * (dt / t_sigma) ** 2)
 
+        gt_path = os.path.join(args.gt_dir, cam['name'] + '.png')
+        if not os.path.exists(gt_path):
+            print(f'  missing GT {gt_path}, skipping')
+            continue
+        gt = torch.tensor(np.asarray(Image.open(gt_path), dtype=np.float32) / 255.0,
+                          device=dev)[..., :3]
+        if cam['w'] is None:
+            cam['h'], cam['w'] = int(gt.shape[0]), int(gt.shape[1])
+        if gt.shape[:2] != (cam['h'], cam['w']):
+            raise SystemExit(f'GT size {tuple(gt.shape[:2])} != render {(cam["h"], cam["w"])}')
+
         vm = to(cam['w2c'])[None]
         K = to(cam['K'])[None]
         with torch.no_grad():
@@ -261,15 +273,6 @@ def main():
                 means, quats, scales, alpha, shs, vm, K, cam['w'], cam['h'],
                 sh_degree=sh_degree, render_mode='RGB')
         img = img[0].clamp(0, 1)
-
-        gt_path = os.path.join(args.gt_dir, cam['name'] + '.png')
-        if not os.path.exists(gt_path):
-            print(f'  missing GT {gt_path}, skipping')
-            continue
-        gt = torch.tensor(np.asarray(Image.open(gt_path), dtype=np.float32) / 255.0,
-                          device=dev)[..., :3]
-        if gt.shape[:2] != (cam['h'], cam['w']):
-            raise SystemExit(f'GT size {tuple(gt.shape[:2])} != render {(cam["h"], cam["w"])}')
 
         mse = torch.mean((img - gt) ** 2)
         psnr = float(-10.0 * torch.log10(mse))
