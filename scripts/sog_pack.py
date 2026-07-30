@@ -392,7 +392,12 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
         segments=segments, cov2d_scale=cov2d_scale, generator=generator, **shn_kwargs)
 
     if segments and stream:
-        # streamed layout: [meta | shN_centroids | persistent/* | seg_NNN/*]
+        # Streamed layout, SH deferred behind geometry:
+        #   [meta | persistent/* | seg_NNN/* | shN_centroids | */shN_labels]
+        # The reveal point covers geometry + DC color only: the viewer
+        # starts DC-only playback after the first segment and layers the
+        # view-dependent SH in as the trailing entries arrive.  Entry
+        # names are unchanged — only their position in the archive moves.
         p_end = segments['persistent'][1]
         groups = [('persistent', 0, p_end)]
         prefixes = []
@@ -404,21 +409,28 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
                 groups.append((prefix, a, b))
 
         entries = []
-        if cent_blob is not None:
-            entries.append(('shN_centroids.webp', cent_blob))
+        label_entries = []
         reveal_prefix = next((p for p in prefixes if p), None)
         reveal_through = 0
         for prefix, a, b in groups:
             if b <= a and prefix == 'persistent':
                 continue
-            for name, blob in group_textures(a, b).items():
+            textures = group_textures(a, b)
+            labels_blob = textures.pop('shN_labels.webp', None)
+            for name, blob in textures.items():
                 entries.append((f'{prefix}/{name}', blob))
+            if labels_blob is not None:
+                label_entries.append((f'{prefix}/shN_labels.webp', labels_blob))
             if prefix in ('persistent', reveal_prefix):
                 reveal_through = len(entries) - 1
+        if cent_blob is not None:
+            entries.append(('shN_centroids.webp', cent_blob))
+        entries.extend(label_entries)
 
         meta['streams'] = {
             'persistent': 'persistent' if p_end > 0 else None,
             'segments': prefixes,
+            'sh_deferred': bool(label_entries),
         }
         write_omg4_v3_streamed(out_path, meta, entries, reveal_through)
     else:

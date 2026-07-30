@@ -396,12 +396,15 @@ def write_omg4_v3_streamed(out_path: str, meta: dict, entries, reveal_through: i
     """Write a version-3 archive in the streamed layout.
 
     `entries` is an ordered list of (name, bytes) written verbatim after
-    meta.json — play order: shN_centroids, persistent/*, seg_000/*, ... —
-    so a sequential download yields decodable groups progressively.
-    `reveal_through` is the index of the last entry a player needs before
-    it can reveal the scene (end of the first temporal segment's group);
-    the byte offset of that point is stored as meta.streams.reveal_bytes
-    so progress bars can fill against the reveal, not the whole file.
+    meta.json — geometry groups in play order (persistent/*, seg_000/*,
+    ...), then shN_centroids and the per-group shN_labels when SH is
+    deferred (meta.streams.sh_deferred) — so a sequential download yields
+    decodable groups progressively and layers the view-dependent SH in
+    last.  `reveal_through` is the index of the last entry a player needs
+    before it can reveal the scene (end of the first temporal segment's
+    geometry); the byte offset of that point is stored as
+    meta.streams.reveal_bytes so progress bars can fill against the
+    reveal, not the whole file.
 
     Entries are ZIP_STORED with no extra fields, so each entry costs
     exactly 30 + len(name) header bytes — reveal_bytes is computed
