@@ -208,6 +208,20 @@ CPU_TOTAL_TRAIN_ITERS = 60  # clears one multiple of refine_every's default (50)
                              # not just export of the raw COLMAP-seeded gaussians -- quality is
                              # unchecked in CPU mode (see module docstring), so there's no reason
                              # to train further than that.
+CPU_HLOC_RESIZE_MAX = 1024  # NOT the 4096 production default -- real CI failure
+                             # (2026-07-31, CI run 30636025137): run_hloc.py's SuperPoint
+                             # feature extraction at resize_max 4096 peaks at 11.7GB RSS
+                             # on CPU (measured locally via /usr/bin/time -v on the same
+                             # 3-camera images, OMP_NUM_THREADS=4) -- can never fit the
+                             # runner's ~7.75GB. [resmon] telemetry showed the run die 21s
+                             # after the candidates Sapiens pass finished, a single python3
+                             # at 6.9GB: exactly run_hloc.py's slot in the stage order.
+                             # Measured floor (same 3 cameras, CPU): 4096 = 11.7GB/468
+                             # 3D points; 2048 = 3.4GB/350 pts; 1024 = 1.4GB/133 pts;
+                             # 512 = reconstruction fails outright. 1024 is the lowest
+                             # working setting. If 3-camera reconstruction ever turns
+                             # flaky at 1024 (133 pts is a thin margin), bump to 2048
+                             # first -- still fits the runner easily.
 CPU_SAPIENS_MODEL_SIZE = "0.4b"  # NOT the 1b production default -- real CI failure
                                    # (2026-07-30, CI run 30581141971): the actual GitHub
                                    # runner has only ~7.75GB RAM (confirmed directly via
@@ -304,6 +318,7 @@ def pipeline_run(tmp_path_factory, sapiens_checkpoint_root, brush_app, fixture_d
         cmd += [
             "--sync_window", str(CPU_SYNC_WINDOW),
             "--sapiens_model_size", CPU_SAPIENS_MODEL_SIZE,
+            "--hloc_resize_max", str(CPU_HLOC_RESIZE_MAX),
             "--total_train_iters", str(CPU_TOTAL_TRAIN_ITERS),
             "--export_every", str(CPU_TOTAL_TRAIN_ITERS),
             # No --eval_split_every/--eval_save_to_disk: the PSNR check is
