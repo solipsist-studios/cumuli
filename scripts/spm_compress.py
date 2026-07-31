@@ -120,15 +120,19 @@ def main():
     # -- 3. bake to .omg4 v2 -------------------------------------------------
     print('[3/4] bake to v2 (xz_to_omg4.py)')
     v2_path = os.path.join(tempfile.gettempdir(), os.path.basename(args.output_v3) + '.v2.omg4')
-    # The corruption filters (bad_color/garbage) were calibrated for the legacy
-    # SVQ pipeline's catastrophic MLP extrapolation; on an SPM fine-tune they
-    # delete ~40% of healthy splats (out-of-range bare f_dc is normal SH
-    # representation there) and the result reads as transparent. sh_clamp 3.0
-    # instead of the 1.5 default for the same reason: kept splats with a bright
-    # DC rely on their higher SH bands to stay in range, and 1.5 zeroes those.
+    # The legacy corruption filters (bad_color/garbage, calibrated for the old
+    # SVQ pipeline's catastrophic MLP extrapolation) are replaced here by the
+    # black-floater filter: bad_color's binary out-of-range test deleted the
+    # subject's own dark clothing along with the junk (transparency), while
+    # keeping everything left a near-black floater cloud around the subject.
+    # black_floater_mask keeps legitimate dark surface and drops only the
+    # detached murk. sh_clamp 3.0 instead of the 1.5 default because kept
+    # splats with an out-of-range DC rely on their higher SH bands to land in
+    # range, and 1.5 zeroes exactly those bands (the actual washout cause in
+    # the first SPM exports).
     cmd = [args.python, os.path.join(scripts_dir, 'xz_to_omg4.py'),
            '--input', comp, '--output', v2_path, '--fps', str(args.fps),
-           '--no_filter_corrupted', '--sh_clamp', '3.0']
+           '--no_filter_corrupted', '--filter_black_floaters', '--sh_clamp', '3.0']
     if time_duration:
         cmd += ['--time_min', str(time_duration[0]), '--time_max', str(time_duration[1])]
     run(cmd, repo, os.path.join(model_dir, 'export.log'))

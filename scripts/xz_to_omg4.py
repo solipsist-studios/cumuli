@@ -399,10 +399,45 @@ def dark_occluder_mask(f_dc, opacity_logit, log_scales, brightness_thresh=0.05,
     return ~bad
 
 
+def black_floater_mask(f_dc, opacity_logit, log_scales,
+                       black_thresh=-0.25, dim_thresh=0.05,
+                       alpha_thresh=0.30, aspect_thresh=6.0):
+    """Flag the black-floater cloud an SPM fine-tune leaves around a masked
+    subject, without deleting its legitimate dark material.
+
+    The SPM export's below-range-DC population does double duty: most of it
+    is the subject's own dark clothing (deleting it all is the transparency
+    failure bad_color_mask caused), but a subset is detached near-black
+    streaks that read as an "evil cloud" against a light viewer background
+    (invisible over the black eval background, which is how it survived the
+    metric checks). The junk subset is distinguished by being *deeply*
+    negative in colour (mean below black_thresh -- no SH band can bring it
+    back), or dark (below dim_thresh) while ALSO low-alpha (murk, not
+    surface) or spike-elongated. Calibrated on the tatum SPM export, where
+    the drop set turned out to be ~95% identical to bad_color_mask's -- the
+    old filter had the right suspects; the washout it caused came from the
+    sh_clamp interaction, not the deletions. This variant keeps the ~5%
+    that are real surface and, unlike bad_color_mask, never touches the
+    above-range (bright) side.
+    """
+    SH_C0 = 0.28209479177387814
+    mean_col = (f_dc * SH_C0 + 0.5).mean(axis=1)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit))
+    scale = np.exp(log_scales)
+    aspect = scale.max(axis=1) / np.maximum(scale.min(axis=1), 1e-12)
+    bad = (mean_col < black_thresh) | (
+        (mean_col < dim_thresh) & ((alpha < alpha_thresh) | (aspect > aspect_thresh)))
+    print(f'  Black-floater filter: dropping {int(bad.sum()):,} / {len(f_dc):,} splats '
+          f'(mean colour<{black_thresh}, or <{dim_thresh} with alpha<{alpha_thresh} '
+          f'or aspect>{aspect_thresh}:1)')
+    return ~bad
+
+
 def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scale,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=False, filter_corrupted=True,
-                  filter_dark_occluders=False, extra_keep_mask=None):
+                  filter_dark_occluders=False, filter_black_floaters=False,
+                  extra_keep_mask=None):
     """Shared tail: prune, diagnostics, write the v2 file.
 
     filter_corrupted controls the bad_color_mask/garbage_splat_mask checks,
@@ -427,6 +462,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         keep &= bad_color_mask(f_dc)
     if filter_dark_occluders:
         keep &= dark_occluder_mask(f_dc, opacity_logit, log_scales)
+    if filter_black_floaters:
+        keep &= black_floater_mask(f_dc, opacity_logit, log_scales)
     if extra_keep_mask is not None:
         n_before = int(keep.sum())
         keep &= extra_keep_mask
@@ -636,7 +673,7 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
 def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include_sh=True,
             scale_boost=1.0, aniso_boost=None, aniso_camera_rotations=None,
             cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False,
-            filter_corrupted=True):
+            filter_corrupted=True, filter_black_floaters=False):
     print(f"Loading {xz_path} …")
     with lzma.open(xz_path, "rb") as f:
         save_dict = pickle.load(f)
@@ -737,7 +774,8 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
     finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scale,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
-                  filter_corrupted=filter_corrupted)
+                  filter_corrupted=filter_corrupted,
+                  filter_black_floaters=filter_black_floaters)
 
 
 if __name__ == '__main__':
@@ -807,6 +845,11 @@ if __name__ == '__main__':
                              'representation, and the filter deletes ~40% of good splats '
                              '(visible as transparency). Same rationale as the checkpoint path, '
                              'which never applies them.')
+    parser.add_argument('--filter_black_floaters', action='store_true',
+                        help='comp.xz path only: drop the detached near-black floater cloud an SPM '
+                             'fine-tune leaves around a masked subject (deeply-negative mean colour, '
+                             'or dark + low-alpha / spike-elongated) while keeping legitimate dark '
+                             'material. Pair with --no_filter_corrupted for SPM exports.')
     parser.add_argument('--v3', action='store_true',
                         help='Write the SOG-compressed v3 container (webp textures + codebooks, '
                              '~5-7x smaller) instead of the raw-float v2 layout. Higher-order SH '
@@ -850,4 +893,5 @@ if __name__ == '__main__':
                 args.prune_threshold, include_sh=not args.no_sh, scale_boost=args.scale_boost,
                 aniso_boost=aniso, aniso_camera_rotations=cam_rots, cov2d_scale=cov2d,
                 sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
-                filter_corrupted=not args.no_filter_corrupted)
+                filter_corrupted=not args.no_filter_corrupted,
+                filter_black_floaters=args.filter_black_floaters)
