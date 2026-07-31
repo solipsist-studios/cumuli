@@ -53,11 +53,12 @@ dependencies:
       # torchvision+cuda-python+tensorboard+trimesh+open3d+...) -- the real
       # code actually touched here (easyvolcap.utils.console_utils,
       # .utils.parallel_utils, .utils.base_utils) only needs the 5 packages
-      # below, traced import-by-import, recursively, by hand.
+      # immediately below, traced import-by-import, recursively, by hand.
       - pdbr==0.9.7
       - rich==15.0.0
       - ujson==5.13.0
       - ruamel.yaml==0.19.1
       - tqdm==4.67.3
-      - open3d==0.19.0             # triangulate_skeleton.py's write_kp3d_pcd() -- see
-                                     # this file's own header comment for the real story
+      # open3d below is unrelated to easyvolcap -- it's triangulate_skeleton.py's
+      # own direct import (write_kp3d_pcd()), see this file's header comment.
+      - open3d==0.19.0

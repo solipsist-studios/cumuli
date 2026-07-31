@@ -134,18 +134,23 @@ Deliberately narrower than the real local `queen` env this was recovered
 from (which is much larger -- also used for unrelated local
 experimentation): this lists only what's actually imported by the real
 code path, traced by hand, import by import, recursively, through to
-easyvolcap's own internal utility modules. Notably, `open3d` isn't
-imported anywhere in this path despite an earlier version of this repo's
-own `--triangulate_env` help text claiming it's needed.
+easyvolcap's own internal utility modules. `open3d` IS needed -- a
+function-local `import open3d as o3d` inside Diffuman4D's
+triangulate_skeleton.py (`write_kp3d_pcd()`, which runs whenever
+`--out_pcd_dir` is set, which this pipeline always does) was missed by an
+earlier top-level-only trace and caused a real CI failure
+(`ModuleNotFoundError: No module named 'open3d'`, 2026-07-31, the first
+fresh CI build of this env to reach that code path) before being added
+back -- see `envs/queen.yml`'s own header comment for the full story.
 
-Known-good combination (verified 2026-07-29): Python 3.11.15, numpy
-2.4.4, scipy 1.17.1, Pillow 12.2.0, plyfile 1.1.3, opencv-python
-4.13.0.92, fire 0.7.1, torch 2.12.0 (CPU-safe -- the one real usage,
-Diffuman4D's camera_parser.py, is plain tensor math, no `.cuda()`/device
-placement), easyvolcap 0.0.0 (commit 4cb3c00 above, `--no-deps` --
-skips its own heavy declared dependencies, none of which the real code
-path here touches), pdbr 0.9.7, rich 15.0.0, ujson 5.13.0, ruamel.yaml
-0.19.1, tqdm 4.67.3.
+Known-good combination (verified 2026-07-29, open3d added 2026-07-31):
+Python 3.11.15, numpy 2.4.4, scipy 1.17.1, Pillow 12.2.0, plyfile 1.1.3,
+opencv-python 4.13.0.92, fire 0.7.1, torch 2.12.0 (CPU-safe -- the one
+real usage, Diffuman4D's camera_parser.py, is plain tensor math, no
+`.cuda()`/device placement), easyvolcap 0.0.0 (commit 4cb3c00 above,
+`--no-deps` -- skips its own heavy declared dependencies, none of which
+the real code path here touches), pdbr 0.9.7, rich 15.0.0, ujson 5.13.0,
+ruamel.yaml 0.19.1, tqdm 4.67.3, open3d 0.19.0.
 
 ## System-level tools (no conda env)
 

@@ -1,14 +1,18 @@
 name: Update integration baseline
 
 # Post-merge companion to .github/workflows/integration-tests.yml, which
-# gates every PR (on: pull_request) against the CURRENT golden_baseline.json.
-# This workflow runs AFTER a merge lands on main -- not on every PR attempt
-# -- re-measures the merged code's real pipeline output, and writes the
-# fresh numbers back as the new baseline for future PRs to be checked
-# against. See tests/integration/update_golden_baseline.py for the full
-# reasoning (measure-only, no comparison/gating against the old numbers --
-# that already happened pre-merge; the baseline is always the single most
-# recent result, never an average across runs).
+# checks a PR's real pipeline output against the CURRENT golden_baseline.json
+# when manually dispatched (see that workflow's own comments: no self-hosted
+# `gpu`-labeled runner has ever been registered, so it's workflow_dispatch
+# only today, NOT an automatic pull_request gate -- an earlier version of
+# this comment claimed otherwise). This workflow runs AFTER a merge lands on
+# main -- not on every PR attempt -- re-measures the merged code's real
+# pipeline output, and writes the fresh numbers back as the new baseline for
+# future PRs to be checked against, whenever that check does run. See
+# tests/integration/update_golden_baseline.py for the full reasoning
+# (measure-only, no comparison/gating against the old numbers -- this
+# workflow's only job is capturing fresh ground truth; the baseline is
+# always the single most recent result, never an average across runs).
 #
 # Needs the same real GPU/conda-envs/brush_app/checkpoints as
 # integration-tests.yml, hence the same `self-hosted, gpu` runner label.
