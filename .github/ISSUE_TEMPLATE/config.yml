@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/solipsist-studios/volumetric-capture-pipeline/security/advisories/new
+    about: Report privately. Please do not open a public issue for a security problem.
+  - name: Commercial licensing
+    url: mailto:jeff@solipsist.studio
+    about: This project is free for noncommercial use. Email us about commercial licensing.
+  - name: Bug in a wrapped tool (COLMAP, HLOC, Brush, Sapiens, BiRefNet, Diffuman4D)
+    url: https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/README.md#submodules
+    about: Those are separate projects — please report the issue to them directly.
