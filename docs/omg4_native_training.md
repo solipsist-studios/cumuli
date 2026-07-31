@@ -142,6 +142,15 @@ The wrapper runs compute_gradient.py (SD score) → train.py (S→P→M→SVQ �
 count — the fixed-size SH centroid table dominates small scenes).
 Stages resume: artifacts already present are skipped.
 
+The bake stage passes `--no_filter_corrupted --sh_clamp 3.0`. The
+bad_color/garbage corruption filters were calibrated for the legacy SVQ
+pipeline's catastrophic MLP extrapolation and delete ~40% of *healthy*
+splats on an SPM fine-tune (out-of-range bare f_dc is normal SH
+representation there) — the first tatum SPM exports shipped with them on
+and read as transparent/washed-out. sh_clamp 1.5 compounds it by zeroing
+the higher SH bands of any splat whose bare DC exceeds 1.5 — exactly the
+splats that need those bands to land in range from real view directions.
+
 Score the result against held-out views with `scripts/eval_render.py`
 (gsplat + PSNR/SSIM/LPIPS; validated against the OMG4 trainer's own
 coffee_martini numbers). Honest eval on custom rigs requires
@@ -183,20 +192,120 @@ fits horizontal FoV only and crops tall content).
 | --- | --- | --- |
 | `ariana_16` | downscaled, 2 held-out cams | Decent but ghosting from 3/4 low front-right (view extrapolation) + soft |
 | `ariana_16_full` | full res, all 16 cams, `densify_grad_t_threshold 0.0002/80` | 4h10m, train PSNR 51.1, 525k splats (cap not hit), median σ_t 0.13 s. v2 stream 128 MB; v3 14 MB (9.6×, 86.7% persistent). Verdict: v3 much better, but off-angle motion smear remains (face during motion) — temporal under-capacity |
-| `ariana_16_temporal` | as full + `densify_grad_t_threshold 0.0002/200` + `GS4D_T_INIT_DIV=100` | in progress 2026-07-30 |
+| `ariana_16_temporal` | as full + `densify_grad_t_threshold 0.0002/200` + `GS4D_T_INIT_DIV=100` | ~5h wall (paused mid-run), eval PSNR 50.3, 547k splats. σ_t p50 0.117 s / p95 0.387 s (vs 0.13 / 0.528); active splats per instant ~21% (vs ~18%). v2 stream 133.5 MB; v3 13.8 MB (9.7×, 89.7% drawn). Modest σ_t shrink — the loss still tolerates ~3-frame lifetimes; see levers below |
+
+## Measured: where the quality gap actually comes from
+
+Run 2026-07-30 on unit-02 (local 5090, `omg4` env, gsplat 1.5.3) with
+`scripts/…/render_omg4.py` + `render_ply.py` (scratch copies; promote
+them here if this gets repeated). Method: render **both** models at
+`Camera_0015` — a view *both* were TRAINED on — and score each against
+the identical ground-truth image. The two models live in different world
+frames, so each is rendered with its own camera (4DGS
+`transforms_train.json`; PostShot's COLMAP `sparse/0`), which is fine
+because the reference image is shared. Intrinsics are identical in both
+(PINHOLE 3840×3360, fl 2120.92).
+
+Pipeline validated: rendering the OMG4 export at the trainer's own eval
+camera over all 88 frames gives mean 49.2 dB vs the trainer's reported
+50.3 dB — the ~1 dB is the export's SH bake/prune plus a different
+rasterizer, so the harness is faithful.
+
+**Report PSNR on the subject, never full-frame.** Ariana occupies only
+**2.8–3.2%** of the frame; the remaining 97% is black background that is
+trivially perfect. Full-frame PSNR ≈ 45–48 dB while the same render
+scores ≈ 31–34 dB on foreground pixels. The headline training number
+(50.3 dB) is ~15 dB of empty pixels.
+
+| frame | GT motion | flipbook head | OMG4 4D head | gap |
+| --- | --- | --- | --- | --- |
+| 0185 | 0.09 (stillest) | 35.12 dB | 33.62 dB | **1.50 dB** |
+| 0133 | 1.78 (fastest) | 34.97 dB | 31.65 dB | **3.32 dB** |
+| 0143 | ~1.5 | 34.97 dB | 31.03 dB | 3.94 dB |
+
+Across all 87 frame pairs at `Camera_0015` (19× motion range),
+correlation between GT inter-frame motion and OMG4 head PSNR is
+**−0.82**: 33.9 dB on the low-motion quartile vs 31.6 dB on the
+high-motion quartile. The flipbook is essentially **motion-invariant**
+(35.12 → 34.97, i.e. 0.15 dB from stillest to fastest frame).
+
+So the ~3.3 dB deficit at speed decomposes roughly as:
+
+- **~1.5 dB baseline** representation deficit, present even when the
+  subject is nearly still — one 4D model at 547k gaussians simply
+  carries less detail than a dedicated 141k-gaussian fit per frame.
+- **~1.8 dB motion-dependent** loss on top — the temporal averaging
+  inside each gaussian's ~3-frame lifetime.
+
+Both arms saw the same 16 cameras, so **view count explains none of
+this**. Fixing the smear means attacking the representation: more
+capacity per instant, shorter lifetimes, or richer intra-lifetime motion
+than a single linear velocity.
 
 ## Known limits / next levers
 
-- **View sparsity is the ghosting root cause** — 16 cams in two 8-cam
-  rings (±45° azimuth spacing); intrinsics/extrinsics verified good
-  (LOO visual-hull consistency 99.4% mean). Train PSNR ~51 vs ~36 on
-  held-out views = overfitting to the rig. Best fix: render additional
-  camera rings (the source is a synthetic Blender scene, so extra views
-  are free).
-- **Motion smear** = σ_t too long relative to motion (σ_t 0.13 s ≈ 3
-  frames, linear motion within each gaussian's lifetime). Attacked by
-  the `ariana_16_temporal` run; shorter sigmas also make v3's temporal
-  segment culling effective (only ~12% culled at σ_t 0.13 s).
+- **View sparsity is NOT sufficient to explain the gap** (corrected
+  2026-07-30). The crisp SOG flipbook everyone compares against was
+  trained by **PostShot v1.0.110, per-frame, on these exact same 16
+  cameras at the same 3840×3360** — see "Flipbook provenance" below. 16
+  views therefore demonstrably suffice for crisp novel-view rendering
+  of this subject; what differs is the representation, not the capture.
+  Adding rendered camera rings may still help (the rig is two 8-cam
+  rings at ±45° azimuth, and train ~51 dB vs ~36 dB held-out in the
+  first run does show rig overfitting) but it is no longer the obvious
+  first lever.
+- **Capacity per instant is comparable; capacity per *frame* is not.**
+  The flipbook spends ~136–144k gaussians on each single frame,
+  independently fitted — ~12.3M across the 88-frame clip. The 4D model
+  has 547k total, ~21% active at any instant (~115k), so the per-instant
+  budget is similar, but each of those gaussians must serve ~3 frames
+  with only a linear velocity and a Gaussian temporal falloff. Any
+  non-linear motion inside that window (face during head motion) is
+  averaged away. That averaging — not splat count, not view count — is
+  the mechanism behind the residual smear.
+- **Motion smear** = σ_t too long relative to motion (σ_t ≈ 3 frames,
+  and motion is only linear within each gaussian's lifetime). Shorter
+  sigmas would also make v3's temporal segment culling effective (only
+  ~10% culled at these lifetimes).
+  **The direct temporal levers are mostly spent.** `ariana_16_temporal`
+  cut the initial σ_t 4.5× (0.85 → 0.19 s) *and* made temporal
+  densification 2.5× more aggressive, yet final σ_t p50 moved only
+  0.130 → 0.117 s and the splat count only 525k → 547k (the 1.2M cap
+  was never approached). Read that as: the optimizer is *choosing* long
+  lifetimes because 16 views don't constrain it to do better — the
+  training loss is already ~50 dB, so there is no error signal left to
+  pay for finer temporal detail. Adding views, not temporal capacity,
+  is the lever that should move next.
 - **v3 export**: consider clamping σ_t to clip duration at export
   (rare outliers up to 4 s inflate the codebook range) and tuning
   `--segment_duration` per asset.
+
+## Flipbook provenance (the crisp `public/splats/ariana/*.sog`)
+
+Traced 2026-07-30, because the OMG4 results are always judged against
+this asset and it matters what it actually is.
+
+- **Trainer: PostShot v1.0.110** (`comment Postshot v1.0.110` in every
+  PLY header), **not** Brush, and not any 4D method.
+- **Per-frame, independently trained** — 88 separate static
+  reconstructions, one per frame 0100–0187. Splat counts drift frame to
+  frame (0100: 136,354 · 0120: 138,559 · 0150: 142,850 · 0187: 144,395),
+  which is the signature of independent fits rather than one model
+  sampled over time.
+- **16 cameras, 3840×3360** — inputs at
+  `epoch:/media/ai/output/results/ariana_16/data/Frame0100…0187/images/`
+  are `Camera_0001…0016.png`, the same Blender renders (rendered
+  2026-02-26) and same resolution later used for 4DGS training.
+  **It was not trained on the 48-camera renders.** That 48-cam set is
+  `/media/ai/datasets/ariana_4k/` (`undistorted_Camera_0001…0048`) and
+  only ever covered frame 0100 in `images/` plus frames 0100–0118 in
+  `images_frames/` — static single-frame experiments.
+- **Chain**: PLYs written 2026-03-01 21:03 →
+  `splats_compressed/*.sog` via splat-transform v0.16.1 on 2026-03-02
+  18:44 → committed to gaussplay 21:30 the same day
+  (`8a45028 Add Ariana synthetic splat`). The deployed
+  `public/splats/ariana/0100.sog` is md5-identical to the epoch source.
+- The working-tree "modification" of all 88 `.sog` files in gaussplay is
+  only the git-lfs migration (`.gitattributes` now routes `*.sog`
+  through the LFS clean filter); contents are byte-identical to the
+  March commit.

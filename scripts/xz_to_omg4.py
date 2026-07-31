@@ -635,7 +635,8 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
 
 def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include_sh=True,
             scale_boost=1.0, aniso_boost=None, aniso_camera_rotations=None,
-            cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False):
+            cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False,
+            filter_corrupted=True):
     print(f"Loading {xz_path} …")
     with lzma.open(xz_path, "rb") as f:
         save_dict = pickle.load(f)
@@ -735,7 +736,8 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scale,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
-                  velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster)
+                  velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
+                  filter_corrupted=filter_corrupted)
 
 
 if __name__ == '__main__':
@@ -797,6 +799,14 @@ if __name__ == '__main__':
                              'test against the ground-truth subject segmentation masks; splats that fall '
                              'outside the mask in most views that can see them are floaters, not real '
                              'subject geometry). Applied before covariance slicing.')
+    parser.add_argument('--no_filter_corrupted', action='store_true',
+                        help='comp.xz path only: skip the bad_color/garbage-geometry corruption '
+                             'filters. Those were calibrated for the legacy SVQ pipeline\'s '
+                             'catastrophic-extrapolation failure (f_dc in the hundreds); on a '
+                             'healthy SPM fine-tune an out-of-range bare f_dc is normal SH '
+                             'representation, and the filter deletes ~40% of good splats '
+                             '(visible as transparency). Same rationale as the checkpoint path, '
+                             'which never applies them.')
     parser.add_argument('--v3', action='store_true',
                         help='Write the SOG-compressed v3 container (webp textures + codebooks, '
                              '~5-7x smaller) instead of the raw-float v2 layout. Higher-order SH '
@@ -839,4 +849,5 @@ if __name__ == '__main__':
         convert(args.input, args.output, args.time_min, args.time_max, args.fps,
                 args.prune_threshold, include_sh=not args.no_sh, scale_boost=args.scale_boost,
                 aniso_boost=aniso, aniso_camera_rotations=cam_rots, cov2d_scale=cov2d,
-                sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster)
+                sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
+                filter_corrupted=not args.no_filter_corrupted)
