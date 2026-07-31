@@ -194,6 +194,23 @@ jobs:
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
+      - name: Install Mesa software rendering (llvmpipe + lavapipe)
+        # Real CI failure (2026-07-31): brush_app (via cubecl-wgpu) panicked
+        # with "No possible adapter available for backend... active_backends:
+        # Backends(0x0)" -- this workflow never installed ANY graphics
+        # package, only ffmpeg. WGPU_BACKEND=gl/LIBGL_ALWAYS_SOFTWARE=1 (set
+        # in test_pipeline_end_to_end.py's pipeline_run fixture) correctly
+        # SELECT which backend to try, but there's no actual rasterizer
+        # implementation present on a bare runner for either backend to
+        # find -- consistent with the panic's "requested Vulkan, falling
+        # back" wording (cubecl-wgpu tries something before falling back
+        # further, and nothing at all is available either way). Installs
+        # both llvmpipe (libgl1-mesa-dri, software OpenGL/EGL -- what the
+        # test's own env vars target) and lavapipe (mesa-vulkan-drivers,
+        # software Vulkan) so whichever backend cubecl-wgpu actually ends up
+        # requesting has a real software implementation to find.
+        run: sudo apt-get install -y libgl1-mesa-dri mesa-vulkan-drivers
+
       - name: Free up disk space
         # ~14GB usable on a free-tier runner is tight against 4 conda envs
         # + Sapiens checkpoints (~2GB -- the 0.4b pose model, not the
