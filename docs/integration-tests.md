@@ -86,45 +86,97 @@ real GPU at all -- `_check_gpu()` stops requiring `nvidia-smi`, and
 CPU fallback a genuinely GPU-less machine would use, even when testing this
 locally on a machine that does have a GPU).
 
-**Two hard-won findings, both from 2026-07-28** (an earlier version of this
-doc got the first one wrong -- corrected here):
+**Hard-won findings**, roughly in the order they were hit:
 
-1. `WGPU_BACKEND=gl` **alone does not avoid the GPU** on a machine with an
-   NVIDIA driver installed -- it only picks the OpenGL API, not the
-   implementation; glvnd still hands OpenGL to the NVIDIA stack. Forcing
-   genuine software rendering also requires `LIBGL_ALWAYS_SOFTWARE=1` and
-   pointing `__EGL_VENDOR_LIBRARY_FILENAMES` at Mesa's own EGL ICD (see
-   `pipeline_run`'s env construction in `test_pipeline_end_to_end.py` for
-   the exact recipe). An earlier claim in this doc that a fast, good-PSNR
-   run had validated `WGPU_BACKEND=gl` alone was based on a run that, it
-   turned out, had silently used the real NVIDIA GPU the whole time.
-2. The **released `brush_app` v0.3.0 binary cannot run CPU-only at all**,
-   independent of the above -- on genuine Mesa llvmpipe it hits (a) a panic
-   launching GPU subgroup/"plane" kernels llvmpipe doesn't support, then
-   (b) a `BufferTooBig` panic at the production 4096 resolution, and even
-   past both of those, (c) a real, non-deterministic deadlock: one thread
-   spins forever on a `spin::Mutex` inside burn-fusion
-   (`MutexFusionClient::register_tensor`) that another, parked thread never
-   releases -- confirmed via instruction-pointer sampling, not inferred.
-   That code path has since been removed from burn's `main` branch (the
-   `client/mutex.rs` module doesn't exist there anymore). **CPU-rendering
-   mode therefore requires `brush-cli` built from source** at a commit
-   newer than that fix (`VCP_BRUSH_APP` pointed at the build) -- the
-   release binary will not work here. `--max-resolution` is also capped
-   lower for CPU mode (`--brush_max_resolution`, wired through
+1. (2026-07-28) `WGPU_BACKEND=gl` **alone does not avoid the GPU** on a
+   machine with an NVIDIA driver installed -- it only picks the OpenGL
+   API, not the implementation; glvnd still hands OpenGL to the NVIDIA
+   stack. Forcing genuine software rendering also requires
+   `LIBGL_ALWAYS_SOFTWARE=1` and pointing `__EGL_VENDOR_LIBRARY_FILENAMES`
+   at Mesa's own EGL ICD (see `pipeline_run`'s env construction in
+   `test_pipeline_end_to_end.py` for the exact recipe). An earlier claim
+   in this doc that a fast, good-PSNR run had validated `WGPU_BACKEND=gl`
+   alone was based on a run that, it turned out, had silently used the
+   real NVIDIA GPU the whole time.
+2. (2026-07-28) The **released `brush_app` v0.3.0 binary cannot run
+   CPU-only at all**, independent of the above -- on genuine Mesa llvmpipe
+   it hits (a) a panic launching GPU subgroup/"plane" kernels llvmpipe
+   doesn't support, then (b) a `BufferTooBig` panic at the production 4096
+   resolution, and even past both of those, (c) a real, non-deterministic
+   deadlock: one thread spins forever on a `spin::Mutex` inside
+   burn-fusion (`MutexFusionClient::register_tensor`) that another, parked
+   thread never releases -- confirmed via instruction-pointer sampling,
+   not inferred. That code path has since been removed from burn's `main`
+   branch (the `client/mutex.rs` module doesn't exist there anymore).
+   **CPU-rendering mode therefore requires `brush-cli` built from source**
+   at a commit newer than that fix (`VCP_BRUSH_APP` pointed at the build)
+   -- the release binary will not work here. `--max-resolution` is also
+   capped lower for CPU mode (`--brush_max_resolution`, wired through
    `run_unified_pipeline.py`) since llvmpipe rejects the buffer sizes 4096
    needs.
+3. (2026-07-30) **A real GitHub-hosted CI runner has only ~7.75GB RAM**,
+   not the 16GB an earlier version of this doc assumed -- confirmed
+   directly via `[resmon]` telemetry added to `integration-tests-cpu.yml`.
+   The 1b Sapiens checkpoint alone peaks at 6.5-7.6GB regardless of camera
+   count (dominated by the model's fixed weight size, not image count),
+   leaving so little headroom the runner swap-thrashed for ~40min then
+   became unresponsive. CI-mode CPU testing therefore uses the smaller
+   **0.4b checkpoint** (`CPU_SAPIENS_MODEL_SIZE`, measured 4.1GB peak --
+   real margin) via `--sapiens_model_size`, wired through
+   `predict_keypoints_2d.py`. Quality is unchecked in CPU mode anyway (see
+   below), so the accuracy tradeoff costs nothing here. Separately, HLOC's
+   SuperPoint feature extraction at the production `resize_max` of 4096
+   peaks at 11.7GB RSS on CPU -- also capped, to 1024 (`CPU_HLOC_RESIZE_MAX`,
+   `--hloc_resize_max`), the lowest setting that still reconstructs (512
+   fails outright).
+4. (2026-07-30) **2 cameras is never enough for CI's reduced config** --
+   every 2-camera pair tried made HLOC's COLMAP reconstruction fail
+   outright ("Failed to create any sparse model"), confirmed via a fast
+   standalone probe isolating just the reconstruction step across many
+   camera-pair combinations; every 3-camera trial succeeded. CI-mode CPU
+   testing therefore uses a 3-camera subset (`CPU_REAL_CAMERAS`), not the
+   full 11 -- a real functional minimum, not a scope choice. This also
+   means CI's CPU path is structurally weaker than the full 11-camera
+   fixture at registration robustness (see "The fixture" below on why 11
+   was chosen for the GPU path) -- acceptable since CPU mode no longer
+   checks reconstruction quality at all, only that the pipeline completes.
+5. (2026-07-30) **`--sync_window 1` crashed outright** --
+   `extract_synced_frames.py`'s `--window` has two different output
+   layouts, not just "fewer frames": `window=1` writes flat files
+   (`output_dir/0001.jpg`), any `window>1` writes per-instant subdirs
+   (`output_dir/f0/`, `f1/`, ...). `run_unified_pipeline.py` assumed the
+   subdir layout unconditionally. Fixed via a new `_instant_dirs()` helper
+   that matches whichever layout is actually on disk. CI-mode CPU testing
+   uses `CPU_SYNC_WINDOW = 1` (vs. the production default of 5) since
+   Sapiens keypoint prediction -- the dominant cost -- runs once per
+   candidate window frame; this cuts that cost 5x.
+6. (2026-07-31) **A bare GitHub-hosted runner has zero graphics packages
+   installed at all** -- not even a software rasterizer. Getting findings
+   1-2 right (the env vars, a source-built binary) still panicked with "No
+   possible adapter available for backend" the first time this actually
+   ran on real CI, because there was no llvmpipe (OpenGL) or lavapipe
+   (Vulkan) implementation present for those env vars to select in the
+   first place -- this only surfaced on CI since every earlier validation
+   ran on a dev machine that already had *some* GL/Vulkan stack installed.
+   Fixed by installing `libgl1-mesa-dri` (llvmpipe) and
+   `mesa-vulkan-drivers` (lavapipe) in `integration-tests-cpu.yml` --
+   installing both rather than resolving exactly which one `cubecl-wgpu`
+   wants first.
 
-Confirmed end-to-end (2026-07-28/29): full `pytest tests/integration -q`
-runs (all 8 tests, real pipeline, source-built binary) pass CPU-only,
-completing in ~1h20-25min. Reprojection error and mask coverage matched
-the GPU golden baseline exactly (both are CPU-bound regardless of
-rendering backend, so no drift is expected there); masked PSNR landed
-within 0.5dB of the golden baseline on the first run, comfortably inside
-PSNR_MARGIN_DB's 1.5dB floor. A small additional-runs variance check
-(matching how the original GPU margins were validated) is tracked
-separately -- see the reproducibility note in this fixture's own
-golden_baseline.json for that methodology.
+**What actually gets validated in CPU mode differs by context.** A full
+local run (2026-07-28/29, all 11 cameras, the production sync window and
+checkpoint size, ~1h20-25min) validated the software-rendering technique
+itself end-to-end -- reprojection error and mask coverage matched the GPU
+golden baseline exactly, masked PSNR landed within 0.5dB. But
+`integration-tests-cpu.yml`'s actual CI config is the much smaller one
+from findings 3-5 above (3 cameras, sync window 1, 0.4b checkpoint,
+`resize_max` 1024, `CPU_TOTAL_TRAIN_ITERS` instead of a full training run)
+-- and **every golden-baseline quality check (reprojection error, mask
+coverage, PSNR) is skipped entirely in that mode**, not just
+"not comparable" -- CI-mode CPU testing validates structural completion
+only ("did every stage produce valid, non-degenerate output"), never
+reconstruction quality. See `test_pipeline_end_to_end.py`'s module
+docstring for the full reasoning.
 
 ## CI
 
@@ -136,9 +188,10 @@ target -- see the workflow's own comments for why) and provisions the
 conda envs + Sapiens checkpoints from scratch, each layer cached so only
 the first run (or a cache-busting dependency change) pays the full cost.
 This is the always-on safety net: it catches plumbing/logic regressions
-across all 5 stages on every PR, but its PSNR numbers are **not**
-comparable to the GPU golden baseline (different resolution, different
-rasterizer) -- see the CPU-rendering section above.
+across all 5 stages on every PR. It does not produce a PSNR number at all
+(no camera is held out of the reduced 3-camera training set) or run any
+other golden-baseline comparison -- see the CPU-rendering section above
+for the full reduced-config list and why.
 
 `.github/workflows/integration-tests.yml` runs the full GPU-accurate path,
 targeting a `self-hosted, gpu`-labeled runner since none of its
