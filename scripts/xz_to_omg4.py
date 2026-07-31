@@ -533,7 +533,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
                             include_sh=True, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
-                            top_k_fraction=1.0, extra_keep_mask_path=None):
+                            top_k_fraction=1.0, extra_keep_mask_path=None,
+                            filter_black_floaters=False):
     """Export directly from an OMG4 train_scratch.py checkpoint (chkpntNNNN.pth),
     bypassing OMG4's SVQ+MLP compression (train.py) entirely.
 
@@ -639,7 +640,8 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
-                  filter_corrupted=False, filter_dark_occluders=(extra_keep_mask is None))
+                  filter_corrupted=False, filter_dark_occluders=(extra_keep_mask is None),
+                  filter_black_floaters=filter_black_floaters)
 
 
 def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
@@ -908,7 +910,8 @@ if __name__ == '__main__':
                                 scale_boost=args.scale_boost, sh_clamp=args.sh_clamp,
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
-                                extra_keep_mask_path=args.extra_keep_mask)
+                                extra_keep_mask_path=args.extra_keep_mask,
+                                filter_black_floaters=args.filter_black_floaters)
     else:
         convert(args.input, args.output, args.time_min, args.time_max, args.fps,
                 args.prune_threshold, include_sh=not args.no_sh, scale_boost=args.scale_boost,

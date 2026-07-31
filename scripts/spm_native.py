@@ -72,6 +72,11 @@ def main():
                     help='per-splat SH excursion clamp during bake (default 3.0)')
     ap.add_argument('--keep-main-cluster', action='store_true',
                     help='drop splats outside the largest spatial cluster during bake')
+    ap.add_argument('--filter-black-floaters', action='store_true',
+                    help='drop the detached near-black streaks a merge can leave behind. '
+                         'Not needed on every scene (heidi renders clean without it); '
+                         'check a white-background render before deciding — black floaters '
+                         'are invisible over the eval renders black background.')
     ap.add_argument('--segment-duration', type=float, default=0.1)
     ap.add_argument('--python', default=os.path.expanduser('~/miniconda3/envs/omg4/bin/python'),
                     help='python with torch+CUDA+diff_gaussian_rasterization (omg4 env)')
@@ -126,6 +131,8 @@ def main():
            '--sh_clamp', str(args.sh_clamp)]
     if args.keep_main_cluster:
         cmd.append('--keep_main_cluster')
+    if args.filter_black_floaters:
+        cmd.append('--filter_black_floaters')
     if time_duration:
         cmd += ['--time_min', str(time_duration[0]), '--time_max', str(time_duration[1])]
     run(cmd, repo, os.path.join(model_dir, 'export.log'))
