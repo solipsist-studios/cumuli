@@ -50,7 +50,11 @@ def main():
                              "(remove_background.py's own default, tuned for ~16GB of "
                              "GPU memory in fp16), 1 on CPU -- CPU inference runs fp32, "
                              "and a batch of 8 peaks at ~21.6GB RSS (measured 2026-07-30, "
-                             "11-camera fixture), which OOM-kills a 16GB GitHub runner VM.")
+                             "11-camera fixture), which OOM-kills a GitHub runner VM (only "
+                             "~7.75GB RAM -- confirmed directly via this session's own "
+                             "[resmon] telemetry on a real failing run; an earlier '16GB' "
+                             "assumption here was wrong, see integration-tests-cpu.yml's "
+                             "resmon step).")
     args = parser.parse_args()
 
     if args.batch_size is None:

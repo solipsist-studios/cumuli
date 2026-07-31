@@ -208,6 +208,22 @@ CPU_TOTAL_TRAIN_ITERS = 60  # clears one multiple of refine_every's default (50)
                              # not just export of the raw COLMAP-seeded gaussians -- quality is
                              # unchecked in CPU mode (see module docstring), so there's no reason
                              # to train further than that.
+CPU_SAPIENS_MODEL_SIZE = "0.4b"  # NOT the 1b production default -- real CI failure
+                                   # (2026-07-30, CI run 30581141971): the actual GitHub
+                                   # runner has only ~7.75GB RAM (confirmed directly via
+                                   # this session's own [resmon] telemetry -- earlier
+                                   # "16GB" assumptions elsewhere in this file predate
+                                   # this finding and were wrong), and the 1b Sapiens
+                                   # checkpoint alone peaks at 6.5-7.6GB regardless of
+                                   # camera count (the memory cost is dominated by the
+                                   # model's own fixed weight size, not image count) --
+                                   # left so little headroom that the run swap-thrashed
+                                   # for ~40min then the whole VM became unresponsive and
+                                   # was killed externally. 0.4b measured at 4.1GB peak
+                                   # on the real 3-camera fixture -- real margin, not just
+                                   # barely under. Quality is unchecked in CPU mode anyway
+                                   # (see module docstring), so the accuracy tradeoff of a
+                                   # smaller checkpoint doesn't cost anything here.
 
 # brush_app's --eval-split-every 11 on this 11-image dataset holds out
 # whichever image build_colmap_sparse.py wrote first as flat label "00" --
@@ -287,6 +303,7 @@ def pipeline_run(tmp_path_factory, sapiens_checkpoint_root, brush_app, fixture_d
     if allow_cpu_rendering:
         cmd += [
             "--sync_window", str(CPU_SYNC_WINDOW),
+            "--sapiens_model_size", CPU_SAPIENS_MODEL_SIZE,
             "--total_train_iters", str(CPU_TOTAL_TRAIN_ITERS),
             "--export_every", str(CPU_TOTAL_TRAIN_ITERS),
             # No --eval_split_every/--eval_save_to_disk: the PSNR check is

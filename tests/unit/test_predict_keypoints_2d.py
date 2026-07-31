@@ -108,10 +108,11 @@ def test_main_no_longer_accepts_model_flag(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------
 
 class Args:
-    def __init__(self, images_dir, out_kp2d_dir, fmasks_dir):
+    def __init__(self, images_dir, out_kp2d_dir, fmasks_dir, sapiens_model_size="1b"):
         self.images_dir = images_dir
         self.out_kp2d_dir = out_kp2d_dir
         self.fmasks_dir = fmasks_dir
+        self.sapiens_model_size = sapiens_model_size
 
 
 def write_combined_predictions(out_kp2d_dir, cameras=("00", "01")):
@@ -211,6 +212,54 @@ def test_run_goliath308_cmd_and_cwd_construction(tmp_path, monkeypatch):
                     str(images_dir), str(out_kp2d_dir), "--fmasks_dir", str(fmasks_dir)]
     assert cwd == str(pk2d.DIFFUMAN4D_ROOT / "scripts" / "preprocess")
     assert "SAPIENS_CHECKPOINT_ROOT" not in env  # ckpt_root was None -- must not inject a bogus env entry
+
+
+def test_run_goliath308_omits_model_size_flags_at_default_1b(tmp_path, monkeypatch):
+    images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
+    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
+    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
+
+    calls = []
+    def fake_run(cmd, cwd=None, env=None):
+        calls.append(cmd)
+        write_combined_predictions(out_kp2d_dir, cameras=())
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
+
+    args = Args(images_dir, out_kp2d_dir, fmasks_dir, sapiens_model_size="1b")
+    pk2d.run_goliath308(args, None)
+
+    assert "--sapiens_model_size" not in calls[0]
+    assert "--sapiens_ckpt_path" not in calls[0]
+
+
+def test_run_goliath308_forwards_smaller_model_size(tmp_path, monkeypatch):
+    # Real CI failure (2026-07-30): the actual GitHub runner has only
+    # ~7.75GB RAM, and the 1b checkpoint alone peaks at 6.5-7.6GB -- CPU
+    # mode uses a smaller checkpoint instead (0.4b measured at 4.1GB peak
+    # on the real fixture). This proves the override path constructs the
+    # right same-named checkpoint + matching config, not just that it's
+    # non-default.
+    images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
+    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
+    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
+
+    calls = []
+    def fake_run(cmd, cwd=None, env=None):
+        calls.append(cmd)
+        write_combined_predictions(out_kp2d_dir, cameras=())
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+    monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
+
+    args = Args(images_dir, out_kp2d_dir, fmasks_dir, sapiens_model_size="0.4b")
+    pk2d.run_goliath308(args, "/ckpt/root")
+
+    cmd = calls[0]
+    assert cmd[cmd.index("--sapiens_ckpt_path") + 1] == "/ckpt/root/pose/sapiens2_0.4b_pose.safetensors"
+    assert cmd[cmd.index("--config_path") + 1] == (
+        "configs/keypoints308/shutterstock_goliath_3po/"
+        "sapiens2_0.4b_keypoints308_shutterstock_goliath_3po-1024x768.py"
+    )
 
 
 def test_run_goliath308_sets_env_var_when_ckpt_root_given(tmp_path, monkeypatch):

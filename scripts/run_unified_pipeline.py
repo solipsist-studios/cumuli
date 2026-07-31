@@ -307,6 +307,8 @@ def keypoint_args(args, images_dir, out_kp2d_dir, fmasks_dir):
     a = ["--images_dir", images_dir, "--out_kp2d_dir", out_kp2d_dir, "--fmasks_dir", fmasks_dir]
     if args.sapiens_checkpoint_root:
         a += ["--sapiens_checkpoint_root", args.sapiens_checkpoint_root]
+    if args.sapiens_model_size != "1b":
+        a += ["--sapiens_model_size", args.sapiens_model_size]
     return a
 
 
@@ -540,6 +542,10 @@ def build_parser():
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
                              "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
+    parser.add_argument("--sapiens_model_size", default="1b", choices=["0.4b", "0.8b", "1b", "5b"],
+                        help="Sapiens2 pose checkpoint size (default 1b, production quality baseline). "
+                             "Smaller sizes use dramatically less RAM at some accuracy cost -- see "
+                             "predict_keypoints_2d.py's own --sapiens_model_size help.")
     parser.add_argument("--triangulate_env", default="queen",
                         help="Conda env for triangulate_and_project_keypoints.py (needs easyvolcap/fire/open3d; "
                              "'queen' historically had these)")

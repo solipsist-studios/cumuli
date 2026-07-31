@@ -318,15 +318,31 @@ def test_undistort_args_with_target_pkl_dir():
 
 
 def test_keypoint_args_without_checkpoint_root():
-    args = NS(sapiens_checkpoint_root=None)
+    args = NS(sapiens_checkpoint_root=None, sapiens_model_size="1b")
     a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
     assert "--sapiens_checkpoint_root" not in a
 
 
 def test_keypoint_args_with_checkpoint_root():
-    args = NS(sapiens_checkpoint_root=Path("/ckpt"))
+    args = NS(sapiens_checkpoint_root=Path("/ckpt"), sapiens_model_size="1b")
     a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
     assert a[-2:] == ["--sapiens_checkpoint_root", Path("/ckpt")]
+
+
+def test_keypoint_args_omits_model_size_at_default_1b():
+    args = NS(sapiens_checkpoint_root=None, sapiens_model_size="1b")
+    a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
+    assert "--sapiens_model_size" not in a
+
+
+def test_keypoint_args_forwards_non_default_model_size():
+    # Real CI failure (2026-07-30): the actual GitHub runner has only
+    # ~7.75GB RAM, and the 1b checkpoint alone peaks at 6.5-7.6GB --
+    # --sapiens_model_size lets CPU mode use a smaller checkpoint instead
+    # (0.4b measured at 4.1GB peak on the same real fixture).
+    args = NS(sapiens_checkpoint_root=None, sapiens_model_size="0.4b")
+    a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
+    assert a[-2:] == ["--sapiens_model_size", "0.4b"]
 
 
 # --------------------------------------------------------------------------
@@ -361,7 +377,7 @@ def test_run_hloc_builds_correct_argv_and_conda_env(monkeypatch, tmp_path):
 def _window_args(tmp_path, pp3_dir=None):
     return NS(video_dir=tmp_path / "videos", pp3_dir=pp3_dir, target_time_s=1.5,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
-              calib_dir=Path("/calib"), target_pkl_dir=None)
+              sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None)
 
 
 def test_prepare_candidate_window_runs_full_per_frame_pipeline_in_order(monkeypatch, tmp_path):
@@ -529,7 +545,7 @@ def test_stage_production_forwards_pp3_dir_and_calls_undistort(monkeypatch, tmp_
 def _poses_args(sync_window=2):
     return NS(video_dir=Path("/videos"), pp3_dir=None, target_time_s=1.5, sync_window=sync_window,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
-              calib_dir=Path("/calib"), target_pkl_dir=None,
+              sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None,
               multiframe_sfm_script=Path("/mfs.py"), hloc_feature_type="superpoint",
               hloc_resize_max=4096, hloc_max_keypoints=8192)
 
@@ -591,7 +607,7 @@ def test_stage_poses_reuses_cached_hloc_output(monkeypatch, tmp_path):
 
 def _masks_args():
     return NS(generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
-              triangulate_env="queen")
+              sapiens_model_size="1b", triangulate_env="queen")
 
 
 def test_stage_masks_runs_everything_when_nothing_cached(monkeypatch, tmp_path):

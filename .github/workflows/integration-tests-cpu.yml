@@ -352,9 +352,15 @@ jobs:
         # the live log every 20s. Real CI failure (2026-07-29, twice): the
         # runner VM died with a bare "shutdown signal" / exit 143 and zero
         # pytest output -- root cause turned out to be BiRefNet CPU inference
-        # peaking at 21.6GB RSS (measured locally) on a 16GB VM, but nothing
-        # in the log said so. If a future stage OOMs the VM, the last [resmon]
-        # lines will show memory climbing toward 16GB right before death,
+        # peaking at 21.6GB RSS (measured locally), assumed at the time to be
+        # against a 16GB VM. [resmon] itself later proved that assumption
+        # wrong (2026-07-30, run 30581141971): the real ceiling is only
+        # ~7.75GB, discovered when Sapiens keypoint prediction (6.5-7.6GB
+        # peak, unrelated to the original BiRefNet fix) swap-thrashed for
+        # ~40min and then the whole VM went unresponsive and was killed
+        # externally -- confirmed straight from these [resmon] lines, not
+        # guessed. If a future stage OOMs the VM, the last [resmon] lines
+        # will show memory climbing toward ~7.75GB right before death,
         # instead of leaving another unexplained 143.
         run: |
           (
