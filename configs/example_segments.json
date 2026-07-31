@@ -1,0 +1,20 @@
+{
+  "_comment": "Template for merge_omg4_segments.py. Each segment owns the t_center range [start, end); null means unbounded, which the first and last segments want because trained t_centers drift outside the clip window and their temporal tails still do useful in-window work. Seams are placed on half-frame boundaries (e.g. 14.5/29.97) so no frame's Gaussians sit exactly on a cut. fade_zones is needed only for --mode fade, one [t0, t1] per seam, each ending at its seam. Paths are relative to the manifest unless --segment_dir is given.",
+  "fps": 29.97,
+  "time_range": [0.0, 2.969636],
+  "segments": [
+    {"file": "window_1.omg4", "start": null,     "end": 0.483817},
+    {"file": "window_2.omg4", "start": 0.483817, "end": 0.984318},
+    {"file": "window_3.omg4", "start": 0.984318, "end": 1.468135},
+    {"file": "window_4.omg4", "start": 1.468135, "end": 1.935269},
+    {"file": "window_5.omg4", "start": 1.935269, "end": 2.519186},
+    {"file": "window_6.omg4", "start": 2.519186, "end": null}
+  ],
+  "fade_zones": [
+    [0.450, 0.483817],
+    [0.951, 0.984318],
+    [1.435, 1.468135],
+    [1.902, 1.935269],
+    [2.486, 2.519186]
+  ]
+}

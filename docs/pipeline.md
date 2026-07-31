@@ -438,3 +438,16 @@ alpha_consistent` (without it LFS's soft alpha handling drowns the
 subject in semi-transparent haze) and `--max_width 0` (LFS's own 3840
 default silently downscales wider media). See the module docstring
 before changing any of them.
+
+## Next: 4D from a per-frame sequence (render-and-repair)
+
+Everything above produces one splat per timestamp. Turning a sequence of
+those into a single 4D asset whose novel views hold up all the way
+around the subject is its own branch, with five more stages -- render
+synthetic orbits from each frame's splat, repair them generatively,
+merge real + repaired views into a windowed refit dataset, filter and
+export each window, and stitch the windows into one clip.
+
+See `render_and_repair.md`. It starts from a completed
+`render_frame_sequence.py` run and reuses this walkthrough's masks,
+poses and keypoints unchanged.
