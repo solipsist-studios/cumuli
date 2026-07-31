@@ -51,8 +51,13 @@ env:
   BRUSH_COMMIT: 3b80985709e2ec04fd6c8622a40e36473647a8e0
   # Static version tag for the Sapiens checkpoint cache -- bump only if
   # the checkpoint files/repos below actually change (they're a fixed
-  # released model, so in practice this shouldn't need to move).
-  SAPIENS_CACHE_VERSION: v1
+  # released model, so in practice this shouldn't need to move). Bumped
+  # to v2 (2026-07-31) when the downloaded checkpoint switched from
+  # sapiens2-pose-1b to sapiens2-pose-0.4b (see the download step below)
+  # -- a v1 cache would restore the old 1b file under a path this
+  # workflow no longer looks for, silently forcing a slow fallback
+  # re-download instead of catching the mismatch.
+  SAPIENS_CACHE_VERSION: v2
 
 jobs:
   build-cpu-brush:
@@ -190,10 +195,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Free up disk space
-        # ~14GB usable on a free-tier runner is tight against 3 conda envs
-        # + ~6GB of Sapiens checkpoints + this repo's submodules + a real
-        # pipeline run's ~720MB output -- reclaim space from large
-        # preinstalled toolchains this workflow never uses.
+        # ~14GB usable on a free-tier runner is tight against 4 conda envs
+        # + Sapiens checkpoints (~2GB -- the 0.4b pose model, not the
+        # unused 1b's ~6GB, see the download step below) + this repo's
+        # submodules + a real pipeline run's ~720MB output -- reclaim
+        # space from large preinstalled toolchains this workflow never
+        # uses.
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
           docker image prune -af || true
@@ -311,8 +318,17 @@ jobs:
         # on that lazy path, because conftest.py's pipeline_prereqs
         # check requires the checkpoint directory to already exist
         # BEFORE pytest starts a single test (see _check_sapiens_checkpoints).
-        # ~6GB total; set HF_TOKEN (repo secret) if these repos ever
-        # require accepting a gated-model license on Hugging Face.
+        # Downloads the 0.4b pose checkpoint, NOT 1b -- real CI failure
+        # (2026-07-31): this step used to pre-fetch the unused 1b
+        # checkpoint (~4GB) while CPU mode (see CPU_SAPIENS_MODEL_SIZE in
+        # test_pipeline_end_to_end.py) actually needs 0.4b, which then
+        # fell back to predict_keypoints.py's own lazy auto-download --
+        # through the slower/wasteful global HF cache path this same
+        # step's own local_dir= approach exists specifically to avoid
+        # (see the comment below) -- and ran the already-tight disk
+        # budget out mid-download. Set HF_TOKEN (repo secret) if these
+        # repos ever require accepting a gated-model license on
+        # Hugging Face.
         if: steps.sapiens-cache.outputs.cache-hit != 'true'
         shell: bash -l {0}
         env:
@@ -324,7 +340,7 @@ jobs:
           import os
           root = os.environ['SAPIENS_CHECKPOINT_ROOT']
           snapshot_download(repo_id='facebook/detr-resnet-101-dc5', local_dir=f'{root}/detector')
-          hf_hub_download(repo_id='facebook/sapiens2-pose-1b', filename='sapiens2_1b_pose.safetensors', local_dir=f'{root}/pose')
+          hf_hub_download(repo_id='facebook/sapiens2-pose-0.4b', filename='sapiens2_0.4b_pose.safetensors', local_dir=f'{root}/pose')
           "
           # Real CI failure (2026-07-29): the pose file used to go through
           # hf_hub_download's global cache (~/.cache/huggingface/hub) and
