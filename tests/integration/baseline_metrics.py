@@ -8,8 +8,7 @@ with margin) and scripts/update_integration_baseline.py (the post-merge
 job that re-measures and writes a fresh golden_baseline.json). Pulled out
 of the test file so the two call sites can't silently drift apart -- same
 "import, not a copy" practice already used for
-tests/unit/test_integration_baseline_checks.py (see
-INTEGRATION_TESTS_COMMIT_PLAN.md, Step 13).
+tests/unit/test_integration_baseline_checks.py.
 
 These functions do no assertion/comparison themselves -- they just read a
 completed pipeline run's on-disk output (given its build_layout() dict `L`)

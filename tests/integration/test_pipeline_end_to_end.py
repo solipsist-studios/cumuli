@@ -250,9 +250,8 @@ with open(Path(__file__).resolve().parent / "fixtures" / "heidi_11cam" / "golden
     GOLDEN = json.load(f)
 
 # Margins below are derived from a real 7-run variance study (identical
-# fixture/settings, --total_train_iters 1000, re-run 7 times back to back)
-# -- see ~/vcp_variance_study_report.md and
-# INTEGRATION_TESTS_COMMIT_PLAN.md's rolling-baseline entry. Mask coverage
+# fixture/settings, --total_train_iters 1000, re-run 7 times back to back).
+# Mask coverage
 # is genuinely deterministic (bit-identical across every run so far), so
 # its margin is tight -- not a strong regression signal on its own given
 # it never varies naturally, but a wide margin would make it check almost
@@ -430,7 +429,7 @@ def test_production_stage_undistorted_every_camera(pipeline_run, allow_cpu_rende
     Camera_<id>/0000.jpg subdirs -- checking for the pre-restructure flat
     layout here would silently check the wrong thing once every stage has
     run (caught by running this test against real output before trusting
-    it -- see INTEGRATION_TESTS_COMMIT_PLAN.md)."""
+    it)."""
     cameras = CPU_REAL_CAMERAS if allow_cpu_rendering else REAL_CAMERAS
     L = pipeline_run["L"]
     found = sorted(p.name for p in L["production_undist"].glob("Camera_*") if p.is_dir())

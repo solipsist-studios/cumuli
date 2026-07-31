@@ -24,7 +24,7 @@ crashed or infra-broken run must never poison the baseline history.
 The baseline is always the single most recent result, never an average
 across runs -- averaging would dilute a real, intentional quality
 improvement the same way it would dilute noise, and this project already
-decided against that (see INTEGRATION_TESTS_COMMIT_PLAN.md).
+decided against that.
 
 Usage (as CI runs it):
     python3 tests/integration/update_golden_baseline.py --commit <sha>

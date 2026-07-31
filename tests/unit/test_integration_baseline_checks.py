@@ -6,10 +6,9 @@ baseline regression checks (reprojection error, mask coverage, PSNR)
 actually fail on bad input, not just pass on good input -- both real
 runs so far produced good results, so until this file, none of those
 checks had ever been observed to catch anything. Same "prove the tests
-aren't padding" practice already applied throughout tests/unit/ (see
-INTEGRATION_TESTS_COMMIT_PLAN.md / COMMIT_PLAN.md): temporarily confirm
-the check fails against deliberately bad data, then confirm it passes
-again against good data.
+aren't padding" practice already applied throughout tests/unit/:
+temporarily confirm the check fails against deliberately bad data, then
+confirm it passes again against good data.
 
 Deliberately lives in tests/unit/, not tests/integration/: these checks
 are pure comparison logic (arithmetic on synthetic data), need no real

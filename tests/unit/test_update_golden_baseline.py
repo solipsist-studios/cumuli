@@ -4,9 +4,9 @@ tests/unit/test_update_golden_baseline.py
 Proves tests/integration/update_golden_baseline.py's structural gate and
 write-back logic actually work, not just "looks right on read" -- same
 "prove the tests aren't padding" practice used throughout this project
-(see tests/unit/test_integration_baseline_checks.py, Step 13 in
-INTEGRATION_TESTS_COMMIT_PLAN.md): confirm the structural gate correctly
-raises on bad synthetic data AND passes on good data, and confirm
+(see tests/unit/test_integration_baseline_checks.py): confirm the
+structural gate correctly raises on bad synthetic data AND passes on
+good data, and confirm
 measure()/write_golden_baseline()/append_history() round-trip real values
 correctly.
 
