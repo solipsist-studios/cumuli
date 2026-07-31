@@ -157,6 +157,37 @@ coffee_martini numbers). Honest eval on custom rigs requires
 `build_4dgs_dataset.py --test_cameras` — the default duplicates a
 training camera into the test split.
 
+## 2c. SPM-native compression (preferred for subject captures)
+
+`spm_compress.py` above runs OMG4's *whole* pipeline, which after the
+merge rounds distills appearance into 6-dim latents + MLPs + SVQ; the
+exporter then bakes that back to explicit SH. On subject captures that
+round-trip — not the splat-count reduction — is the dominant quality
+loss: on tatum, 27.6k and 97k splats scored within 0.3 dB of each other
+while both sat ~1.4 dB under the bake-only pretrain, with visible face
+softening that survived a 16× larger appearance codebook.
+
+`spm_native.py` keeps the count reduction and drops the round-trip. It
+drives the same sampling → gradient-pruning → merging schedule via
+`train.py --spm_native_out` (OMG4 clone, `feature/ftgs-degree2` branch),
+but at the point the stock trainer would call `construct_net()` it
+instead fine-tunes the surviving **explicit-SH** Gaussians for
+`--extra-iter` iterations and saves a rotor-style checkpoint. The export
+then takes `xz_to_omg4.py`'s checkpoint path — the same bake the
+full-quality pretrains use, with no MLPs to evaluate.
+
+```bash
+python scripts/spm_native.py \
+    --omg4-repo ~/Dev/github/OMG4 \
+    --config configs/custom/<scene>_spm_native.yaml \
+    --checkpoint output/<scene>_pretrain/chkpnt30000.pth \
+    --fps <fps> --output-v3 /tmp/<scene>_spm_native_v3.omg4
+```
+
+Stages resume like `spm_compress.py`, and the SD-score gradients are
+interchangeable between the two — copy `{view,t}_grad.npy` into the
+other model dir to A/B the two paths without recomputing them.
+
 ## 3. Export + pack
 
 ```bash

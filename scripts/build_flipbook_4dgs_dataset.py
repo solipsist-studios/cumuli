@@ -40,6 +40,7 @@ Usage (heidi):
 
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -86,6 +87,30 @@ def load_flipbook_rig(frame_dirs):
            not np.allclose(rig[label]['intr'], check[label]['intr']):
             sys.exit(f'ERROR: camera {label} moves between frames — rig is not static')
     return rig
+
+
+def drop_duplicate_frames(frame_dirs, ref_label):
+    """Drop frames whose reference-camera image is byte-identical to the
+    previous kept frame's, returning (kept_dirs, kept_indices).
+
+    Flipbook captures can carry held frames where the source video dropped
+    one (heidi: 39 unique images across 61 frame dirs). Keeping them is
+    worse than redundant supervision — a held pose at two timestamps asks
+    the 4D model to render identical output at t and t+1/fps while moving
+    on either side, which it can only satisfy by inflating temporal sigma,
+    i.e. smearing. Dropping the holds and leaving survivors at their
+    ORIGINAL timestamps lets the model interpolate smoothly across the gap,
+    which is what physically happened.
+    """
+    kept_dirs, kept_idx = [], []
+    last_hash = None
+    for i, d in enumerate(frame_dirs):
+        h = hashlib.md5((d / 'images_flat' / f'{ref_label}.png').read_bytes()).hexdigest()
+        if h != last_hash:
+            kept_dirs.append(d)
+            kept_idx.append(i)
+        last_hash = h
+    return kept_dirs, kept_idx
 
 
 def load_frame_masks(frame_dir, labels, masks_dir):
@@ -153,9 +178,22 @@ def main():
                         help='integer image downscale factor (default: 4)')
     parser.add_argument('--test_cameras', nargs='*', default=[],
                         help='camera labels held out into transforms_test.json '
-                             '(also written flat into eval_gt_flat/)')
+                             '(also written flat into eval_gt_flat/). Use ONE for '
+                             'eval_render scoring — basenames collide otherwise.')
+    parser.add_argument('--holdout_cameras', nargs='*', default=[],
+                        help='additional camera labels excluded from training but NOT '
+                             'scored. Rigs with stereo pairs need this: holding out one '
+                             'camera whose pair-mate is 1-2 degrees away and still in '
+                             'training is not a novel-view test at all (heidi pairs: '
+                             '00/10, 01/02, 04/05, 06/07, 08/09). Hold out the mate too.')
     parser.add_argument('--masks_dir', default='fmasks_clean',
                         help='per-frame mask subdirectory (default: fmasks_clean)')
+    parser.add_argument('--dedupe', action='store_true',
+                        help='drop frames whose images are byte-identical to the previous '
+                             'kept frame (held frames from dropped source video frames). '
+                             'Survivors keep their ORIGINAL timestamps, so the model '
+                             'interpolates across the gap instead of fitting a hold — '
+                             'holds otherwise force inflated temporal sigma (smearing).')
     parser.add_argument('--hull_points', type=int, default=300_000,
                         help='total visual-hull init points across all frames')
     parser.add_argument('--hull_min_views', type=int, default=9,
@@ -172,16 +210,28 @@ def main():
         sys.exit(f'ERROR: no frame_* directories under {root}')
     rig = load_flipbook_rig(frame_dirs)
     labels = sorted(rig)
-    missing = [c for c in args.test_cameras if c not in rig]
+    # frame_idx[i] is the ORIGINAL frame_NNNN index of kept frame i — it
+    # drives both the timestamp and the output filename, so names stay
+    # traceable to source frames and times stay physically correct when
+    # --dedupe removes holds.
+    frame_idx = list(range(len(frame_dirs)))
+    if args.dedupe:
+        n_before = len(frame_dirs)
+        frame_dirs, frame_idx = drop_duplicate_frames(frame_dirs, labels[0])
+        print(f'  dedupe: {n_before} frame dirs -> {len(frame_dirs)} unique '
+              f'({n_before - len(frame_dirs)} held frames dropped; survivors keep '
+              'their original timestamps)')
+    missing = [c for c in args.test_cameras + args.holdout_cameras if c not in rig]
     if missing:
-        sys.exit(f'ERROR: unknown test camera(s): {missing}')
+        sys.exit(f'ERROR: unknown test/holdout camera(s): {missing}')
     if len(args.test_cameras) > 1:
         print('WARNING: eval_gt_flat basenames collide across multiple test '
               'cameras; only the last written survives. Use one test camera '
               'for eval_render scoring.')
     print(f'{len(labels)} cameras x {len(frame_dirs)} frames | '
-          f'test cameras: {args.test_cameras or "none"} | '
-          f'duration {(len(frame_dirs) - 1) / args.fps:.3f}s @ {args.fps} fps')
+          f'test cameras: {args.test_cameras or "none"}'
+          f'{" | holdout: " + ",".join(args.holdout_cameras) if args.holdout_cameras else ""} | '
+          f'duration {frame_idx[-1] / args.fps:.3f}s @ {args.fps} fps')
 
     # ── visual-hull bbox discovery on the middle frame ─────────────────────
     rng = np.random.default_rng(0)
@@ -216,7 +266,7 @@ def main():
                 print(f'  hull: {n_done}/{len(frame_dirs)} frames', flush=True)
 
     times = np.concatenate([
-        np.full(len(p), i / args.fps, dtype=np.float32)
+        np.full(len(p), frame_idx[i] / args.fps, dtype=np.float32)
         for i, (p, _) in enumerate(hull)])
     pts = np.concatenate([p for p, _ in hull])
     rgb = np.concatenate([c for _, c in hull])
@@ -231,7 +281,7 @@ def main():
         for i, d in enumerate(frame_dirs):
             jobs.append((d / 'images_flat' / f'{label}.png',
                          d / args.masks_dir / f'{label}.png',
-                         out / 'realcams' / f'cam{label}' / f'frame_{i + 1:05d}.png'))
+                         out / 'realcams' / f'cam{label}' / f'frame_{frame_idx[i] + 1:05d}.png'))
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futs = [pool.submit(convert_image, s, m, d, args.downscale) for s, m, d in jobs]
         for n_done, fut in enumerate(concurrent.futures.as_completed(futs), 1):
@@ -247,7 +297,7 @@ def main():
         for label in cam_labels:
             cam = rig[label]
             fl_x, fl_y, cx, cy = cam['intr']
-            for i in range(len(frame_dirs)):
+            for i in frame_idx:
                 rows.append({
                     'file_path': f'realcams/cam{label}/frame_{i + 1:05d}',
                     'camera_label': label,
@@ -259,7 +309,8 @@ def main():
                 })
         return rows
 
-    train_labels = [c for c in labels if c not in args.test_cameras]
+    excluded = set(args.test_cameras) | set(args.holdout_cameras)
+    train_labels = [c for c in labels if c not in excluded]
     json.dump({'camera_model': 'OPENCV', 'frames': entries(train_labels)},
               open(out / 'transforms_train.json', 'w'), indent=1)
     json.dump({'camera_model': 'OPENCV',
@@ -270,7 +321,7 @@ def main():
     if args.test_cameras:
         (out / 'eval_gt_flat').mkdir(exist_ok=True)
         for label in args.test_cameras:
-            for i in range(len(frame_dirs)):
+            for i in frame_idx:
                 flatten_gt(out / 'realcams' / f'cam{label}' / f'frame_{i + 1:05d}.png',
                            out / 'eval_gt_flat' / f'frame_{i + 1:05d}.png')
         print(f'  eval_gt_flat: {len(frame_dirs)} black-composited GT frames')
