@@ -13,9 +13,18 @@
 # build_colmap_sparse.py, run_pose_refinement.py, compute_sync_offsets.py,
 # and triangulate_and_project_keypoints.py -> Diffuman4D's
 # triangulate_skeleton.py) -- traced by hand, import by import, not
-# copied from the full local env's package list. Notably narrower than
-# the previous argparse help text's "needs easyvolcap/fire/open3d" claim:
-# open3d isn't actually imported anywhere in this real path.
+# copied from the full local env's package list.
+#
+# open3d WAS added back (2026-07-31), correcting an earlier claim in this
+# same comment that it "isn't actually imported anywhere in this real
+# path" -- that trace only checked top-level imports; real CI failure
+# (2026-07-31, first-ever fresh CI build of this env to reach this code
+# path) hit `ModuleNotFoundError: No module named 'open3d'` from a
+# function-local `import open3d as o3d` buried inside
+# triangulate_skeleton.py's write_kp3d_pcd(), which only runs when
+# --out_pcd_dir is set -- exactly what this pipeline always passes. Never
+# caught locally because the real local "queen" env (see above) already
+# had it installed from being a bigger, general-purpose environment.
 #
 # torch is CPU-only-compatible here -- the one real usage (Diffuman4D's
 # camera_parser.py) is plain tensor math (min/max/norm/inv/stack), no
@@ -50,3 +59,5 @@ dependencies:
       - ujson==5.13.0
       - ruamel.yaml==0.19.1
       - tqdm==4.67.3
+      - open3d==0.19.0             # triangulate_skeleton.py's write_kp3d_pcd() -- see
+                                     # this file's own header comment for the real story

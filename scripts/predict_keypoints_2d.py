@@ -14,9 +14,15 @@ imports it at module load time.
 conda env: sapiens2
 
 Requires SAPIENS_CHECKPOINT_ROOT env var set to a directory containing
-pose/sapiens2_1b_pose.safetensors (+ detector/detr-resnet-101-dc5, else
-it's auto-downloaded). See --sapiens_checkpoint_root to override without
-exporting the env var.
+pose/sapiens2_<size>_pose.safetensors (+ detector/detr-resnet-101-dc5,
+else it's auto-downloaded). <size> is "1b" by default (production
+quality baseline); see --sapiens_model_size to use a smaller checkpoint
+(0.4b/0.8b/5b also available) -- this repo's own CPU integration test
+uses 0.4b, since the 1b checkpoint alone needs more RAM than a real
+GitHub Actions runner has (see tests/integration/test_pipeline_end_to_end.py's
+CPU_SAPIENS_MODEL_SIZE for the measured numbers). See
+--sapiens_checkpoint_root to override the root dir without exporting
+the env var.
 
 Usage:
     conda run -n sapiens2 python3 predict_keypoints_2d.py \\
