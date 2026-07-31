@@ -178,6 +178,14 @@ OMG4_V3_SHN_WIDTHS = {1: 192, 2: 512, 3: 960}
 OMG4_V2_FLAG_SH    = 1     # 45 SH arrays follow the base arrays
 OMG4_V2_FLAG_COV2D = 2     # cov2d_scale packed into the reserved word
 OMG4_V2_FLAG_TILED = 4     # streamable chunked-SoA body, 40-byte header
+OMG4_V2_FLAG_ACCEL = 8     # 3 accel arrays (ax, ay, az) follow everything else
+
+# Degree-2 motion (flag bit 3): three further float32[N] arrays (ax, ay, az)
+# are appended AFTER the optional SH block, so every pre-accel reader's
+# offsets are unchanged.  Reconstruction (SpacetimeGaussians coefficient
+# convention, matching sog4d's motion_0/1/2):
+#   center(t) = xyz + v*(t - t_center) + a*(t - t_center)^2
+# a is the raw quadratic coefficient in units/sec^2 (NOT half-acceleration).
 
 # Version 2 SoA field order (each is a float32[N] array)
 OMG4_V2_FIELDS = [
@@ -311,6 +319,8 @@ def build_v3_meta(
     shn_bands: int = 0,
     shn_codebook=None,
     motion_degree: int = 1,
+    accel_mins=None,
+    accel_maxs=None,
     segments=None,
     cov2d_scale=None,
     generator: str = 'volumetric-capture-pipeline xz_to_omg4',
@@ -349,6 +359,15 @@ def build_v3_meta(
             'files': ['trbf.webp'],
         },
     }
+    if accel_mins is not None:
+        # degree-2 motion: quadratic coefficient (units/sec^2), same
+        # log-transform + 16-bit-split scheme as motion
+        meta['motion']['degree'] = 2
+        meta['accel'] = {
+            'mins': tolist(accel_mins),
+            'maxs': tolist(accel_maxs),
+            'files': ['accel_l.webp', 'accel_u.webp'],
+        }
     if shn_count > 0:
         if shn_bands not in OMG4_V3_SHN_WIDTHS:
             raise ValueError(f'shn_bands must be one of {sorted(OMG4_V3_SHN_WIDTHS)}, got {shn_bands}')
@@ -380,7 +399,7 @@ def write_omg4_v3(out_path: str, meta: dict, textures: dict) -> None:
     stored entries let a viewer byte-range into the archive if needed.
     """
     expected = set()
-    for key in ('means', 'scales', 'quats', 'sh0', 'shN', 'motion', 'trbf'):
+    for key in ('means', 'scales', 'quats', 'sh0', 'shN', 'motion', 'accel', 'trbf'):
         expected.update(meta.get(key, {}).get('files', []))
     missing = expected - set(textures)
     if missing:

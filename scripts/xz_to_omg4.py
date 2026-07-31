@@ -66,7 +66,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from splat4d_io import OMG4_MAGIC, OMG4_V2_FIELDS, write_omg4_v2_header, report_output
+from splat4d_io import (OMG4_MAGIC, OMG4_V2_FIELDS, OMG4_V2_FLAG_SH, OMG4_V2_FLAG_ACCEL,
+                        write_omg4_v2_header, report_output)
 
 # Set by main() when --v3 is given: {'shn_count': int, 'webp_method': int}.
 # finish_export() then writes the SOG-compressed v3 container instead of
@@ -437,7 +438,7 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=False, filter_corrupted=True,
                   filter_dark_occluders=False, filter_black_floaters=False,
-                  extra_keep_mask=None):
+                  extra_keep_mask=None, accel=None):
     """Shared tail: prune, diagnostics, write the v2 file.
 
     filter_corrupted controls the bad_color_mask/garbage_splat_mask checks,
@@ -489,6 +490,10 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         for ch in range(3):
             for k in range(15):
                 arrays.append(f_rest[:, k, ch])
+    if accel is not None:
+        # degree-2 motion: appended after the SH block (OMG4_V2_FLAG_ACCEL)
+        for c in range(3):
+            arrays.append(accel[:, c])
     arrays = [np.ascontiguousarray(a[keep], dtype=np.float32) for a in arrays]
 
     for t in np.linspace(time_min, time_max, 5):
@@ -497,17 +502,26 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         print(f"    t={t:6.2f}s  active(alpha>1/255): {(alpha > 1 / 255).mean() * 100:5.1f}%")
     vmag = np.linalg.norm(velocity[keep], axis=1)
     print(f"    |velocity| p50/p95/p99: {np.percentile(vmag, [50, 95, 99]).round(4)}")
+    if accel is not None:
+        amag = np.linalg.norm(accel[keep], axis=1)
+        print(f"    |accel|    p50/p95/p99: {np.percentile(amag, [50, 95, 99]).round(4)}")
     print(f"    t_sigma    p50/p95    : {np.percentile(t_sigma[keep], [50, 95]).round(3)}")
 
     if V3_EXPORT_OPTIONS is not None:
         from sog_pack import pack_v3
         fields = {name: arrays[i] for i, name in enumerate(OMG4_V2_FIELDS)}
+        cursor = len(OMG4_V2_FIELDS)
         if f_rest is not None:
-            fields['f_rest'] = np.stack(arrays[len(OMG4_V2_FIELDS):], axis=1)
+            fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
+            cursor += 45
+        if accel is not None:
+            for i, name in enumerate(('ax', 'ay', 'az')):
+                fields[name] = arrays[cursor + i]
         pack_v3(out_path, fields, time_min, time_max, fps,
                 cov2d_scale=cov2d_scale, **V3_EXPORT_OPTIONS)
     else:
-        flags = 1 if f_rest is not None else 0
+        flags = (OMG4_V2_FLAG_SH if f_rest is not None else 0) | \
+                (OMG4_V2_FLAG_ACCEL if accel is not None else 0)
         with open(out_path, 'wb') as fp:
             write_omg4_v2_header(fp, OMG4_MAGIC, kept, time_min, time_max, fps, flags,
                                  cov2d_scale=cov2d_scale)
@@ -642,6 +656,13 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
     quats = decode_all_layers(save_dict['rotation_code'], save_dict['rotation_index'], save_dict['rotation_htable'], N)  # [N,4] (w,x,y,z)
     durations = decode_all_layers(save_dict['durations_code'], save_dict['durations_index'], save_dict['durations_htable'], N).reshape(-1)  # log
     velocity = decode_all_layers(save_dict['velocities_code'], save_dict['velocities_index'], save_dict['velocities_htable'], N)  # [N,3]
+    # degree-2 motion (FTGS trainer extension): quadratic coefficient,
+    # center(t) = x + v*dt + a*dt^2
+    accel = None
+    if 'accels_code' in save_dict:
+        accel = decode_all_layers(save_dict['accels_code'], save_dict['accels_index'], save_dict['accels_htable'], N).astype(np.float32)  # [N,3]
+    elif 'accels' in save_dict:
+        accel = np.asarray(save_dict['accels'], dtype=np.float32)  # [N,3] uncompressed
     appearance = decode_all_layers(save_dict['app_code'], save_dict['app_index'], save_dict['app_htable'], N)            # [N,6]
     t_sigma = np.exp(durations).astype(np.float32)
     # normalise quats; renderer expects w-first which matches gsplat's storage
@@ -667,7 +688,7 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   means, quats, log_scales.astype(np.float32), opacity_logit,
                   f_dc, f_rest, velocity, times, t_sigma,
-                  keep_main_cluster=keep_main_cluster)
+                  keep_main_cluster=keep_main_cluster, accel=accel)
 
 
 def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include_sh=True,

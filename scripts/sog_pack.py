@@ -27,6 +27,7 @@ from splat4d_io import (
     OMG4_MAGIC,
     OMG4_V2_FLAG_SH,
     OMG4_V2_FLAG_TILED,
+    OMG4_V2_FLAG_ACCEL,
     OMG4_V2_FIELDS,
     OMG4_V3_CODEBOOK_SIZE,
     OMG4_V3_SHN_WIDTHS,
@@ -351,6 +352,13 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
     vel = np.stack([fields['vx'], fields['vy'], fields['vz']], axis=1)
     v_lo, v_hi, v_mins, v_maxs = compute_split16_planes(vel)
 
+    accel_kwargs = {}
+    a_lo = a_hi = None
+    if 'ax' in fields:
+        accel = np.stack([fields['ax'], fields['ay'], fields['az']], axis=1)
+        a_lo, a_hi, a_mins, a_maxs = compute_split16_planes(accel)
+        accel_kwargs = {'accel_mins': a_mins, 'accel_maxs': a_maxs}
+
     tc_cb, tc_idx = kmeans_1d(fields['t_center'])
     ts_cb, ts_idx = kmeans_1d(fields['t_sigma'], log_domain=True)
 
@@ -377,6 +385,9 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
             'motion_u.webp': to_rgba(w, h, (v_hi[s, 0], v_hi[s, 1], v_hi[s, 2], 255), m),
             'trbf.webp': to_rgba(w, h, (tc_idx[s], ts_idx[s], None, 255), m),
         }
+        if a_lo is not None:
+            images['accel_l.webp'] = to_rgba(w, h, (a_lo[s, 0], a_lo[s, 1], a_lo[s, 2], 255), m)
+            images['accel_u.webp'] = to_rgba(w, h, (a_hi[s, 0], a_hi[s, 1], a_hi[s, 2], 255), m)
         if labels is not None:
             images['shN_labels.webp'] = to_rgba(
                 w, h, ((labels[s] & 0xFF).astype(np.uint8),
@@ -389,7 +400,8 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
         scales_codebook=scales_cb, sh0_codebook=sh0_cb,
         motion_mins=v_mins, motion_maxs=v_maxs,
         trbf_center_codebook=tc_cb, trbf_sigma_codebook=ts_cb,
-        segments=segments, cov2d_scale=cov2d_scale, generator=generator, **shn_kwargs)
+        segments=segments, cov2d_scale=cov2d_scale, generator=generator,
+        **accel_kwargs, **shn_kwargs)
 
     if segments and stream:
         # Streamed layout, SH deferred behind geometry:
@@ -508,6 +520,13 @@ def verify_v3(v3_path: str, fields: dict, order: np.ndarray):
                         np.array(vm['mins']), np.array(vm['maxs']), c)
         add(f'motion.{name}', rec, src[name])
 
+    if meta.get('accel'):
+        am = meta['accel']
+        for c, name in enumerate(['ax', 'ay', 'az']):
+            rec = unsplit16(tex['accel_l.webp'], tex['accel_u.webp'],
+                            np.array(am['mins']), np.array(am['maxs']), c)
+            add(f'accel.{name}', rec, src[name])
+
     tc_cb = np.array(meta['trbf']['center']['codebook'])
     ts_cb = np.array(meta['trbf']['sigma']['codebook'])
     add('t_center', tc_cb[tex['trbf.webp'][:, 0]], src['t_center'])
@@ -532,8 +551,13 @@ def fields_from_v2(path: str):
     header, arrays = (read_omg4_v2_tiled if flags & OMG4_V2_FLAG_TILED else read_omg4_v2)(path)
 
     fields = {name: np.asarray(arrays[i]) for i, name in enumerate(OMG4_V2_FIELDS)}
+    cursor = len(OMG4_V2_FIELDS)
     if header['flags'] & OMG4_V2_FLAG_SH:
-        fields['f_rest'] = np.stack(arrays[len(OMG4_V2_FIELDS):], axis=1)
+        fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
+        cursor += 45
+    if header['flags'] & OMG4_V2_FLAG_ACCEL:
+        for i, name in enumerate(('ax', 'ay', 'az')):
+            fields[name] = np.asarray(arrays[cursor + i])
     return header, fields
 
 

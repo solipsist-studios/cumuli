@@ -24,6 +24,7 @@ from splat4d_io import (
     OMG4_V2_FLAG_SH,
     OMG4_V2_FLAG_COV2D,
     OMG4_V2_FLAG_TILED,
+    OMG4_V2_FLAG_ACCEL,
     write_omg4_v2_header,
     write_omg4_v2_body_tiled,
     report_output,
@@ -46,7 +47,7 @@ def read_omg4_v2(path):
     if flags & OMG4_V2_FLAG_TILED:
         sys.exit('ERROR: input is already tiled/streamable')
 
-    num_fields = NUM_BASE_FIELDS + (NUM_SH_FIELDS if flags & OMG4_V2_FLAG_SH else 0)
+    num_fields = (NUM_BASE_FIELDS + (NUM_SH_FIELDS if flags & OMG4_V2_FLAG_SH else 0) + (3 if flags & OMG4_V2_FLAG_ACCEL else 0))
     header_size = 32
     expected = header_size + num_fields * n * 4
     if len(raw) != expected:
@@ -85,7 +86,7 @@ def read_omg4_v2_tiled(path):
     assert flags & OMG4_V2_FLAG_TILED, 'verify: output is not tiled'
     tile_size, _reserved2 = struct.unpack_from('<II', raw, 32)
 
-    num_fields = NUM_BASE_FIELDS + (NUM_SH_FIELDS if flags & OMG4_V2_FLAG_SH else 0)
+    num_fields = (NUM_BASE_FIELDS + (NUM_SH_FIELDS if flags & OMG4_V2_FLAG_SH else 0) + (3 if flags & OMG4_V2_FLAG_ACCEL else 0))
     header_size = 40
     assert len(raw) == header_size + num_fields * n * 4, 'verify: tiled size mismatch'
 

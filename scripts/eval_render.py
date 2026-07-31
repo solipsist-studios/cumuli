@@ -114,6 +114,11 @@ def decode_v3_fields(v3_path):
                     meta['motion']['mins'], meta['motion']['maxs'])
     fields['vx'], fields['vy'], fields['vz'] = vel[:, 0], vel[:, 1], vel[:, 2]
 
+    if meta.get('accel'):
+        acc = unsplit16(tex['accel_l.webp'][:, :3], tex['accel_u.webp'][:, :3],
+                        meta['accel']['mins'], meta['accel']['maxs'])
+        fields['ax'], fields['ay'], fields['az'] = acc[:, 0], acc[:, 1], acc[:, 2]
+
     fields['t_center'] = np.asarray(meta['trbf']['center']['codebook'])[tex['trbf.webp'][:, 0]]
     fields['t_sigma'] = np.asarray(meta['trbf']['sigma']['codebook'])[tex['trbf.webp'][:, 1]]
 
@@ -225,6 +230,8 @@ def main():
     to = lambda a: torch.tensor(np.ascontiguousarray(a), dtype=torch.float32, device=dev)
     xyz = to(np.stack([fields['x'], fields['y'], fields['z']], axis=1))
     vel = to(np.stack([fields['vx'], fields['vy'], fields['vz']], axis=1))
+    accel = to(np.stack([fields['ax'], fields['ay'], fields['az']], axis=1)) \
+        if 'ax' in fields else None
     quats = to(np.stack([fields[f'rot_{i}'] for i in range(4)], axis=1))       # wxyz
     scales = torch.exp(to(np.stack([fields[f'scale_{i}'] for i in range(3)], axis=1)))
     op_logit = to(fields['opacity'])
@@ -253,6 +260,8 @@ def main():
         t = header['time_min'] + cam['time'] * tscale
         dt = t - t_center
         means = xyz + vel * dt[:, None]
+        if accel is not None:
+            means = means + accel * (dt * dt)[:, None]
         alpha = torch.sigmoid(op_logit) * torch.exp(-0.5 * (dt / t_sigma) ** 2)
 
         gt_path = os.path.join(args.gt_dir, cam['name'] + '.png')
