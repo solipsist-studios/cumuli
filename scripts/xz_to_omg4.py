@@ -57,6 +57,7 @@ shared spec:
 
 import argparse
 import lzma
+import os
 import math
 import pickle
 import sys
@@ -434,6 +435,94 @@ def black_floater_mask(f_dc, opacity_logit, log_scales,
     return ~bad
 
 
+def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacity_logit,
+                          outside_frac=0.5, downscale=4, time_stride=4, k_sigma=2.0,
+                          alpha_thresh=0.02):
+    """Keep-mask from multi-view silhouette consistency, evaluated across each
+    splat's visible lifetime rather than only at its temporal centre.
+
+    Projects every Gaussian into every training camera at several times where
+    it actually contributes, and drops those landing OUTSIDE the subject mask
+    in more than `outside_frac` of the (time, camera) tests that resolve them.
+    The masks come from the training RGBA alpha, so this is a direct geometric
+    test against ground truth rather than a density heuristic.
+
+    Note on scope: this removes splats that leave the silhouette. It does NOT
+    remove splats sitting at wrong depths INSIDE the silhouette -- depth is
+    unobservable from silhouettes alone (measured: dropping the flagged set
+    leaves view-aligned streak artifacts untouched).
+
+    Do not reach for anisotropy regularisation as the fix for those, either --
+    it was built (OMG4 lambda_aniso / aniso_max) and measured on heidi: aspect
+    p50 25.8 -> 5.7, p95 4376 -> 10.6, rounder than scenes that look correct,
+    yet it costs 1.7 dB and the streaks survive. The cause is view sparsity
+    (10-11 frontal cameras), so the remaining levers are more views or depth
+    priors during training, not any post-hoc geometry edit. Forcing THIS filter
+    as a fix costs 2.1 dB (48.60 -> 46.51) for the same reason: with 11 cameras
+    the 2D test misclassifies legitimate boundary and partially-occluded
+    geometry. Keep it for what it is -- removal of genuine escaping junk.
+    """
+    import json
+    from PIL import Image
+
+    root = os.path.expanduser(dataset_root)
+    t = json.load(open(os.path.join(root, 'transforms_train.json')))
+    cams = {}
+    for fr in t['frames']:
+        lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
+        cams.setdefault(lab, {'meta': fr, 'frames': {}})['frames'][round(fr['time'], 4)] = fr['file_path']
+    labels = sorted(cams)
+    times = sorted(cams[labels[0]]['frames'])[::max(1, time_stride)]
+
+    masks = {}
+    for lab in labels:
+        for tt in times:
+            a = Image.open(os.path.join(root, cams[lab]['frames'][tt] + '.png')).split()[3]
+            if downscale > 1:
+                a = a.resize((a.width // downscale, a.height // downscale), Image.BILINEAR)
+            masks[(lab, tt)] = np.asarray(a) > 100
+
+    n = len(xyz)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit))
+    ts = np.maximum(np.abs(t_sigma), 1e-9)
+    inside = np.zeros(n, np.int32)
+    tested = np.zeros(n, np.int32)
+    for tt in times:
+        w = alpha * np.exp(-0.5 * ((tt - t_center) / ts) ** 2)
+        live = np.where(w > alpha_thresh)[0]
+        if not len(live):
+            continue
+        pts = xyz[live] + velocity[live] * (tt - t_center[live])[:, None]
+        for lab in labels:
+            m = cams[lab]['meta']
+            mask = masks[(lab, tt)]
+            c2w = np.asarray(m['transform_matrix'], np.float64).copy()
+            c2w[:3, 1:3] *= -1
+            w2c = np.linalg.inv(c2w)
+            cam = (w2c[:3, :3] @ pts.T + w2c[:3, 3:4]).T
+            z = cam[:, 2]
+            front = z > 0.05
+            zs = np.where(front, z, 1.0)
+            u = (m['fl_x'] / downscale) * cam[:, 0] / zs + (m['cx'] / downscale)
+            v = (m['fl_y'] / downscale) * cam[:, 1] / zs + (m['cy'] / downscale)
+            h_, w_ = mask.shape
+            ok = front & (u >= 0) & (u < w_) & (v >= 0) & (v < h_)
+            ui = np.clip(u, 0, w_ - 1).astype(np.int32)
+            vi = np.clip(v, 0, h_ - 1).astype(np.int32)
+            idx = live[ok]
+            inside[idx] += mask[vi[ok], ui[ok]]
+            tested[idx] += 1
+    resolved = tested > 0
+    frac_out = np.zeros(n)
+    frac_out[resolved] = 1.0 - inside[resolved] / tested[resolved]
+    keep = ~(resolved & (frac_out > outside_frac))
+    print(f'  Mask-consistency filter: dropping {int((~keep).sum()):,} / {n:,} splats '
+          f'outside the subject silhouette in >{outside_frac:.0%} of '
+          f'{len(times)} times x {len(labels)} cameras '
+          f'({int((~resolved).sum()):,} resolved by no camera, kept)')
+    return keep
+
+
 def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scale,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=False, filter_corrupted=True,
@@ -534,7 +623,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
                             include_sh=True, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
                             top_k_fraction=1.0, extra_keep_mask_path=None,
-                            filter_black_floaters=False):
+                            filter_black_floaters=False, mask_filter_root=None,
+                            mask_filter_outside_frac=0.5):
     """Export directly from an OMG4 train_scratch.py checkpoint (chkpntNNNN.pth),
     bypassing OMG4's SVQ+MLP compression (train.py) entirely.
 
@@ -637,11 +727,18 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
         if f_rest is not None:
             f_rest = f_rest[top_mask]
 
+    mask_keep = None
+    if mask_filter_root:
+        mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
+                                          t_sigma, opacity_logit,
+                                          outside_frac=mask_filter_outside_frac)
+
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
                   filter_corrupted=False, filter_dark_occluders=(extra_keep_mask is None),
-                  filter_black_floaters=filter_black_floaters)
+                  filter_black_floaters=filter_black_floaters,
+                  extra_keep_mask=mask_keep)
 
 
 def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
@@ -865,9 +962,18 @@ if __name__ == '__main__':
                              'filters. Those were calibrated for the legacy SVQ pipeline\'s '
                              'catastrophic-extrapolation failure (f_dc in the hundreds); on a '
                              'healthy SPM fine-tune an out-of-range bare f_dc is normal SH '
-                             'representation, and the filter deletes ~40% of good splats '
+                             'representation, and the filter deletes ~40%% of good splats '
                              '(visible as transparency). Same rationale as the checkpoint path, '
                              'which never applies them.')
+    parser.add_argument('--mask_filter_root', type=str, default=None,
+                        help='Checkpoint path only: 4DGS dataset root (with transforms_train.json '
+                             'and RGBA realcams frames). Drops Gaussians projecting OUTSIDE the '
+                             'subject silhouette in most (time, camera) tests across their visible '
+                             'lifetime, not just at t_center. Removes splats that drift off the '
+                             'body; does NOT fix wrong-depth splats inside the silhouette.')
+    parser.add_argument('--mask_filter_outside_frac', type=float, default=0.5,
+                        help='Drop a Gaussian when it lands outside the mask in more than this '
+                             'fraction of the tests that resolve it (default 0.5)')
     parser.add_argument('--filter_black_floaters', action='store_true',
                         help='comp.xz path only: drop the detached near-black floater cloud an SPM '
                              'fine-tune leaves around a masked subject (deeply-negative mean colour, '
@@ -911,7 +1017,9 @@ if __name__ == '__main__':
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
                                 extra_keep_mask_path=args.extra_keep_mask,
-                                filter_black_floaters=args.filter_black_floaters)
+                                filter_black_floaters=args.filter_black_floaters,
+                                mask_filter_root=args.mask_filter_root,
+                                mask_filter_outside_frac=args.mask_filter_outside_frac)
     else:
         convert(args.input, args.output, args.time_min, args.time_max, args.fps,
                 args.prune_threshold, include_sh=not args.no_sh, scale_boost=args.scale_boost,

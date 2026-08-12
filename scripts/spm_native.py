@@ -72,6 +72,14 @@ def main():
                     help='per-splat SH excursion clamp during bake (default 3.0)')
     ap.add_argument('--keep-main-cluster', action='store_true',
                     help='drop splats outside the largest spatial cluster during bake')
+    ap.add_argument('--freeze-temporal', action='store_true',
+                    help='freeze t / scaling_t / rotation_r during the recovery fine-tune. '
+                         'OMG4s update_learning_rate() decays only the xyz group, so temporal '
+                         'parameters keep their initial lr for the whole run and drift during '
+                         'recovery. MEASURED: this makes no difference (22.56 vs 22.32 dB) — a '
+                         'parameter diff showed opacity drifting most (24.5%% relative), not the '
+                         'temporal group. Kept as plumbing for further experiments; do not '
+                         'expect it to recover quality.')
     ap.add_argument('--filter-black-floaters', action='store_true',
                     help='drop the detached near-black streaks a merge can leave behind. '
                          'Not needed on every scene (heidi renders clean without it); '
@@ -116,10 +124,12 @@ def main():
         print('[2/4] SPM-native fine-tune: checkpoint already present, skipping')
     else:
         print(f'[2/4] SPM-native fine-tune (train.py --spm_native_out, +{args.extra_iter} recovery iters)')
-        run([args.python, 'train.py', '--config', cfg, '--start_checkpoint', ckpt,
-             '--grad', model_dir, '--spm_native_out', native_ckpt,
-             '--spm_native_extra_iter', str(args.extra_iter)],
-            repo, os.path.join(model_dir, 'train.log'))
+        train_cmd = [args.python, 'train.py', '--config', cfg, '--start_checkpoint', ckpt,
+                     '--grad', model_dir, '--spm_native_out', native_ckpt,
+                     '--spm_native_extra_iter', str(args.extra_iter)]
+        if args.freeze_temporal:
+            train_cmd.append('--spm_native_freeze_temporal')
+        run(train_cmd, repo, os.path.join(model_dir, 'train.log'))
         if not os.path.exists(native_ckpt):
             raise SystemExit(f'train.py finished but {native_ckpt} is missing')
 
