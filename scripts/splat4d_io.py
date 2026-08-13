@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """
 splat4d_io.py  –  Shared I/O utilities for 4D Gaussian Splat web-format
 conversion scripts (xz_to_omg4.py and queen_pkl_to_queen.py).

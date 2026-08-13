@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """
 omg4_repack.py – Repack an existing OMG4 v2 file into the streamable
 tiled layout (flags bit 2): splats sorted by visual importance, body

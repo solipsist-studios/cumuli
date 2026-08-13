@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """
 xz_to_omg4.py  –  Convert an OMG4 compressed 4DGS model (comp.xz) to the
 compact .omg4 v2 binary format consumed by the supersplat-viewer.

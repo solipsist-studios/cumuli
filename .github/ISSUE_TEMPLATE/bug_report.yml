@@ -1,0 +1,108 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
+name: Bug report
+description: Something in the pipeline fails or produces a wrong result
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please do not report security issues here — see
+        [SECURITY.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/SECURITY.md).
+
+        Bugs in the wrapped tools (COLMAP, HLOC, Brush, LichtFeld-Studio,
+        Sapiens, BiRefNet, Diffuman4D) should go upstream to those projects.
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which stage?
+      description: The script that failed. If the orchestrator failed, pick the stage it died in.
+      options:
+        - "compute_sync_offsets.py (audio sync)"
+        - "extract_synced_frames.py (frame extraction)"
+        - "make_sync_grid.py (sync grid)"
+        - "undistort_frames.py (undistortion / calibration)"
+        - "run_hloc.py or multiframe_sfm.py (pose estimation)"
+        - "build_flat_dataset.py (flattening / camera labels)"
+        - "generate_masks.py (BiRefNet masks)"
+        - "predict_keypoints_2d.py (Sapiens keypoints)"
+        - "split_keypoints_per_camera.py"
+        - "run_pose_refinement.py (keypoint pose refinement)"
+        - "clean_masks.py (mask cleanup)"
+        - "triangulate_and_project_keypoints.py"
+        - "build_colmap_sparse.py (COLMAP export)"
+        - "train_brush.py / train_lfs.py (training)"
+        - "run_unified_pipeline.py (orchestrator itself)"
+        - "render_frame_sequence.py (multi-frame)"
+        - "Installation / conda environment setup"
+        - "Other or not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      description: Copy and paste the full command line, with paths redacted if you need to.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Console output
+      description: |
+        The error and enough surrounding context to see what it was doing.
+        Please paste text rather than a screenshot.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+      description: |
+        For a wrong-result bug rather than a crash, describe what the output
+        looked like versus what it should have looked like. Images help.
+    validations:
+      required: true
+
+  - type: textarea
+    id: capture
+    attributes:
+      label: Capture details
+      description: |
+        Number of cameras, camera model, resolution, single frame or a
+        sequence, and whether you are using masked training.
+      placeholder: |
+        e.g. 8x GoPro Hero 12, 5312x2988, single frame at 2500ms, masked (RGBA)
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Output of `conda list -n <env> | grep -E 'torch|numpy|pycolmap|hloc'`
+        for the env the failing stage runs in, plus your GPU and driver
+        version (`nvidia-smi | head -3`).
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I read the relevant section of [docs/pipeline.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/docs/pipeline.md)
+          required: true
+        - label: This is a bug in this repository's code, not in a wrapped third-party tool
+          required: true
+        - label: My sync offsets were verified by eye (sync grid) if this is a sync, pose, or training issue
+          required: false
