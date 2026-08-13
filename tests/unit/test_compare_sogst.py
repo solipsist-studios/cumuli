@@ -155,21 +155,77 @@ def test_catches_segmentation_mismatch(packer, reference, capsys):
     assert "segmentation present in only one file" in out
 
 
-def test_catches_ordering_divergence(packer, reference, capsys):
-    """Splat order is part of the format; a shuffled file must be reported
-    as an ordering finding, not as 19 unrelated field failures."""
-    def mutate(d):
-        rng = np.random.default_rng(11)
-        perm = rng.permutation(len(d["x"]))
-        for key in list(d):
-            d[key] = d[key][perm] if d[key].ndim == 1 else d[key][perm, :]
+def true_order(source):
+    from sog_pack import compute_v3_order
 
-    # Pass a precomputed identity ordering so the shuffle survives packing.
-    n = 1200
-    identity = (np.arange(n), None)
-    code, out = run(reference, packer("shuffled", mutate, order_segments=identity), capsys)
+    fields, meta = source
+    return compute_v3_order(fields, meta["time_min"], meta["time_max"], 0.1)
+
+
+def group_bounds(segments):
+    bounds = []
+    p0, p1 = segments["persistent"]
+    if p1 > p0:
+        bounds.append((p0, p1))
+    bounds += [tuple(s["range"]) for s in segments["list"] if s["range"][1] > s["range"][0]]
+    return bounds
+
+
+def test_intra_group_shuffle_is_not_a_failure(packer, reference, source, capsys):
+    """Morton ordering within a group is a compression heuristic, not part
+    of the format (section 5): a player sees [0, P) plus a span of whole
+    segments, so any permutation inside a group is unobservable. Two
+    conforming encoders differ here routinely -- the reference Morton and
+    splat-transform's differ in quantizer scale and tie-breaking -- so
+    failing it would fail correct code."""
+    order, segments = true_order(source)
+    rng = np.random.default_rng(5)
+    shuffled = order.copy()
+    for lo, hi in group_bounds(segments):
+        shuffled[lo:hi] = rng.permutation(shuffled[lo:hi])
+
+    path = packer("intra_shuffled", order_segments=(shuffled, segments))
+    code, out = run(reference, path, capsys)
+    assert code == 0, out
+    assert "index ranges identical" in out
+    assert "informational" in out
+    # and it really was a different permutation, not a no-op
+    assert "0 of 1,200 splats in a different position" not in out
+
+
+def test_catches_wrong_group_membership(packer, reference, source, capsys):
+    """The same group ranges filled with the wrong splats IS observable: a
+    player culling by segment would draw the wrong ones. Realigning within
+    groups must not paper over it."""
+    order, segments = true_order(source)
+    bounds = group_bounds(segments)
+    swapped = order.copy()
+    # Swap equal-size blocks between two different segments, leaving every
+    # range in the table untouched.
+    (lo1, hi1), (lo2, hi2) = bounds[1], bounds[2]
+    size = min(hi1 - lo1, hi2 - lo2)
+    assert size > 0
+    swapped[lo1:lo1 + size], swapped[lo2:lo2 + size] = (
+        order[lo2:lo2 + size].copy(), order[lo1:lo1 + size].copy())
+
+    path = packer("wrong_members", order_segments=(swapped, segments))
+    code, out = run(reference, path, capsys)
+    assert code == 1, out
+    assert "index ranges identical" in out          # ranges agree...
+    assert "GROUP MEMBERSHIP DIVERGES" in out       # ...contents do not
+
+
+def test_catches_differing_group_ranges(packer, reference, source, capsys):
+    """A wrong persistent predicate or wrong bucketing shows up as a
+    different range table, and must stop the run rather than produce a
+    meaningless field table."""
+    order, segments = true_order(source)
+    moved = {**segments, "persistent": [0, segments["persistent"][1] + 25]}
+
+    path = packer("shifted_ranges", order_segments=(order, moved))
+    code, out = run(reference, path, capsys)
     assert code == 1
-    assert "ORDERING DIVERGES" in out
+    assert "group index ranges differ" in out
 
 
 # --------------------------------------------------------------------------

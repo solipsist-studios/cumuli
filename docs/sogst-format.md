@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Version 3 container. Specification revision 2, 2026-08-13.**
+**Version 3 container. Specification revision 3, 2026-08-13.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -98,12 +98,13 @@ A `.sogst` file is a ZIP archive.
   walking the archive forward reads a compressed size of zero and cannot find
   the next entry, and every entry costs 16 bytes more than §6's offsets assume.
 
-Together these make a conforming writer's local entry header exactly
-`30 + len(name)` bytes, which is what makes the streaming offsets of §6
-computable analytically.
 - `meta.json` MUST be the **first** entry.
 - A player identifies a v3 file by the leading ZIP magic `PK\x03\x04` (v1 and v2
   files begin with the ASCII magic `OMG4`, `0x34474D4F` little-endian).
+
+Together the first three make a conforming writer's local entry header exactly
+`30 + len(name)` bytes, which is what makes the streaming offsets of §6
+computable analytically.
 
 Every other entry is a lossless WebP texture.
 
@@ -322,8 +323,22 @@ Splats in a `.sogst` file are not in arbitrary order. They are laid out as
 with each group **Morton-ordered** internally by position (30-bit code, 10 bits
 per axis over the scene bounding box). Morton ordering is what makes the WebP
 textures compress — spatially adjacent splats land in adjacent texels and their
-byte planes become locally smooth. It is an encoder-side quality choice, not
-something a player must verify.
+byte planes become locally smooth.
+
+**The group table is normative; the order within a group is not.** What a player
+observes is `[0, P)` plus a contiguous span of whole segments, so what must agree
+between two implementations is which group each splat is in and where each
+group's range begins and ends. The permutation *inside* a group is a compression
+heuristic and nothing a player can distinguish. Two conforming encoders will
+differ there as a matter of course — the quantizer scale, the clamp, and the
+tie-break among splats sharing a Morton code are all unconstrained, and any one
+of them reshuffles every splat in the file.
+
+So this specification does **not** define the Morton algorithm normatively, and
+an implementation MUST NOT be judged non-conforming for producing a different
+intra-group permutation. An encoder SHOULD use some spatially-coherent ordering,
+because the file is materially larger without one. §10 says how to compare two
+files given this.
 
 A splat is **persistent** when its active interval
 `[t_center - k_sigma*t_sigma, t_center + k_sigma*t_sigma]` is longer than
@@ -586,11 +601,48 @@ but a wrong coefficient layout compares unrelated coefficients and so produces a
 mean error near the data's own standard deviation. On the parabola fixture the
 separation is 0.000 (correct) against 0.743 (channel/coefficient transpose).
 
-Ordering is checked first and reported as its own finding. Splat order is part
-of the format — segment culling indexes into it — so a divergence there is a
-real defect, and it otherwise presents as "every field is wrong".
+**Ordering needs care, and the naive comparison is badly wrong here.** Splat
+order splits into a normative part and a free part (§5), and a field comparison
+has to respect the split:
+
+- The **group table** is compared directly, and a mismatch is a hard failure
+  that stops the run — every field comparison downstream of a wrong range table
+  is meaningless.
+- Each group is then sorted into a **canonical, encoder-independent order**
+  before fields are compared. Sort by the 16-bit split-plane *integers* for
+  position, with velocity to break ties: those encodings are fully determined by
+  `meta`, so two conforming encoders produce identical keys — and using the
+  integers rather than the decoded floats matters when one side is an
+  unquantized PLY, since two splats closer together than a quantization step
+  could otherwise sort one way before quantization and the other way after.
+- **Group membership** — which splats ended up in each range — is then compared
+  exactly, on position keys alone. This is the check that catches a wrong
+  persistent predicate or wrong `t_center` bucketing, and it survives the
+  realignment because a splat sorted into the wrong group has no counterpart
+  where it landed.
+- The intra-group permutation distance is **reported, never failed**.
+
+Comparing raw index order instead reports a conforming encoder as broken in
+every respect: 100% of splats displaced, every field over tolerance, and — since
+the misalignment scrambles quaternions and SH along with everything else — the
+diagnostics for a wrong quaternion mode mapping and a wrong `f_rest` stride both
+firing at correct code. That was this document's own tooling on its first
+encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 3** — from cross-validating the two implementations on a real
+75,848-splat asset.
+
+- §5 now states outright that **the group table is normative and the order
+  within a group is not**, and declines to specify the Morton algorithm. The two
+  implementations agree exactly on group membership and ranges while differing
+  in every intra-group position, because their Morton quantizer scale and
+  tie-breaking differ. Revision 2 left §5 ("an encoder-side quality choice") and
+  §10 ("splat order is part of the format") in direct contradiction.
+- §10 replaces index-by-index comparison with: compare the group table, align
+  canonically within groups, compare membership exactly, report the intra-group
+  permutation as information.
 
 **Revision 2** — everything here came from the first independent implementation
 of revision 1 (the TypeScript encoder), which is what a spec revision is for.

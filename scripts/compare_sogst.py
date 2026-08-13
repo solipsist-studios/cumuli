@@ -23,11 +23,22 @@ equality is the wrong bar; PSNR is too coarse to localise which field is
 wrong.  A wrong f_rest stride and a wrong quaternion mode mapping look
 identical in a PSNR number and nothing alike in a per-field table.
 
-**Splat ordering is part of the format**, not an implementation detail: a
-player's segment culling indexes into it.  So the comparison is
-index-by-index, and a large position error is reported as an ordering
-divergence rather than quietly worked around -- that finding is the point,
-not an obstacle to it.
+**Only part of splat ordering is observable, and the tool checks exactly
+that part.**  A player draws [0, P) plus a contiguous span of whole
+segments, so what is normative is the group table and which group each
+splat lands in.  The permutation *within* a group is Morton ordering -- a
+compression heuristic, explicitly not normative (section 5) -- and two
+conforming encoders differ there routinely: a different quantizer scale or
+a different tie-break among splats sharing a Morton code reshuffles every
+splat while changing nothing a player can see.
+
+So the group table is compared directly and a mismatch is a hard failure,
+while each group is sorted into a canonical, encoder-independent order
+before fields are compared.  Group *membership* is still checked, by what
+survives that realignment: a splat sorted into the wrong group has no
+counterpart where it landed, so its position error stays large.  The
+intra-group permutation distance is reported as information, never as a
+failure.
 """
 
 import argparse
@@ -217,6 +228,92 @@ def reorder_source_like(fields, meta):
     return {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
 
 
+def group_ranges(meta, n):
+    """The half-open index ranges a player can actually distinguish.
+
+    A player draws [0, P) plus a contiguous span of whole segments, so what
+    is observable about splat order is which group a splat is in, and where
+    each group's range starts and ends.  The permutation *within* a group is
+    a compression heuristic (Morton), explicitly not normative -- see
+    docs/sogst-format.md section 5.
+    """
+    segments = (meta or {}).get('segments')
+    if not segments:
+        return [('all', 0, n)]
+    groups = []
+    p0, p1 = segments['persistent']
+    if p1 > p0:
+        groups.append(('persistent', p0, p1))
+    for i, seg in enumerate(segments['list']):
+        lo, hi = seg['range']
+        if hi > lo:
+            groups.append((f'seg_{i:03d}', lo, hi))
+    return groups
+
+
+# Fields quantized by a scheme that is fully determined by meta (the 16-bit
+# split planes), so two conforming encoders produce identical values and
+# they can be used as a sort key.  Codebook fields cannot: their values
+# depend on a clustering that is implementation-defined.
+CANONICAL_KEY_FIELDS = ['x', 'y', 'z', 'vx', 'vy', 'vz']
+
+
+def canonical_keys(fields, meta):
+    """Sort keys that are identical on both sides regardless of encoder.
+
+    Built from the 16-bit split-plane *integers* rather than the decoded
+    floats.  That matters when one side is an unquantized PLY: two splats
+    whose positions differ by less than a quantization step can sort one way
+    before quantization and the other way after, which would misalign them.
+    Projecting both sides onto the same integer grid removes that entirely
+    (the encode is idempotent on already-decoded values, so an archive side
+    reproduces exactly the integers it was stored with).
+
+    Falls back to raw floats when no meta is available (PLY against PLY).
+    """
+    keys = []
+    for group, names in (('means', ['x', 'y', 'z']), ('motion', ['vx', 'vy', 'vz'])):
+        params = (meta or {}).get(group)
+        for axis, name in enumerate(names):
+            if name not in fields:
+                continue
+            values = np.asarray(fields[name], np.float64)
+            if not params:
+                keys.append(values)
+                continue
+            mins = float(np.asarray(params['mins'])[axis])
+            maxs = float(np.asarray(params['maxs'])[axis])
+            span = (maxs - mins) if maxs > mins else 1.0
+            t = np.sign(values) * np.log1p(np.abs(values))
+            keys.append(np.clip(np.rint((t - mins) / span * 65535.0), 0, 65535))
+    return keys
+
+
+def canonical_permutation(fields, groups, meta):
+    """Permutation putting each group into a canonical, encoder-independent
+    order, so two files can be compared splat-for-splat.
+
+    Returns (permutation, ambiguous) where `ambiguous` counts splats sharing
+    a complete key with a neighbour, for which the pairing is a coin flip.
+    Both sides MUST be keyed with the same meta.
+    """
+    keys = canonical_keys(fields, meta)
+    order = np.empty(len(fields['x']), dtype=np.int64)
+    ambiguous = 0
+    for _label, lo, hi in groups:
+        local = np.lexsort(tuple(reversed([k[lo:hi] for k in keys])))
+        order[lo:hi] = local + lo
+        if hi - lo > 1:
+            stacked = np.stack([k[lo:hi][local] for k in keys], axis=1)
+            same = np.all(stacked[1:] == stacked[:-1], axis=1)
+            ambiguous += int(same.sum())
+    return order, ambiguous
+
+
+def apply_permutation(fields, order):
+    return {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
+
+
 def compare(path_a, path_b, verbose=False):
     meta_a, a = load(path_a)
     meta_b, b = load(path_b)
@@ -245,21 +342,105 @@ def compare(path_a, path_b, verbose=False):
     failures = []
     rows = []
 
-    # Ordering first: everything else is meaningless if the permutations
-    # disagree, and an ordering bug reads as "every field is wrong".
-    pos_a = np.stack([np.asarray(a[c], np.float64) for c in 'xyz'], axis=1)
-    pos_b = np.stack([np.asarray(b[c], np.float64) for c in 'xyz'], axis=1)
-    pos_err = np.linalg.norm(pos_a - pos_b, axis=1)
-    extent = float(np.linalg.norm(pos_a.max(axis=0) - pos_a.min(axis=0)))
-    ordering_ok = float(np.median(pos_err)) < 0.01 * extent
-    if not ordering_ok:
-        print(f'ORDERING DIVERGES: median position error {np.median(pos_err):.4f} is '
-              f'{np.median(pos_err) / extent:.1%} of the scene extent.')
-        print('  The two files order splats differently. Ordering is part of the '
-              'format (segment culling indexes into it), so this is the finding.')
-        print('  Check the compute_v3_order port: the persistent predicate, the '
-              't_center bucketing, and the Morton code.\n')
-        failures.append('ordering')
+    # -- grouping, which IS normative, before anything else ----------------
+    # A player draws [0, P) plus a contiguous span of whole segments. So the
+    # observable part of splat order is the group table and which group each
+    # splat lands in -- not the permutation within a group, which is a
+    # compression heuristic (section 5). Check the former; align away the
+    # latter.
+    groups_a = group_ranges(meta_a, n_a)
+    groups_b = group_ranges(meta_b, n_b)
+    # A PLY carries no group table, but reorder_source_like has already put
+    # it into the archive's grouping, so it shares the archive's ranges.
+    if meta_a is None:
+        groups_a = groups_b
+    elif meta_b is None:
+        groups_b = groups_a
+    if meta_a and meta_b:
+        seg_a, seg_b = meta_a.get('segments'), meta_b.get('segments')
+        if bool(seg_a) != bool(seg_b):
+            print(f'FAIL: segmentation present in only one file '
+                  f'({"A" if seg_a else "B"})')
+            return 1
+        if [g[1:] for g in groups_a] != [g[1:] for g in groups_b]:
+            print('FAIL: group index ranges differ -- this is the finding, and it '
+                  'makes every field comparison downstream meaningless.')
+            if seg_a and seg_a['persistent'] != seg_b['persistent']:
+                print(f"  persistent: {seg_a['persistent']} vs {seg_b['persistent']} "
+                      '(check the persistent predicate and persistent_span_mult)')
+            if seg_a and len(seg_a['list']) != len(seg_b['list']):
+                print(f"  segment count: {len(seg_a['list'])} vs {len(seg_b['list'])} "
+                      '(check duration and the clip bounds)')
+            else:
+                bad = [i for i, (x, y) in enumerate(zip(groups_a, groups_b))
+                       if x[1:] != y[1:]]
+                if bad:
+                    print(f'  first differing group {groups_a[bad[0]][0]}: '
+                          f'{groups_a[bad[0]][1:]} vs {groups_b[bad[0]][1:]} '
+                          '(ranges are HALF-OPEN, [first, last) -- section 5)')
+            return 1
+        print(f'Groups: {len(groups_a)} '
+              f'({"persistent + " if groups_a and groups_a[0][0] == "persistent" else ""}'
+              f'{len(groups_a) - (1 if groups_a and groups_a[0][0] == "persistent" else 0)} '
+              'segments) -- index ranges identical')
+
+    # -- align within groups -----------------------------------------------
+    # Morton ordering is an encoder-side compression choice and two
+    # conforming implementations legitimately produce different permutations
+    # (different quantizer scale, different tie-breaking). Comparing raw
+    # index order reports that as every field being wrong. Sort each group
+    # canonically instead, by split-plane fields, which are bit-identical
+    # between conforming encoders precisely because their encoding is fully
+    # determined by meta.
+    key_meta = meta_a or meta_b          # both sides MUST use the same grid
+    perm_a, amb_a = canonical_permutation(a, groups_a, key_meta)
+    perm_b, amb_b = canonical_permutation(b, groups_b, key_meta)
+    displaced = int(np.count_nonzero(perm_a != perm_b))
+    a = apply_permutation(a, perm_a)
+    b = apply_permutation(b, perm_b)
+    ambiguous = max(amb_a, amb_b)
+    if ambiguous:
+        print(f'NOTE: {ambiguous:,} splat(s) share a complete position+velocity key '
+              'with a neighbour, so their pairing is arbitrary. Field errors for '
+              'those are not meaningful.')
+    print(f'Intra-group order: {displaced:,} of {n_a:,} splats in a different '
+          f'position ({displaced / max(n_a, 1):.1%}) -- informational. The Morton '
+          'permutation within a group is not observable by a player (section 5); '
+          'only group membership and the range table are, and both are checked '
+          'above.\n')
+
+    # Group membership -- which IS observable, since a player culls whole
+    # groups. Compared exactly rather than by a threshold: both sides are
+    # now sorted by the same integer grid, so a group holding the same
+    # splats has an identical key matrix. Anything else means the two
+    # encoders put different splats in the same range.
+    # Position only. Velocity earns its place in the sort key (it breaks
+    # ties) but not in this test: a splat whose velocity was encoded wrongly
+    # is the same splat in the same group, and reporting it as a membership
+    # difference would point at the wrong bug.
+    keys_a = np.stack(canonical_keys(a, key_meta)[:3], axis=1)
+    keys_b = np.stack(canonical_keys(b, key_meta)[:3], axis=1)
+    mismatched = ~np.all(keys_a == keys_b, axis=1)
+    if mismatched.any():
+        offenders = [(label, int(mismatched[lo:hi].sum()), hi - lo)
+                     for label, lo, hi in groups_a if mismatched[lo:hi].any()]
+        total = int(mismatched.sum())
+        print(f'GROUP MEMBERSHIP DIVERGES: {total:,} of {n_a:,} splats '
+              f'({total / n_a:.2%}) are in a different group, across '
+              f'{len(offenders)} group(s).')
+        for label, bad, size in offenders[:5]:
+            print(f'    {label}: {bad:,} of {size:,}')
+        if len(offenders) > 5:
+            print(f'    ... and {len(offenders) - 5} more')
+        print('  The range table matches but the ranges hold different splats, so a '
+              'player culling by segment would draw the wrong ones. Check the '
+              'persistent predicate and the t_center bucketing in the '
+              'compute_v3_order port.')
+        if ambiguous:
+            print(f'  ({ambiguous:,} splat(s) had ambiguous keys, so a few of these '
+                  'may be pairing noise rather than real membership differences.)')
+        print()
+        failures.append('group membership')
 
     for name in SCALAR_FIELDS + ACCEL_FIELDS:
         if name not in a or name not in b:
@@ -366,41 +547,16 @@ def compare(path_a, path_b, verbose=False):
           'at a boundary is implementation-defined. Split-plane fields allow none.)')
 
     if meta_a and meta_b:
-        seg_a, seg_b = meta_a.get('segments'), meta_b.get('segments')
-        if bool(seg_a) != bool(seg_b):
-            print(f'\nFAIL: segmentation present in only one file '
-                  f'({"A" if seg_a else "B"})')
-            failures.append('segments')
-        elif seg_a:
-            if seg_a['persistent'] != seg_b['persistent']:
-                print(f"\nFAIL: persistent range differs: {seg_a['persistent']} vs "
-                      f"{seg_b['persistent']}")
-                failures.append('segments.persistent')
-            elif len(seg_a['list']) != len(seg_b['list']):
-                print(f"\nFAIL: segment count differs: {len(seg_a['list'])} vs "
-                      f"{len(seg_b['list'])}")
-                failures.append('segments.list')
-            else:
-                bad = [i for i, (x, y) in enumerate(zip(seg_a['list'], seg_b['list']))
-                       if x['range'] != y['range']]
-                if bad:
-                    print(f'\nFAIL: {len(bad)} segment index range(s) differ, first at '
-                          f"{bad[0]}: {seg_a['list'][bad[0]]['range']} vs "
-                          f"{seg_b['list'][bad[0]]['range']}")
-                    print('  Ranges are HALF-OPEN, [first, last) -- spec section 5.')
-                    failures.append('segments.ranges')
-                else:
-                    print(f"\nSegments: {len(seg_a['list'])} segments, persistent "
-                          f"{seg_a['persistent'][1]:,} -- index ranges identical")
         for key in ('format', 'version', 'count'):
             if meta_a.get(key) != meta_b.get(key):
                 print(f'NOTE: meta.{key} differs: {meta_a.get(key)!r} vs {meta_b.get(key)!r}')
 
     print()
     if failures:
-        print(f'FAIL: {len(failures)} field(s) outside tolerance: {failures}')
+        print(f'FAIL: {len(failures)} check(s) outside tolerance: {failures}')
         return 1
-    print('PASS: every field within the tolerance implied by its encoding.')
+    print('PASS: group table identical, every field within the tolerance implied '
+          'by its encoding.')
     return 0
 
 
