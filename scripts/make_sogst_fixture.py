@@ -56,8 +56,16 @@ GRAVITY = -9.81           # scene units / s^2, the fixture's known constant
 
 
 def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
-                  include_sh=True, persistent_fraction=0.08, seed=FIXTURE_SEED):
+                  include_sh=True, persistent_fraction=0.08, seed=FIXTURE_SEED,
+                  gap=None):
     """Build the parabola fixture's field arrays.
+
+    `gap` is an optional (start, end) window in seconds that no splat's
+    t_center falls into, which forces the encoder to emit empty segments
+    (`first == last`).  Those are spec-legal (section 5) and no real capture
+    produces them, so the branches that handle them -- a player's culling
+    scan, an encoder's zero-splat group -- are otherwise only ever tested by
+    reading the code.
 
     Returns (fields, meta) where `meta` records the analytic constants a
     verifier may want (the gravity term, the persistent split) alongside
@@ -75,6 +83,14 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     # most of them to persistent and the fixture stops exercising
     # per-segment culling, which is the thing it is there to exercise.
     t_center = rng.uniform(time_min, time_max, n)
+    if gap is not None:
+        # Fold anything inside the window out to its edges, keeping the
+        # splat count exact.
+        lo, hi = float(gap[0]), float(gap[1])
+        mid = 0.5 * (lo + hi)
+        inside = (t_center > lo) & (t_center < hi)
+        t_center[inside & (t_center <= mid)] = lo
+        t_center[inside & (t_center > mid)] = hi
     t_sigma = rng.uniform(0.01, 0.03, n)
     n_persistent = int(round(persistent_fraction * n))
     persistent_idx = rng.choice(n, size=n_persistent, replace=False)
@@ -149,6 +165,7 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     meta = {
         'time_min': float(time_min), 'time_max': float(time_max),
         'fps': 30.0, 'count': n, 'motion_degree': int(degree),
+        'gap': (None if gap is None else [float(gap[0]), float(gap[1])]),
         'gravity_dt2_coefficient': float(0.5 * GRAVITY),
         'long_lived_splats': int(n_persistent),
         'seed': int(seed),
@@ -167,15 +184,22 @@ def main():
                         help='Omit the 45 f_rest_* columns')
     parser.add_argument('--time-max', type=float, default=2.0, help='Clip length in seconds')
     parser.add_argument('--seed', type=int, default=FIXTURE_SEED)
+    parser.add_argument('--gap', type=str, default=None, metavar='START,END',
+                        help='Leave a window (seconds) with no splats, so the encoder '
+                             'emits EMPTY segments (first == last). Spec-legal and never '
+                             'produced by a real capture, so it is the only way to '
+                             'execute a player culling scan or an encoder group writer '
+                             'against a zero-splat segment.')
     parser.add_argument('--sidecar', action='store_true',
                         help='Also write the optional <name>.sogst.json sidecar')
     parser.add_argument('--pack', type=str, default=None,
                         help='Also pack the fixture into this .sogst path')
     args = parser.parse_args()
 
+    gap = tuple(float(v) for v in args.gap.split(',')) if args.gap else None
     fields, meta = build_fixture(count=args.count, time_max=args.time_max,
                                  degree=args.degree, include_sh=not args.no_sh,
-                                 seed=args.seed)
+                                 seed=args.seed, gap=gap)
     n = write_sogst_ply(args.output, fields, meta['time_min'], meta['time_max'],
                         meta['fps'], generator='volumetric-capture-pipeline '
                                                'make_sogst_fixture parabola')

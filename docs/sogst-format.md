@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Version 3 container. Specification revision 3, 2026-08-13.**
+**Container version 1. Specification revision 4, 2026-08-13.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -24,9 +24,9 @@ The name is literal: **SOG** for the container, **st** for spacetime.
 
 ## 0. Status, scope, and conformance language
 
-This document specifies **the version-3 container only**. Versions 1 and 2 were
-unpublished internal predecessors; they are described here only where a reader
-must still accept them (§8).
+This document specifies the container completely. It has no predecessors a
+reader must accommodate: the development-era formats described in §8 were never
+released, and nothing that reads them exists.
 
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, MAY and OPTIONAL are
 to be interpreted as in RFC 2119.
@@ -40,10 +40,11 @@ A **minimal player** MAY ignore the `shN` and `accel` groups and MUST still
 render a conforming file correctly, at reduced fidelity. Everything else is
 required.
 
-The reference implementation is `scripts/sog_pack.py` (encoder),
-`scripts/splat4d_io.py` (container writer) and `scripts/eval_render.py`
-`decode_v3_fields()` (the only complete inverse of the encoder — use it as the
-oracle when validating an independent implementation).
+The reference implementation is `scripts/sogst_pack.py` (encoder),
+`scripts/sogst_io.py` (container writer) and `scripts/eval_render.py`
+`decode_sogst_fields()` (the only complete inverse of the encoder — use it as
+the oracle when validating an independent implementation). The interchange PLY
+of §7 is read and written by `scripts/sogst_ply.py`.
 
 ## 1. The representation
 
@@ -99,8 +100,8 @@ A `.sogst` file is a ZIP archive.
   the next entry, and every entry costs 16 bytes more than §6's offsets assume.
 
 - `meta.json` MUST be the **first** entry.
-- A player identifies a v3 file by the leading ZIP magic `PK\x03\x04` (v1 and v2
-  files begin with the ASCII magic `OMG4`, `0x34474D4F` little-endian).
+- A player identifies a `.sogst` file by the leading ZIP magic `PK\x03\x04`,
+  then by `meta.version` and `meta.format`.
 
 Together the first three make a conforming writer's local entry header exactly
 `30 + len(name)` bytes, which is what makes the streaming offsets of §6
@@ -174,7 +175,7 @@ visibly quantizes motion.
 
 ```jsonc
 {
-  "version": 3,
+  "version": 1,
   "format": "sogst",
   "asset":  { "generator": "…" },
   "count":  123456,
@@ -203,8 +204,8 @@ visibly quantizes motion.
 
 | key | required | meaning |
 |---|---|---|
-| `version` | yes | Always `3`. **Not** bumped by the `.omg4` → `.sogst` rename — renumbering would break deployed readers for nothing. |
-| `format` | yes for new writers | `"sogst"`. The container self-identifies here rather than relying on the file extension. Players MUST accept its absence (files written before this revision) and MUST NOT reject an unknown value outright — check `version`. |
+| `version` | yes | Always `1`. A player MUST reject any other value rather than guess. |
+| `format` | yes | `"sogst"`. The container self-identifies here rather than relying on the file extension. A player MUST reject a file that lacks it or carries another value. |
 | `asset.generator` | no | Free-form producer string. |
 | `count` | yes | `N`, total splats in the file. |
 | `time.min`, `time.max` | yes | Clip bounds in seconds. |
@@ -517,23 +518,41 @@ if present** and `.sogst.json` appended — so `heidi.ply` pairs with
 sidecar wins. A conforming producer MUST write the comments regardless of
 whether it also writes a sidecar.
 
-## 8. Compatibility and the `.omg4` rename
+## 8. History, and why there is nothing to be compatible with
 
-The format was previously called `.omg4`, after the paper whose training code
-first fed the pipeline. Nothing in the container came from that work — the
-representation is spacetime-shaped, the container is PlayCanvas SOG, the
-streaming layer is ours — so the name was retired in favour of `.sogst`.
+This is a new format with no deployed predecessors, and that is a deliberate
+position rather than an accident of timing.
 
-The migration is designed so that nothing has to be re-baked:
+Three container layouts preceded it during development, all under the extension
+`.omg4` — named after the paper whose training code first fed the pipeline. The
+first two were binary: a per-frame layout, then a structure-of-arrays layout with
+a tiled streaming variant, both identified by an ASCII magic `OMG4`. The third
+was this ZIP container, numbered "version 3" in sequence with them.
 
-- Writers emit `.sogst` and set `meta.format = "sogst"`.
-- Players MUST keep accepting the `.omg4` extension indefinitely.
-- Players MUST keep accepting the v1/v2 ASCII magic `OMG4` (`0x34474D4F`
-  little-endian) for already-deployed binary assets.
-- `meta.version` stays `3`.
+None was ever released. Every asset in those forms was a development artifact on
+a workstation. So rather than carry a version number that starts at 3 and a
+reader branch for magic bytes nobody will ever encounter, the container was
+renumbered to **version 1** and the older layouts deleted outright.
 
-A v3 archive written before this revision has no `format` key; it is otherwise
-identical and MUST be accepted.
+Two consequences worth stating plainly, because the opposite is the usual
+expectation:
+
+- **A conforming player has no legacy path.** It rejects anything that is not a
+  ZIP with `meta.version == 1` and `meta.format == "sogst"`. There is no `.omg4`
+  extension to accept, no magic to sniff, and no absent-`format` case to
+  tolerate.
+- **The rename cost nothing to compute.** A development-era ZIP archive's
+  payload is already byte-identical to a version-1 payload — only the manifest
+  differs — so those assets were migrated by rewriting `meta.json`, not re-baked.
+  `scripts/sogst_migrate.py` does this. The one subtlety is that
+  `streams.reveal_bytes` and `geometry_bytes` are absolute offsets and
+  `meta.json` is the first entry, so changing the manifest shifts every entry
+  after it; the migrator re-emits the archive through the normal writers so the
+  offsets are recomputed and verified rather than copied.
+
+The name is unrelated to the old one on both halves: nothing in this container
+came from that paper's work. The representation is spacetime-shaped, the
+container is PlayCanvas SOG, and the streaming layer is ours.
 
 ## 9. Conformance checklist
 
@@ -559,8 +578,8 @@ A player conforms when:
       `accel`.
 - [ ] It renders a file with no `shN` group correctly.
 - [ ] It treats segment ranges as half-open and applies the §5 drawing rule.
-- [ ] It accepts `.omg4`-named files, `OMG4`-magic v2 files, and v3 archives
-      with no `format` key.
+- [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
+      `meta.format == "sogst"` (§8: there is no legacy form to accept).
 
 ## 10. Cross-implementation validation
 
@@ -630,6 +649,23 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 4** — the development-era formats are gone, and the container is
+renumbered from 3 to **1**.
+
+- §3 `version` is `1` and `format` is `"sogst"`; both are REQUIRED and a player
+  MUST reject anything else. Revision 3 kept `version: 3` and tolerated a
+  missing `format` to protect deployed assets; there are none, so that
+  tolerance only widened the surface a second implementation had to get right.
+- §2 no longer mentions the `OMG4` magic: the binary containers it identified
+  have been deleted, not deprecated.
+- §8 is now a history note rather than a compatibility section, and records how
+  already-baked archives were migrated by manifest rewrite rather than re-bake.
+- §9's player checklist replaces "accepts the legacy forms" with "rejects
+  anything that is not version 1".
+
+No change to the payload. A revision-3 archive and a revision-4 archive of the
+same scene differ only in `meta.json`.
 
 **Revision 3** — from cross-validating the two implementations on a real
 75,848-splat asset.

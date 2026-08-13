@@ -1,19 +1,22 @@
-# Native OMG4 training (4D Gaussian Splatting → .omg4)
+# Native OMG4 training (4D Gaussian Splatting → .sogst)
 
 End-to-end recipe for training a 4D gaussian splat natively from a
-multi-camera capture and exporting it as a streamable OMG4 (v2) and
-SOG-compressed OMG4 v3 asset for the GaussPlay viewer. This is the
-pipeline that produced the `ariana_16_*` assets; substitute your own
-dataset paths. It replaces the SOG-flipbook → `sog_flipbook_to_omg4.py`
-repack path, which drops splats to fit a budget and was judged
-unacceptable quality-wise.
+multi-camera capture and exporting it as a streamable `.sogst` asset for
+the GaussPlay viewer. This is the pipeline that produced the
+`ariana_16_*` assets; substitute your own dataset paths. It replaces the
+SOG-flipbook → `sog_flipbook_to_sogst.py` repack path, which drops splats
+to fit a budget and was judged unacceptable quality-wise.
+
+"OMG4" here is the *trainer* (MinShirley/OMG4) and its conda env, not a
+file format: the container it feeds is `.sogst`, specified in
+[sogst-format.md](sogst-format.md).
 
 All GPU stages run on `epoch` (RTX 4090 24GB, 32 cores). Two conda envs
 there:
 
 - `4d-gaussian-splatting` — py3.7 / torch 1.12 / cu116. Runs the trainer.
-- `OMG4` — py3.11 / torch 2.9.1. Runs export/repack (`xz_to_omg4.py`,
-  `omg4_repack.py`, `sog_pack.py`).
+- `OMG4` — py3.11 / torch 2.9.1. Runs the bake and pack (`bake_sogst.py`,
+  `sogst_pack.py`).
 
 Trainer repo: `epoch:~/Dev/github/4d-gaussian-splatting`
 (fudan-zvg/4d-gaussian-splatting, "rotor" 4DGS) **with local
@@ -88,7 +91,7 @@ Operational footguns (all hit in practice):
    The Blender-style loader sets `FovX = FovY = -1` when `fl_x/fl_y/
    cx/cy` are present, and the renderer then computed `tan(-0.5)` for
    the EWA Jacobian → inflated splat footprints (the blur that
-   `xz_to_omg4 --aniso_boost/--scale_boost` used to paper over).
+   `bake_sogst --aniso_boost/--scale_boost` used to paper over).
    Patched to use `tanfov = image_size / (2 * fl)` whenever `fl_x > 0`.
 2. **`gaussian_renderer/diff_gaussian_rasterization.py` — cached CUDA
    extension.** System CUDA is 13.2, which can't JIT-build the old
@@ -133,12 +136,13 @@ python scripts/spm_compress.py \
     --omg4-repo ~/Dev/github/OMG4 \
     --config configs/custom/<scene>_omg4.yaml \
     --checkpoint output/<scene>_pretrain/chkpnt30000.pth \
-    --fps <fps> --output-v3 /tmp/<scene>_v3.omg4
+    --fps <fps> --output /tmp/<scene>.sogst
 ```
 
 The wrapper runs compute_gradient.py (SD score) → train.py (S→P→M→SVQ →
-`comp.xz`) → `xz_to_omg4.py` (bakes the MLP appearance to explicit SH) →
-`sog_pack.py` (v3; `--shn-count` auto-scales with the post-SPM splat
+`comp.xz`) → `bake_sogst.py` (bakes the MLP appearance to explicit SH,
+emitting the interchange PLY) → `sogst_pack.py` (`--shn-count` auto-scales
+with the post-SPM splat
 count — the fixed-size SH centroid table dominates small scenes).
 Stages resume: artifacts already present are skipped.
 
@@ -173,7 +177,7 @@ drives the same sampling → gradient-pruning → merging schedule via
 but at the point the stock trainer would call `construct_net()` it
 instead fine-tunes the surviving **explicit-SH** Gaussians for
 `--extra-iter` iterations and saves a rotor-style checkpoint. The export
-then takes `xz_to_omg4.py`'s checkpoint path — the same bake the
+then takes `bake_sogst.py`'s checkpoint path — the same bake the
 full-quality pretrains use, with no MLPs to evaluate.
 
 ```bash
@@ -181,7 +185,7 @@ python scripts/spm_native.py \
     --omg4-repo ~/Dev/github/OMG4 \
     --config configs/custom/<scene>_spm_native.yaml \
     --checkpoint output/<scene>_pretrain/chkpnt30000.pth \
-    --fps <fps> --output-v3 /tmp/<scene>_spm_native_v3.omg4
+    --fps <fps> --output /tmp/<scene>_spm_native.sogst
 ```
 
 Stages resume like `spm_compress.py`, and the SD-score gradients are
@@ -192,24 +196,24 @@ other model dir to A/B the two paths without recomputing them.
 
 ```bash
 # epoch, OMG4 env, scripts from this repo's scripts/ dir
-python scripts/xz_to_omg4.py \
+python scripts/bake_sogst.py \
     --input ~/Dev/github/4d-gaussian-splatting/output/ariana_16_full/chkpnt30000.pth \
-    --output /tmp/ariana_16_full.omg4 \
+    --output /tmp/ariana_16_full.sogst \
     --time_min 0 --time_max 3.625 --fps 24
-# streamable v2 (tiled):
-python scripts/omg4_repack.py --input /tmp/ariana_16_full.omg4 \
-    --output /tmp/ariana_16_full_stream.omg4
-# SOG-compressed v3:
-python scripts/sog_pack.py --input /tmp/ariana_16_full.omg4 \
-    --output /tmp/ariana_16_full_v3.omg4 --verify
 ```
+
+The bake writes the container directly; the streamed per-segment layout
+is the default whenever segmentation is on, so there is no separate
+repack step. To hand the per-splat data to an external encoder instead,
+add `--emit_ply /tmp/ariana_16_full.ply` (with or without `--output`)
+and pack it with `python scripts/sogst_pack.py --input ... --verify`.
 
 No `--aniso_boost`/`--scale_boost` — those flags existed only to
 compensate for the FoV-sentinel bug (patch 1) and must stay off now.
 
 ## 4. Deploy to GaussPlay
 
-Copy the `_stream.omg4` / `_v3.omg4` into `gaussplay/public/splats/`
+Copy the `.sogst` file into `gaussplay/public/splats/`
 (gitignored — never commit them) and add a `viewer: "supersplat"`
 gallery entry in `src/components/Gallery.tsx`. For assets trained from
 this pipeline's Y-up world: `omg4Rotation: [0, 180, 0]` (the viewer's
