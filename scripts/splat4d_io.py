@@ -77,7 +77,14 @@ viewer evaluates linear motion and Gaussian temporal opacity on the GPU):
         splats sorted by visual importance so early tiles carry the
         most significant content (progressive densification).
 
-Version 3 (.omg4 only – SOG-compressed temporal splats):
+Version 3 (.sogst, formerly .omg4 – SOG-compressed temporal splats):
+
+    *** docs/sogst-format.md is the authoritative specification. ***
+    The sketch below is a quick orientation for someone reading this
+    module; where the two disagree, the spec wins.  In particular the
+    spec is normative about segment ranges being half-open, the
+    unnormalised temporal factor, the quaternion mode mapping, and the
+    interchange PLY's column contract.
 
     The file is a ZIP archive (ZIP_STORED; entries are webp, already
     compressed).  Viewers distinguish v3 from v1/v2 by the leading
@@ -119,6 +126,7 @@ Version 3 (.omg4 only – SOG-compressed temporal splats):
     meta.json schema (superset of SOG v2 so field conventions match):
         {
           "version": 3,
+          "format": "sogst",
           "asset":  {"generator": "..."},
           "count":  N,
           "time":   {"min": 0.0, "max": 10.0, "fps": 30.0},
@@ -136,9 +144,12 @@ Version 3 (.omg4 only – SOG-compressed temporal splats):
           "segments": {                                 # optional
             "duration": 0.25,        # segment length (s)
             "k_sigma": 3.0,          # active-interval half-width in sigmas
-            "persistent": [0, P],    # index range of always-drawn splats
+            "persistent_span_mult": 3.0,   # persistence threshold, in
+                                     # segment durations; recorded so the
+                                     # ordering can be re-derived
+            "persistent": [0, P),    # index range of always-drawn splats
             "list": [{"t0": s, "t1": s,        # actual time coverage
-                      "range": [first, last]}, # contiguous index range
+                      "range": [first, last)}, # contiguous index range
                      ...]
           }
         }
@@ -148,6 +159,7 @@ Version 3 (.omg4 only – SOG-compressed temporal splats):
     playback time t a viewer draws [0, P) plus the contiguous index range
     spanned by the segments whose [t0, t1] coverage contains t; everything
     else is culled (those splats' temporal opacity is ~0 anyway).
+    ALL INDEX RANGES ARE HALF-OPEN, [first, last).
 
     Reconstruction at time t is identical to version 2.
 """
@@ -171,6 +183,13 @@ QUEEN_MAGIC = 0x4E455551   # "QUEN" in little-endian ASCII bytes
 FORMAT_VERSION = 1
 OMG4_V2_VERSION = 2
 OMG4_V3_VERSION = 3        # SOG-compressed ZIP container ("PK" magic)
+
+# Container identifier written into meta.json.  The format was renamed
+# .omg4 -> .sogst ("SOG + spacetime"); the version number is unchanged, so
+# meta['format'] is what distinguishes a post-rename writer.  Readers must
+# accept its absence (archives written before the rename).
+SOGST_FORMAT_ID = 'sogst'
+SOGST_EXTENSION = '.sogst'
 
 # Version 3: codebook size and the shN centroid texture widths the engine
 # accepts (it infers the SH band count from the centroids texture width)
@@ -339,6 +358,11 @@ def build_v3_meta(
 
     meta = {
         'version': OMG4_V3_VERSION,
+        # The container self-identifies rather than relying on the file
+        # extension.  `version` deliberately stays 3 across the .omg4 ->
+        # .sogst rename: renumbering would break deployed readers for
+        # nothing.  See docs/sogst-format.md sections 3 and 8.
+        'format': SOGST_FORMAT_ID,
         'asset': {'generator': generator},
         'count': int(count),
         'time': {'min': float(time_min), 'max': float(time_max), 'fps': float(fps)},

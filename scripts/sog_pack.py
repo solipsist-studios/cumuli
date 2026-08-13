@@ -187,7 +187,8 @@ def compute_v3_order(fields: dict, time_min: float, time_max: float,
     and placed first (always drawn).  The rest are bucketed by t_center
     into fixed segments and each bucket is Morton-ordered, so a player can
     draw [0, persistent_end) plus the contiguous index range of segments
-    whose coverage overlaps the current time.
+    whose coverage overlaps the current time.  All emitted index ranges are
+    half-open, [first, last).
 
     Returns (order, segments) where segments is the meta.json table, or
     (morton order, None) when segment_duration <= 0 (segmentation off).
@@ -227,6 +228,10 @@ def compute_v3_order(fields: dict, time_min: float, time_max: float,
     segments = {
         'duration': float(segment_duration),
         'k_sigma': float(k_sigma),
+        # Recorded so the persistent/dynamic split — and therefore the
+        # file's whole ordering — can be re-derived from the file alone.
+        # Players ignore it.  See docs/sogst-format.md section 5.
+        'persistent_span_mult': float(persistent_span_mult),
         'persistent': [0, int(len(p_idx))],
         'list': seg_list,
     }
