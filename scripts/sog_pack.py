@@ -1,3 +1,7 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """
 sog_pack.py – Quantize OMG4 v2 splat arrays into the SOG-compressed
 version-3 .omg4 container (webp attribute textures + k-means codebooks).

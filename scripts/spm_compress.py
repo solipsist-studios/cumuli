@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """spm_compress.py - OMG4 sampling->pruning->merging as a pipeline stage.
 
 Drives the OMG4 reference implementation (MinShirley/OMG4) to compress a

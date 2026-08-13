@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
 """eval_render.py - rendered-quality evaluation for .omg4 files.
 
 Decodes a v2 or v3 .omg4 exactly as the shipping viewer would, evaluates
