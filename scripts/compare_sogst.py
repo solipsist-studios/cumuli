@@ -521,7 +521,11 @@ def compare(path_a, path_b, verbose=False):
         if spread > 0:
             ratio = float(err.mean()) / spread
             ok = ratio <= SH_LAYOUT_RATIO
-            rows.append(('f_rest (rel. spread)', err, None, f'{ratio:.3f} rel', ok))
+            # Show measured against threshold explicitly. Printing the ratio
+            # alone under a "past tol" heading reads as a derived tolerance,
+            # which it is not -- the threshold is the fixed SH_LAYOUT_RATIO.
+            rows.append(('f_rest (of spread)', err, None,
+                         f'{ratio:.3f}/{SH_LAYOUT_RATIO:.2f}', ok))
             if not ok:
                 failures.append('f_rest')
                 print(f'NOTE: f_rest mean error is {ratio:.0%} of the data\'s own spread -- '
@@ -536,7 +540,7 @@ def compare(path_a, path_b, verbose=False):
 
     width = max(len(r[0]) for r in rows)
     print(f"{'field':{width}s} {'mean':>12s} {'p99':>12s} {'max':>12s} "
-          f"{'tolerance':>12s} {'past tol':>12s}  result")
+          f"{'tolerance':>12s} {'measure':>12s}  result")
     for name, err, tol, stat, ok in rows:
         tol_max = '' if tol is None else f'{np.max(tol):12.6f}'
         verdict = 'advisory' if stat == 'advisory' else ('ok' if ok else 'FAIL')

@@ -314,6 +314,23 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
     centroids, labels = vq_vectors(f_rest[:, :dims], shn_count)
     k = centroids.shape[0]
 
+    # NOT DONE, deliberately, with the measurement recorded so nobody has to
+    # rediscover it: sorting palette entries by magnitude (and remapping
+    # labels to match) makes each centroid-texture row a smooth ramp instead
+    # of unrelated entries side by side.  It is exactly neutral on decoded
+    # output -- every splat resolves to the same coefficients, and the 1-D
+    # codebook below sees the same multiset either way -- so a decoder
+    # cannot tell.  But the size effect is conditional, not a win:
+    #
+    #   heidi spm-native (75,848 splats): -32% shN_centroids, -6.0% file
+    #   heidi full      (682,389 splats): +0.4% file
+    #
+    # shN_centroids is fixed-size at a given palette count while
+    # shN_labels grows with the splat count, so the gain only survives when
+    # centroids dominate.  Picking the smaller of the two per file would be
+    # strictly better, but labels are encoded per group in group_textures(),
+    # so measuring a total means encoding every group twice.  Not worth that
+    # restructuring for a conditional few percent.
     codebook, cidx = kmeans_1d(centroids)
     # centroid texture: 64 palette entries per row, each `coeffs` texels
     # wide; texel (u+k, v) RGB = codebook indices of coefficient k for the
