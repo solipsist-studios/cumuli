@@ -133,12 +133,18 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
         fields['ay'] = accel_true[:, 1]
         fields['az'] = accel_true[:, 2]
     if include_sh:
-        # Channel-major, index j*15 + k.  Decaying by band so the values
-        # look like a real SH tail rather than uniform noise, and so a
-        # transposed layout is obvious in a field-error table.
-        band_scale = np.repeat([0.4, 0.15, 0.05], [3, 5, 7])
-        fields['f_rest'] = (rng.normal(0.0, 1.0, (n, 45)) *
-                            np.tile(band_scale, 3)[None, :])
+        # Channel-major, index j*15 + k, decaying by band so the values look
+        # like a real SH tail.  Crucially it is also spatially coherent --
+        # a smooth function of launch direction plus a little noise --
+        # because real SH is, and because pure per-splat noise is the
+        # worst possible case for the vector quantizer: it makes the
+        # encoder's VQ error look like a layout bug in a field comparison.
+        band_scale = np.tile(np.repeat([0.4, 0.15, 0.05], [3, 5, 7]), 3)[None, :]
+        direction = v0 / np.linalg.norm(v0, axis=1, keepdims=True)
+        basis = np.stack([direction[:, 0], direction[:, 1], direction[:, 2],
+                          direction[:, 0] * direction[:, 1]], axis=1)   # [n, 4]
+        mixing = rng.normal(0.0, 1.0, (4, 45))
+        fields['f_rest'] = (basis @ mixing + rng.normal(0.0, 0.15, (n, 45))) * band_scale
 
     meta = {
         'time_min': float(time_min), 'time_max': float(time_max),

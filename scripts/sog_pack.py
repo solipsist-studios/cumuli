@@ -48,6 +48,10 @@ from omg4_repack import read_omg4_v2, read_omg4_v2_tiled
 
 SQRT2 = math.sqrt(2.0)
 
+# Upper bound on meta.segments.list length (spec section 5).  Every segment
+# gets an entry whether or not it holds splats, so this bounds meta.json.
+MAX_SEGMENTS = 65536
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -206,6 +210,14 @@ def compute_v3_order(fields: dict, time_min: float, time_max: float,
     lo, hi = tc - k_sigma * ts, tc + k_sigma * ts
     persistent = (hi - lo) > persistent_span_mult * segment_duration
     n_seg = max(1, int(math.ceil((time_max - time_min) / max(segment_duration, 1e-6))))
+    # meta.segments.list carries one entry per segment whether or not it
+    # holds splats, so a tiny duration on a long clip yields a valid file
+    # whose meta.json is mostly an empty table.  Spec section 5 caps it.
+    if n_seg > MAX_SEGMENTS:
+        raise ValueError(
+            f'segment_duration {segment_duration}s over a {time_max - time_min}s clip '
+            f'needs {n_seg:,} segments, over the {MAX_SEGMENTS:,} limit. Use a longer '
+            '--segment-duration (or 0 to disable segmentation).')
     bucket = np.clip(((tc - time_min) / segment_duration).astype(np.int64), 0, n_seg - 1)
 
     idx_all = np.arange(len(tc))

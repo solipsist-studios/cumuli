@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Version 3 container. Specification revision 1, 2026-08-13.**
+**Version 3 container. Specification revision 2, 2026-08-13.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -87,9 +87,20 @@ A `.sogst` file is a ZIP archive.
 - Entries MUST be stored with **no compression** (`ZIP_STORED`). WebP payloads
   are already compressed, and stored entries let a player byte-range into the
   archive.
-- Entries MUST NOT carry ZIP extra fields. A conforming writer's local entry
-  header is therefore exactly `30 + len(name)` bytes, which is what makes the
-  streaming offsets of §6 computable analytically.
+- Entries MUST NOT carry ZIP extra fields.
+- Entries MUST NOT use a **data descriptor**: general-purpose bit 3 MUST be
+  clear, and the compressed and uncompressed sizes MUST be written in the local
+  header. This is not pedantry about the container. A streaming ZIP writer that
+  does not know an entry's size until it has finished writing it will set bit 3,
+  write zeros for both sizes, and append a 16-byte descriptor after the payload
+  — which has no extra fields and so satisfies the rule above as literally
+  worded, while destroying the property that rule exists to protect. A player
+  walking the archive forward reads a compressed size of zero and cannot find
+  the next entry, and every entry costs 16 bytes more than §6's offsets assume.
+
+Together these make a conforming writer's local entry header exactly
+`30 + len(name)` bytes, which is what makes the streaming offsets of §6
+computable analytically.
 - `meta.json` MUST be the **first** entry.
 - A player identifies a v3 file by the leading ZIP magic `PK\x03\x04` (v1 and v2
   files begin with the ASCII magic `OMG4`, `0x34474D4F` little-endian).
@@ -98,17 +109,39 @@ Every other entry is a lossless WebP texture.
 
 ### 2.1 Texture conventions
 
-- Textures are **near-square**: `width = ceil(sqrt(M))`,
-  `height = ceil(M / width)`, where `M` is the number of splats the texture
-  covers (the whole file, or one group — see §6).
-- Splat `i` of the covered range lives at row-major texel `i`.
+Normative, in order of what actually matters:
+
+- **Splat `i` of the covered range lives at row-major texel `i`**, where `M` is
+  the number of splats the texture covers (the whole file, or one group — see
+  §6). Every texture in a group MUST use the same dimensions.
+- `width * height` MUST be at least `M`. **A player MUST take the dimensions
+  from the WebP header and MUST NOT assume any particular width.**
+- Textures SHOULD be **near-square**: `width = ceil(sqrt(M))`,
+  `height = ceil(M / width)`. An encoder MAY round the dimensions up — for
+  example to a multiple of 4, which is what PlayCanvas's own SOG writer does for
+  texture-upload alignment. Because padding is at the tail of raster order,
+  splat `i` is at flat texel `i` under either convention, so the two interoperate
+  and a decoder needs no special case. Two encoders following different
+  conventions will produce archives of different sizes; that is expected, and it
+  is why §10 compares decoded fields rather than bytes.
 - Padding texels past `M` are unspecified; encoders SHOULD write zero. Players
   MUST NOT read them.
-- Every texture MUST be encoded **lossless** WebP with the `exact` flag set.
-  Both matter: every texel is a codebook index or a byte of a 16-bit integer, so
-  one lossy pixel decodes to a wrong value, and without `exact` libwebp is free
-  to rewrite the RGB of fully-transparent texels — which destroys indices stored
-  alongside a zero alpha.
+- Every texture MUST be encoded **lossless** WebP. Every texel is a codebook
+  index or a byte of a 16-bit integer, so one lossy pixel decodes to a wrong
+  value.
+- Encoders MUST set libwebp's `exact` flag. Without it, libwebp may rewrite the
+  RGB of blocks that are entirely transparent, destroying data stored alongside
+  a zero alpha.
+- **A player MUST NOT depend on the RGB of any texel whose alpha is zero.** This
+  is the complement of the rule above, and it bounds the damage when an encoder
+  cannot comply: in the group set defined by §4 the only variable alpha is
+  `sh0.webp`'s opacity, so the only reachable loss is the colour of splats that
+  are fully transparent anyway. An encoder that cannot set `exact` — a
+  prebuilt libwebp binding exposing only the simple lossless API has no way to
+  — is non-conforming on that clause but produces files no conforming player can
+  distinguish. Any future group that stores meaningful data behind a zero alpha
+  would turn that latent deviation into a real defect, which is why the
+  requirement stays a MUST.
 
 ### 2.2 The 16-bit split-plane convention
 
@@ -322,6 +355,12 @@ always drawn. The rest are bucketed by `t_center` into fixed-length segments.
 - `persistent_span_mult` is recorded so that a file's ordering can be
   re-derived — without it, no validator or re-packer can reproduce the
   persistent/dynamic split from the file alone. Players ignore it.
+- **`list` has one entry per segment across the whole clip, whether or not that
+  segment holds any splats**, so its length is `ceil((time.max - time.min) /
+  duration)` and is set by `duration` alone. A very small `duration` on a long
+  clip therefore produces a valid file whose `meta.json` is mostly an empty
+  segment table. Encoders MUST NOT emit more than **65536** segments, and SHOULD
+  reject a `duration` that would.
 
 **The drawing rule.** At time `t`, a player draws `[0, P)` plus the single
 contiguous index span covering every segment whose `[t0, t1]` contains `t`:
@@ -456,10 +495,12 @@ comment sogst.cov2d_scale 1.0 1.0
 - `sogst.cov2d_scale` is OPTIONAL; absent means `1.0 1.0`.
 - Unknown `sogst.*` comments MUST be ignored, not rejected.
 
-A sidecar `<name>.sogst.json` with the same keys MAY accompany the PLY, for
-toolchains that strip comments. When both are present the sidecar wins. A
-conforming producer MUST write the comments regardless of whether it also writes
-a sidecar.
+A sidecar JSON file with the same keys MAY accompany the PLY, for toolchains
+that strip comments. Its name is the PLY's path with a trailing `.ply` **removed
+if present** and `.sogst.json` appended — so `heidi.ply` pairs with
+`heidi.sogst.json`, not `heidi.ply.sogst.json`. When both are present the
+sidecar wins. A conforming producer MUST write the comments regardless of
+whether it also writes a sidecar.
 
 ## 8. Compatibility and the `.omg4` rename
 
@@ -517,3 +558,57 @@ implementation-defined, so byte equality is the wrong bar; PSNR is too coarse to
 tell you *which* field is wrong. A per-field error table localises the bug
 immediately — a wrong `f_rest` stride and a wrong quaternion mode mapping look
 identical in a PSNR number and nothing alike in a field table.
+
+`scripts/compare_sogst.py` implements this:
+
+```
+python compare_sogst.py --a python.sogst --b typescript.sogst   # the real check
+python compare_sogst.py --a scene.ply    --b scene.sogst        # one pack's cost
+```
+
+Three things about how it judges, because the naive version of each is wrong:
+
+- **Split-plane fields (positions, velocity, accel) allow no outliers.** Their
+  encoding is fully determined by `mins`/`maxs`, so any disagreement is a bug.
+- **Codebook fields (scales, `f_dc`, `t_center`, `t_sigma`) are judged on the
+  *fraction* of splats past tolerance, not the worst one.** A value sitting on a
+  bin boundary can legitimately land in different bins in two conforming
+  encoders. The bugs worth catching move essentially every splat, not 0.5% of
+  them.
+- **`t_sigma` is judged by the temporal weight it produces, not by its value in
+  seconds.** A sigma much longer than the clip is saturated: two such values can
+  differ by tens of seconds and be pixel-identical. Judging raw seconds reports
+  a large error for splats a renderer cannot tell apart.
+
+`f_rest` gets a scale-relative bar rather than an absolute one, for the same
+reason its tolerance can't be absolute: VQ placement is implementation-defined,
+but a wrong coefficient layout compares unrelated coefficients and so produces a
+mean error near the data's own standard deviation. On the parabola fixture the
+separation is 0.000 (correct) against 0.743 (channel/coefficient transpose).
+
+Ordering is checked first and reported as its own finding. Splat order is part
+of the format — segment culling indexes into it — so a divergence there is a
+real defect, and it otherwise presents as "every field is wrong".
+
+## Appendix A. Revision history
+
+**Revision 2** — everything here came from the first independent implementation
+of revision 1 (the TypeScript encoder), which is what a spec revision is for.
+No change alters the bytes a revision-1-conforming encoder produces.
+
+- §2 forbids ZIP **data descriptors** explicitly. Revision 1 forbade extra
+  fields, which a streaming ZIP writer satisfies while still emitting
+  descriptors and zeroed local-header sizes — defeating the byte-rangeability
+  the rule existed to protect, and shifting every §6 offset by 16 bytes per
+  entry.
+- §2.1 no longer pins texture dimensions. Splat `i` at row-major texel `i` is
+  the normative part; near-square is a SHOULD, dimension roundup (PlayCanvas's
+  SOG writer aligns to a multiple of 4) is explicitly permitted, and players
+  must read dimensions from the WebP header.
+- §2.1 adds the complement to the `exact` requirement: a player MUST NOT depend
+  on the RGB of a zero-alpha texel. This bounds the exposure of an encoder that
+  cannot set `exact` to the colour of fully-transparent splats.
+- §5 bounds `segments.list` at 65536 entries. Every segment gets an entry
+  whether or not it holds splats, so a small `duration` on a long clip was a
+  valid file with a pathological `meta.json`.
+- §7.3 pins the sidecar filename: `heidi.ply` → `heidi.sogst.json`.
