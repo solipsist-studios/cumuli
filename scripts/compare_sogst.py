@@ -51,9 +51,9 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from splat4d_io import OMG4_V2_FIELDS  # noqa: E402
+from sogst_io import SOGST_FIELDS  # noqa: E402
 
-SCALAR_FIELDS = list(OMG4_V2_FIELDS)
+SCALAR_FIELDS = list(SOGST_FIELDS)
 ACCEL_FIELDS = ['ax', 'ay', 'az']
 QUAT_FIELDS = ['rot_0', 'rot_1', 'rot_2', 'rot_3']
 
@@ -73,8 +73,8 @@ def load(path):
     quantization parameters -- it is the unquantized side).
     """
     if zipfile.is_zipfile(path):
-        from eval_render import decode_v3_fields
-        _header, fields = decode_v3_fields(path)
+        from eval_render import decode_sogst_fields
+        _header, fields = decode_sogst_fields(path)
         with zipfile.ZipFile(path) as zf:
             meta = json.loads(zf.read('meta.json'))
         return meta, fields
@@ -82,9 +82,7 @@ def load(path):
         from sogst_ply import read_sogst_ply
         _header, fields = read_sogst_ply(path, require_scalars=False)
         return None, fields
-    from sog_pack import fields_from_v2
-    _header, fields = fields_from_v2(path)
-    return None, fields
+    raise ValueError(f'{path}: expected a .sogst archive or a 4D interchange .ply')
 
 
 def split16_tolerance(meta, group, axis, values):
@@ -211,16 +209,16 @@ def reorder_source_like(fields, meta):
     persistent_span_mult (which is recorded for exactly this reason; see
     docs/sogst-format.md section 5).
     """
-    from sog_pack import compute_v3_order
+    from sogst_pack import compute_sogst_order
 
     segments = (meta or {}).get('segments')
     time = (meta or {}).get('time', {})
     if not segments:
         # No segmentation: the archive is a single Morton-ordered block.
-        order, _ = compute_v3_order(fields, time.get('min', 0.0), time.get('max', 0.0),
+        order, _ = compute_sogst_order(fields, time.get('min', 0.0), time.get('max', 0.0),
                                     segment_duration=0)
     else:
-        order, _ = compute_v3_order(
+        order, _ = compute_sogst_order(
             fields, time.get('min', 0.0), time.get('max', 0.0),
             segment_duration=segments['duration'],
             k_sigma=segments.get('k_sigma', 3.8),
@@ -435,7 +433,7 @@ def compare(path_a, path_b, verbose=False):
         print('  The range table matches but the ranges hold different splats, so a '
               'player culling by segment would draw the wrong ones. Check the '
               'persistent predicate and the t_center bucketing in the '
-              'compute_v3_order port.')
+              'compute_sogst_order port.')
         if ambiguous:
             print(f'  ({ambiguous:,} splat(s) had ambiguous keys, so a few of these '
                   'may be pairing noise rather than real membership differences.)')

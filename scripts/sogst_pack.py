@@ -2,49 +2,43 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
-"""
-sog_pack.py – Quantize OMG4 v2 splat arrays into the SOG-compressed
-version-3 .omg4 container (webp attribute textures + k-means codebooks).
+"""sogst_pack.py - quantize per-splat arrays into the .sogst container.
+
+Takes the 4D interchange PLY (sogst_ply.py) and writes the SOG-compressed
+ZIP container: webp attribute textures plus k-means codebooks.
+docs/sogst-format.md is the authoritative spec.
 
 The static-attribute encoding follows the PlayCanvas SOG v2 conventions
-exactly (docs/sogst-format.md is the authoritative spec) so the engine's
-existing SOG decoder reconstructs them unmodified; motion and trbf extend
-the scheme with two additional textures.
+exactly, so the engine's existing SOG decoder reconstructs them unmodified;
+motion and trbf extend the scheme with two additional textures.
 
-Usage (repack an existing v2 file, standard or tiled):
-    python sog_pack.py --input scene.omg4 --output scene.sogst \
+Usage:
+    python sogst_pack.py --input scene.ply --output scene.sogst \
         [--shn-count 65536] [--strip-sh] [--webp-method 4] [--verify]
 
-Usage (pack a 4D interchange PLY -- the same input the TypeScript encoder
-takes, so packing one PLY both ways is the cross-implementation check):
-    python sog_pack.py --input scene.ply --output scene.sogst
+The PLY input is the same file the TypeScript encoder takes, so packing one
+PLY both ways is the cross-implementation equivalence check (spec section
+10, and scripts/compare_sogst.py).
 
-Or call pack_v3() with field arrays directly (used by xz_to_omg4.py).
+Or call pack_sogst() with field arrays directly (used by bake_sogst.py).
 """
 
 import argparse
 import io
 import math
-import struct
 import sys
 
 import numpy as np
 from PIL import Image
 
-from splat4d_io import (
-    OMG4_MAGIC,
-    OMG4_V2_FLAG_SH,
-    OMG4_V2_FLAG_TILED,
-    OMG4_V2_FLAG_ACCEL,
-    OMG4_V2_FIELDS,
-    OMG4_V3_CODEBOOK_SIZE,
-    OMG4_V3_SHN_WIDTHS,
-    build_v3_meta,
-    write_omg4_v3,
-    write_omg4_v3_streamed,
+from sogst_io import (
+    SOGST_CODEBOOK_SIZE,
+    SOGST_SHN_WIDTHS,
+    build_sogst_meta,
+    write_sogst,
+    write_sogst_streamed,
     report_output,
 )
-from omg4_repack import read_omg4_v2, read_omg4_v2_tiled
 
 SQRT2 = math.sqrt(2.0)
 
@@ -112,7 +106,7 @@ def split16(values: np.ndarray, mins: np.ndarray, maxs: np.ndarray):
     return (q & 0xFF).astype(np.uint8), (q >> 8).astype(np.uint8)
 
 
-def kmeans_1d(values: np.ndarray, k: int = OMG4_V3_CODEBOOK_SIZE, iters: int = 16,
+def kmeans_1d(values: np.ndarray, k: int = SOGST_CODEBOOK_SIZE, iters: int = 16,
               log_domain: bool = False):
     """1-D k-means (quantile init + Lloyd).  Returns (codebook float64[k],
     indices uint8 shaped like `values`).
@@ -184,7 +178,7 @@ def vq_vectors(data: np.ndarray, k: int, iters: int = 8,
     return centroids.cpu().numpy(), labels.cpu().numpy().astype(np.uint32)
 
 
-def compute_v3_order(fields: dict, time_min: float, time_max: float,
+def compute_sogst_order(fields: dict, time_min: float, time_max: float,
                      segment_duration: float = 0.1,
                      persistent_span_mult: float = 3.0,
                      k_sigma: float = 3.8):
@@ -297,7 +291,7 @@ def compute_quat_planes(rot_wxyz: np.ndarray):
     sign[sign == 0] = 1.0
     xyzw *= sign
 
-    # stored component triples per dropped index (see splat4d_io v3 spec):
+    # stored component triples per dropped index (see sogst_io v3 spec):
     #   dropped x -> (w,y,z)  dropped y -> (w,x,z)  dropped z -> (w,x,y)
     #   dropped w -> (x,y,z);  mode byte = 252 + (dropped + 1) % 4
     keep = np.array([[3, 1, 2], [3, 0, 2], [3, 0, 1], [0, 1, 2]])
@@ -335,7 +329,7 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
     # centroid texture: 64 palette entries per row, each `coeffs` texels
     # wide; texel (u+k, v) RGB = codebook indices of coefficient k for the
     # three color channels (channel-major f_rest layout: j*coeffs + k)
-    width = OMG4_V3_SHN_WIDTHS[bands]
+    width = SOGST_SHN_WIDTHS[bands]
     height = int(math.ceil(k / 64))
     cent_img = np.zeros((height, width, 4), dtype=np.uint8)
     cent_img[..., 3] = 255
@@ -352,17 +346,17 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
 # Main packing entry point
 # ---------------------------------------------------------------------------
 
-def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
+def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
             fps: float, shn_count: int = 65536, webp_method: int = 4,
-            generator: str = 'volumetric-capture-pipeline sog_pack v1',
+            generator: str = 'volumetric-capture-pipeline sogst_pack',
             cov2d_scale=None, segment_duration: float = 0.1,
             order_segments=None, stream: bool = True) -> dict:
     """Quantize v2-style field arrays and write a version-3 .omg4 archive.
 
-    `fields` maps OMG4_V2_FIELDS names to float32[N] arrays, plus optional
+    `fields` maps SOGST_FIELDS names to float32[N] arrays, plus optional
     'f_rest' as float32[N, 45].  `order_segments` accepts a precomputed
-    (order, segments) pair from compute_v3_order() (the CLI shares it with
-    verify_v3); otherwise it is computed here.  Returns the written meta.
+    (order, segments) pair from compute_sogst_order() (the CLI shares it with
+    verify_sogst); otherwise it is computed here.  Returns the written meta.
 
     With stream=True (and segmentation on), the archive uses the streamed
     layout: one webp texture set per group (persistent, then one per
@@ -373,7 +367,7 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
     """
     n = len(fields['x'])
     if order_segments is None:
-        order_segments = compute_v3_order(fields, time_min, time_max, segment_duration)
+        order_segments = compute_sogst_order(fields, time_min, time_max, segment_duration)
     order, segments = order_segments
     fields = {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
     xyz = np.stack([fields['x'], fields['y'], fields['z']], axis=1)
@@ -436,7 +430,7 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
                        (labels[s] >> 8).astype(np.uint8), None, 255), m)
         return {name: encode_webp(img, webp_method) for name, img in images.items()}
 
-    meta = build_v3_meta(
+    meta = build_sogst_meta(
         count=n, time_min=time_min, time_max=time_max, fps=fps,
         means_mins=m_mins, means_maxs=m_maxs,
         scales_codebook=scales_cb, sh0_codebook=sh0_cb,
@@ -486,12 +480,12 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
             'segments': prefixes,
             'sh_deferred': bool(label_entries),
         }
-        write_omg4_v3_streamed(out_path, meta, entries, reveal_through)
+        write_sogst_streamed(out_path, meta, entries, reveal_through)
     else:
         textures = group_textures(0, n)
         if cent_blob is not None:
             textures['shN_centroids.webp'] = cent_blob
-        write_omg4_v3(out_path, meta, textures)
+        write_sogst(out_path, meta, textures)
     return meta
 
 
@@ -499,10 +493,10 @@ def pack_v3(out_path: str, fields: dict, time_min: float, time_max: float,
 # Verification: decode the archive back and report quantization error
 # ---------------------------------------------------------------------------
 
-def verify_v3(v3_path: str, fields: dict, order: np.ndarray):
+def verify_sogst(v3_path: str, fields: dict, order: np.ndarray):
     """Decode the written archive exactly as the engine decoder would and
     report worst-case reconstruction error per attribute.  `order` must be
-    the same permutation pack_v3 applied (from compute_v3_order)."""
+    the same permutation pack_sogst applied (from compute_sogst_order)."""
     import json
     import zipfile
 
@@ -582,33 +576,14 @@ def verify_v3(v3_path: str, fields: dict, order: np.ndarray):
 
 
 # ---------------------------------------------------------------------------
-# CLI: v2 .omg4 -> v3
+# CLI: interchange PLY -> .sogst
 # ---------------------------------------------------------------------------
-
-def fields_from_v2(path: str):
-    """Read a standard or tiled v2 file into a name->array field dict."""
-    with open(path, 'rb') as fp:
-        head = fp.read(20)
-    flags = struct.unpack_from('<I', head, 12)[0]
-    header, arrays = (read_omg4_v2_tiled if flags & OMG4_V2_FLAG_TILED else read_omg4_v2)(path)
-
-    fields = {name: np.asarray(arrays[i]) for i, name in enumerate(OMG4_V2_FIELDS)}
-    cursor = len(OMG4_V2_FIELDS)
-    if header['flags'] & OMG4_V2_FLAG_SH:
-        fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
-        cursor += 45
-    if header['flags'] & OMG4_V2_FLAG_ACCEL:
-        for i, name in enumerate(('ax', 'ay', 'az')):
-            fields[name] = np.asarray(arrays[cursor + i])
-    return header, fields
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--input', required=True,
-                        help='v2 .omg4 file (standard or tiled), or a 4D interchange '
-                             '.ply (auto-detected by extension)')
-    parser.add_argument('--output', required=True, help='Destination v3 .sogst archive')
+                        help='4D interchange .ply (see sogst_ply.py / spec section 7)')
+    parser.add_argument('--output', required=True, help='Destination .sogst archive')
     parser.add_argument('--shn-count', type=int, default=65536,
                         help='VQ centroid count for higher-order SH (default 65536)')
     parser.add_argument('--strip-sh', action='store_true', help='Drop higher-order SH entirely')
@@ -625,26 +600,21 @@ def main():
                         help='Decode the output and report per-attribute quantization error')
     args = parser.parse_args()
 
-    if args.input.endswith('.ply'):
-        # Interchange PLY -> container. This is the path the TypeScript
-        # encoder mirrors, so packing the same PLY both ways is the
-        # cross-implementation equivalence check (docs/sogst-format.md
-        # section 10).
-        from sogst_ply import read_sogst_ply
-        header, fields = read_sogst_ply(args.input)
-        n = header['count']
-    else:
-        header, fields = fields_from_v2(args.input)
-        n = header['num_splats']
+    # Interchange PLY -> container. This is the path the TypeScript encoder
+    # mirrors, so packing the same PLY both ways is the cross-implementation
+    # equivalence check (docs/sogst-format.md section 10).
+    from sogst_ply import read_sogst_ply
+    header, fields = read_sogst_ply(args.input)
+    n = header['count']
     has_sh = 'f_rest' in fields
     if args.strip_sh:
         fields.pop('f_rest', None)
     print(f"Read {args.input}: {n:,} splats, SH={'yes' if has_sh else 'no'}"
           f"{' (stripped)' if args.strip_sh and has_sh else ''}")
 
-    order_segments = compute_v3_order(fields, header['time_min'], header['time_max'],
+    order_segments = compute_sogst_order(fields, header['time_min'], header['time_max'],
                                       args.segment_duration)
-    meta = pack_v3(args.output, fields, header['time_min'], header['time_max'],
+    meta = pack_sogst(args.output, fields, header['time_min'], header['time_max'],
                    header['fps'], shn_count=args.shn_count, webp_method=args.webp_method,
                    cov2d_scale=header.get('cov2d_scale'), order_segments=order_segments,
                    stream=not args.monolithic)
@@ -675,7 +645,7 @@ def main():
           f'({in_size / out_size:.1f}x, {out_size / n:.1f} bytes/splat)')
 
     if args.verify:
-        verify_v3(args.output, fields, order_segments[0])
+        verify_sogst(args.output, fields, order_segments[0])
 
 
 if __name__ == '__main__':

@@ -18,7 +18,7 @@ is what happens after the merge rounds:
                       surviving Gaussians keep their explicit per-splat
                       SH and fine-tune a few thousand more iterations,
                       then a rotor-style checkpoint is saved. The bake
-                      takes xz_to_omg4.py's proven checkpoint path (the
+                      takes bake_sogst.py's proven checkpoint path (the
                       same one the full-quality pretrain exports use), so
                       there is no appearance round-trip at all.
 
@@ -27,8 +27,8 @@ Stages (each skipped when its artifact already exists, so reruns resume):
   1. compute_gradient.py  -> <model_path>/{view,t}_grad.npy   (SD score)
   2. train.py --spm_native_out
                           -> <model_path>/chkpnt_spm_native.pth
-  3. xz_to_omg4.py        -> v2 (bake-only: no MLPs to evaluate)
-  4. sog_pack.py          -> v3 (--shn-count auto-scales with splat count)
+  3. bake_sogst.py        -> interchange PLY (bake-only: no MLPs to evaluate)
+  4. sogst_pack.py        -> .sogst (--shn-count auto-scales with splat count)
 
 The scene config must be an OMG4-style yaml whose OptimizationParams
 carry the SPM block (tau_GS, tau_GP, merge settings) with iterations
@@ -42,7 +42,7 @@ Example:
         --omg4-repo ~/Dev/github/OMG4 \
         --config configs/custom/heidi_spm_native.yaml \
         --checkpoint output/heidi_pretrain/chkpnt30000.pth \
-        --fps 30 --output-v3 /tmp/heidi_spm_native_v3.omg4
+        --fps 30 --output /tmp/heidi_spm_native.sogst
 """
 
 import argparse
@@ -62,7 +62,7 @@ def main():
                     help='scene yaml with the SPM OptimizationParams block (repo-relative or absolute)')
     ap.add_argument('--checkpoint', required=True,
                     help='pretrained Real-Time4DGS chkpntNNNNN.pth (repo-relative or absolute)')
-    ap.add_argument('--output-v3', required=True, help='destination .omg4 v3 archive')
+    ap.add_argument('--output', required=True, help='destination .sogst archive')
     ap.add_argument('--fps', type=float, default=30.0, help='playback fps stored in the export')
     ap.add_argument('--extra-iter', type=int, default=3000,
                     help='explicit-SH fine-tune iterations after the last merge (default 3000)')
@@ -133,11 +133,11 @@ def main():
         if not os.path.exists(native_ckpt):
             raise SystemExit(f'train.py finished but {native_ckpt} is missing')
 
-    # -- 3. bake to .omg4 v2 (checkpoint path: explicit SH, no MLPs) --------
-    print('[3/4] bake to v2 (xz_to_omg4.py, checkpoint path)')
-    v2_path = os.path.join(tempfile.gettempdir(), os.path.basename(args.output_v3) + '.v2.omg4')
-    cmd = [args.python, os.path.join(scripts_dir, 'xz_to_omg4.py'),
-           '--input', native_ckpt, '--output', v2_path, '--fps', str(args.fps),
+    # -- 3. bake to the interchange PLY (checkpoint path: explicit SH, no MLPs)
+    print('[3/4] bake to interchange PLY (bake_sogst.py, checkpoint path)')
+    ply_path = os.path.join(tempfile.gettempdir(), os.path.basename(args.output) + '.ply')
+    cmd = [args.python, os.path.join(scripts_dir, 'bake_sogst.py'),
+           '--input', native_ckpt, '--emit_ply', ply_path, '--fps', str(args.fps),
            '--sh_clamp', str(args.sh_clamp)]
     if args.keep_main_cluster:
         cmd.append('--keep_main_cluster')
@@ -147,25 +147,25 @@ def main():
         cmd += ['--time_min', str(time_duration[0]), '--time_max', str(time_duration[1])]
     run(cmd, repo, os.path.join(model_dir, 'export.log'))
 
-    # -- 4. pack v3 ----------------------------------------------------------
+    # -- 4. pack .sogst ------------------------------------------------------
     shn = args.shn_count
     if not shn:
         sys.path.insert(0, scripts_dir)
-        from sog_pack import fields_from_v2
-        header, _ = fields_from_v2(v2_path)
-        shn = sh_count_for(header['num_splats'])
-        print(f'[4/4] pack v3 (sog_pack.py, auto --shn-count {shn} for {header["num_splats"]} splats)')
+        from sogst_ply import ply_vertex_count
+        n_splats = ply_vertex_count(ply_path)
+        shn = sh_count_for(n_splats)
+        print(f'[4/4] pack .sogst (sogst_pack.py, auto --shn-count {shn} for {n_splats} splats)')
     else:
-        print(f'[4/4] pack v3 (sog_pack.py, --shn-count {shn})')
-    run([args.python, os.path.join(scripts_dir, 'sog_pack.py'),
-         '--input', v2_path, '--output', args.output_v3,
+        print(f'[4/4] pack .sogst (sogst_pack.py, --shn-count {shn})')
+    run([args.python, os.path.join(scripts_dir, 'sogst_pack.py'),
+         '--input', ply_path, '--output', args.output,
          '--shn-count', str(shn), '--segment-duration', str(args.segment_duration),
          '--verify'],
         repo, os.path.join(model_dir, 'export.log'))
 
-    os.remove(v2_path)
-    size = os.path.getsize(args.output_v3) / 1e6
-    print(f'done: {args.output_v3} ({size:.1f} MB)')
+    os.remove(ply_path)
+    size = os.path.getsize(args.output) / 1e6
+    print(f'done: {args.output} ({size:.1f} MB)')
     print('next: score it with scripts/eval_render.py against held-out views')
 
 

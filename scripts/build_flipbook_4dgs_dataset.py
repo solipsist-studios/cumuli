@@ -17,7 +17,7 @@ Input (--flipbook_root, e.g. heidi_flipbook_260521-105422):
     frame_NNNN/images_flat/<label>.png   undistorted RGB per camera
     frame_NNNN/fmasks_clean/<label>.png  subject masks (white = subject)
 
-Output (--out) mirrors the tatum omg4_perframe90_refit layout:
+Output (--out) mirrors the tatum per-frame refit dataset layout:
     realcams/cam<label>/frame_NNNNN.png  RGBA (mask in alpha), downscaled
     transforms_train.json / transforms_test.json
         per-view entries with per-frame intrinsics (the rotor trainer's

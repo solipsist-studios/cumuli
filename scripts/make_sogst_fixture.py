@@ -33,7 +33,7 @@ wrong and hard to notice:
     codebook quantization error visible if a codebook is built wrongly.
 
 The ground truth is the PLY itself: pack it, decode the archive with
-eval_render.decode_v3_fields(), and compare per field.  See
+eval_render.decode_sogst_fields(), and compare per field.  See
 docs/sogst-format.md section 10 -- compare decoded fields, not rendered
 PSNR, because codebook initialisation is implementation-defined.
 
@@ -190,8 +190,8 @@ def main():
           '(raw coefficient, not half-acceleration)')
 
     if args.pack:
-        from sog_pack import pack_v3
-        pack_meta = pack_v3(args.pack, fields, meta['time_min'], meta['time_max'],
+        from sogst_pack import pack_sogst
+        pack_meta = pack_sogst(args.pack, fields, meta['time_min'], meta['time_max'],
                             meta['fps'], shn_count=0 if args.no_sh else 4096,
                             generator='volumetric-capture-pipeline make_sogst_fixture')
         seg = pack_meta.get('segments')

@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
-"""eval_render.py - rendered-quality evaluation for .omg4 files.
+"""eval_render.py - rendered-quality evaluation for .sogst assets.
 
-Decodes a v2 or v3 .omg4 exactly as the shipping viewer would, evaluates
-the temporal model at each test camera's timestamp
+Decodes a .sogst archive (or a 4D interchange PLY) exactly as the shipping
+viewer would, evaluates the temporal model at each test camera's timestamp
 
     mean(t)  = xyz + v * (t - t_center)
     alpha(t) = sigmoid(opacity) * exp(-0.5 * ((t - t_center) / t_sigma)^2)
@@ -18,7 +18,7 @@ directory of frames named after each entry's file_path basename.
 Run under the `omg4` conda env (gsplat + lpips + torchmetrics + CUDA):
 
     ~/miniconda3/envs/omg4/bin/python scripts/eval_render.py \
-        --model coffee_martini_v3.omg4 \
+        --model coffee_martini.sogst \
         --transforms ~/Dev/datasets/n3v/coffee_martini/transforms_test.json \
         --gt-dir ~/Dev/datasets/n3v/coffee_martini/eval_gt_half \
         --downscale 2 --every 10
@@ -38,17 +38,18 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sog_pack import decode_webp, fields_from_v2  # noqa: E402
-from splat4d_io import OMG4_V2_FIELDS  # noqa: E402
+from sogst_pack import decode_webp  # noqa: E402
+from sogst_io import SOGST_FIELDS  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# v3 archive -> field arrays (mirrors the engine decoder: sog_pack.verify_v3
-# covers the same math for scalar attributes; this adds quats and shN)
+# .sogst archive -> field arrays (mirrors the engine decoder:
+# sogst_pack.verify_sogst covers the same math for scalar attributes; this
+# adds quats and shN, and so is the only complete inverse of the encoder)
 # ---------------------------------------------------------------------------
 
-def decode_v3_fields(v3_path):
-    """Decode a v3 archive into the same field dict fields_from_v2 returns,
+def decode_sogst_fields(v3_path):
+    """Decode a .sogst archive into the field dict the packer consumes,
     plus a (time_min, time_max, fps) header tuple."""
     zf = zipfile.ZipFile(v3_path)
     meta = json.loads(zf.read('meta.json'))
@@ -153,11 +154,14 @@ def decode_v3_fields(v3_path):
 
 
 def load_model(path):
+    """Load a .sogst archive, or a 4D interchange PLY (unquantized, so
+    scoring one against its packed archive isolates quantization cost)."""
     if zipfile.is_zipfile(path):
-        return decode_v3_fields(path)
-    header, fields = fields_from_v2(path)
+        return decode_sogst_fields(path)
+    from sogst_ply import read_sogst_ply
+    header, fields = read_sogst_ply(path)
     return {'time_min': header['time_min'], 'time_max': header['time_max'],
-            'fps': header.get('fps', 30.0), 'count': len(fields['x'])}, fields
+            'fps': header['fps'], 'count': header['count']}, fields
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +199,7 @@ def load_cameras(transforms_path, downscale, every):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--model', required=True, help='.omg4 v2 or v3 file')
+    ap.add_argument('--model', required=True, help='.sogst archive, or a 4D interchange .ply')
     ap.add_argument('--transforms', required=True, help='transforms_test.json (OpenGL c2w + time)')
     ap.add_argument('--gt-dir', required=True,
                     help='directory of ground-truth frames named <file_path basename>.png')

@@ -3,8 +3,14 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 """
-xz_to_omg4.py  –  Convert an OMG4 compressed 4DGS model (comp.xz) to the
-compact .omg4 v2 binary format consumed by the supersplat-viewer.
+bake_sogst.py  –  Bake an OMG4-trained 4DGS model into the .sogst container
+and/or the 4D interchange PLY.
+
+Input is a trainer artifact: an OMG4 compressed model (comp.xz) or a
+Real-Time-4DGS checkpoint (chkpntNNNNN.pth).  Output is a .sogst archive
+(--output), the interchange PLY that feeds an external encoder
+(--emit_ply), or both.  Both are written from the same post-filter arrays,
+so they cannot disagree.
 
 OMG4 (arXiv 2510.03857) represents a dynamic scene with 4D space-time
 Gaussians. Each Gaussian has a 4x4 covariance built from two quaternions
@@ -28,34 +34,23 @@ GPU. There is no per-frame data: the file covers the full clip continuously.
 Requirements: torch numpy dahuffman  (the OMG4 training environment)
 
 Usage:
-    python xz_to_omg4.py \
+    python bake_sogst.py \
         --input  path/to/comp.xz \
-        --output path/to/scene.omg4 \
+        --output path/to/scene.sogst \
         --time_min 0.0 --time_max 10.0 --fps 30
+
+    # interchange PLY only, for an external encoder:
+    python bake_sogst.py --input chkpnt30000.pth --emit_ply scene.ply \
+        --time_min 0 --time_max 2 --fps 30
 
 time_min/time_max MUST match the `time_duration` the model was trained
 with (configs/dynerf/*.yaml in the OMG4 repo: [0.0, 10.0]); both the
 temporal-opacity units and the MLP time normalisation depend on it.
 
-.omg4 v2 file format (all values little-endian) — see splat4d_io.py for the
-shared spec:
-    Header (32 bytes):
-        uint32  magic = 0x34474D4F ("OMG4")
-        uint32  version = 2
-        uint32  numSplats (N)
-        uint32  flags = 0 (reserved)
-        float32 timeMin, timeMax   (clip time range, seconds)
-        float32 fps                (advisory, for UI only)
-        uint32  reserved = 0
-    Data: 19 SoA float32[N] arrays, in order:
-        x y z                      position at t = t_center
-        rot_0 rot_1 rot_2 rot_3    quaternion (w,x,y,z) of sliced 3D covariance
-        scale_0 scale_1 scale_2    log-space sqrt eigenvalues of sliced 3D cov
-        opacity                    logit-space peak opacity
-        f_dc_0 f_dc_1 f_dc_2       SH DC coefficients
-        vx vy vz                   velocity, scene units / second
-        t_center                   temporal centre, seconds
-        t_sigma                    temporal std-dev, seconds
+The per-splat columns this produces are specified in
+docs/sogst-format.md section 7 (and mirrored in sogst_ply.py): position at
+t_center, w-first quaternion, log scales, logit opacity, raw SH DC,
+velocity in units/second, and t_center / t_sigma in seconds.
 """
 
 import argparse
@@ -70,18 +65,17 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from splat4d_io import (OMG4_MAGIC, OMG4_V2_FIELDS, OMG4_V2_FLAG_SH, OMG4_V2_FLAG_ACCEL,
-                        write_omg4_v2_header, report_output)
+from sogst_io import SOGST_FIELDS, report_output
 
-# Set by main() when --v3 is given: {'shn_count': int, 'webp_method': int}.
-# finish_export() then writes the SOG-compressed v3 container instead of
-# the raw-float v2 layout (same filters, same field data).
-V3_EXPORT_OPTIONS = None
+# Set by main() when --output is given: the packer options for the .sogst
+# container, {'shn_count': int, 'webp_method': int, 'segment_duration': float}.
+# None means this bake writes only the interchange PLY.
+SOGST_EXPORT_OPTIONS = None
 
 # Set by main() when --emit_ply is given: the destination .ply path.
-# finish_export() additionally writes the 4D interchange PLY (see
-# docs/sogst-format.md section 7) from the same post-filter field arrays
-# that feed the container writer, so the two cannot disagree.
+# finish_export() writes the 4D interchange PLY (docs/sogst-format.md
+# section 7) from the same post-filter field arrays that feed the container
+# writer, so the two cannot disagree.
 PLY_EXPORT_PATH = None
 PLY_EXPORT_SIDECAR = False
 
@@ -590,7 +584,7 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
             for k in range(15):
                 arrays.append(f_rest[:, k, ch])
     if accel is not None:
-        # degree-2 motion: appended after the SH block (OMG4_V2_FLAG_ACCEL)
+        # degree-2 motion: the raw dt^2 coefficient (spec section 4.8)
         for c in range(3):
             arrays.append(accel[:, c])
     arrays = [np.ascontiguousarray(a[keep], dtype=np.float32) for a in arrays]
@@ -610,8 +604,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
     # writer and the interchange-PLY writer consume this same dict, which
     # is the point: the seam is one place, so the two outputs cannot
     # describe different splats.
-    fields = {name: arrays[i] for i, name in enumerate(OMG4_V2_FIELDS)}
-    cursor = len(OMG4_V2_FIELDS)
+    fields = {name: arrays[i] for i, name in enumerate(SOGST_FIELDS)}
+    cursor = len(SOGST_FIELDS)
     if f_rest is not None:
         fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
         cursor += 45
@@ -623,25 +617,16 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         from sogst_ply import write_sogst_ply, write_sogst_sidecar
         n_ply = write_sogst_ply(PLY_EXPORT_PATH, fields, time_min, time_max, fps,
                                 cov2d_scale=cov2d_scale,
-                                generator='volumetric-capture-pipeline xz_to_omg4')
+                                generator='volumetric-capture-pipeline bake_sogst')
         print(f'  Interchange PLY: {n_ply:,} splats -> {PLY_EXPORT_PATH}')
         if PLY_EXPORT_SIDECAR:
             print(f'    sidecar: {write_sogst_sidecar(PLY_EXPORT_PATH, time_min, time_max, fps, cov2d_scale=cov2d_scale, motion_degree=2 if accel is not None else 1)}')
 
-    if V3_EXPORT_OPTIONS is not None:
-        from sog_pack import pack_v3
-        pack_v3(out_path, fields, time_min, time_max, fps,
-                cov2d_scale=cov2d_scale, **V3_EXPORT_OPTIONS)
-    else:
-        flags = (OMG4_V2_FLAG_SH if f_rest is not None else 0) | \
-                (OMG4_V2_FLAG_ACCEL if accel is not None else 0)
-        with open(out_path, 'wb') as fp:
-            write_omg4_v2_header(fp, OMG4_MAGIC, kept, time_min, time_max, fps, flags,
-                                 cov2d_scale=cov2d_scale)
-            for a in arrays:
-                fp.write(a.tobytes())
-
-    report_output(out_path)
+    if SOGST_EXPORT_OPTIONS is not None:
+        from sogst_pack import pack_sogst
+        pack_sogst(out_path, fields, time_min, time_max, fps,
+                   cov2d_scale=cov2d_scale, **SOGST_EXPORT_OPTIONS)
+        report_output(out_path)
 
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
@@ -925,8 +910,11 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Convert OMG4 comp.xz checkpoint to compact .omg4 v2 for supersplat-viewer')
-    parser.add_argument('--input', required=True, help='Path to comp.xz (OMG4 output)')
-    parser.add_argument('--output', required=True, help='Destination .omg4 file')
+    parser.add_argument('--input', required=True,
+                        help='Trainer artifact: comp.xz (OMG4) or chkpntNNNNN.pth')
+    parser.add_argument('--output', default=None,
+                        help='Destination .sogst archive. Optional when --emit_ply is '
+                             'given, so a bake can produce only the interchange PLY.')
     parser.add_argument('--time_min', type=float, default=0.0,
                         help='Training time_duration min in seconds (default: 0.0)')
     parser.add_argument('--time_max', type=float, default=10.0,
@@ -1003,33 +991,31 @@ if __name__ == '__main__':
                              'fine-tune leaves around a masked subject (deeply-negative mean colour, '
                              'or dark + low-alpha / spike-elongated) while keeping legitimate dark '
                              'material. Pair with --no_filter_corrupted for SPM exports.')
-    parser.add_argument('--v3', action='store_true',
-                        help='Write the SOG-compressed v3 container (webp textures + codebooks, '
-                             '~5-7x smaller) instead of the raw-float v2 layout. Higher-order SH '
-                             'is vector-quantized rather than dropped; combine with --no_sh to '
-                             'omit it entirely.')
     parser.add_argument('--shn_count', type=int, default=65536,
-                        help='v3 only: VQ centroid count for higher-order SH (default: 65536)')
+                        help='--output only: VQ centroid count for higher-order SH (default: 65536)')
     parser.add_argument('--webp_method', type=int, default=4, choices=range(7),
-                        help='v3 only: libwebp effort 0-6 (default: 4; 6 is smallest/slowest)')
+                        help='--output only: libwebp effort 0-6 (default: 4; 6 is smallest/slowest)')
     parser.add_argument('--segment_duration', type=float, default=0.1,
-                        help='v3 only: temporal segment length in seconds for per-segment '
+                        help='--output only: temporal segment length in seconds for per-segment '
                              'culling (default: 0.1; 0 disables segmentation)')
     parser.add_argument('--emit_ply', type=str, default=None,
-                        help='Also write the 4D interchange PLY to this path -- the '
-                             'per-splat spacetime data the TypeScript encoder packs '
+                        help='Write the 4D interchange PLY to this path -- the per-splat '
+                             'spacetime data an external encoder packs '
                              '(docs/sogst-format.md section 7). Written from the same '
                              'post-filter arrays as --output, so the two agree by '
-                             'construction. Independent of --v3.')
+                             'construction. May be given with or instead of --output.')
     parser.add_argument('--emit_ply_sidecar', action='store_true',
                         help='With --emit_ply, also write the optional <name>.sogst.json '
                              'sidecar. The clip scalars are in the PLY comments either '
                              'way; this is for toolchains that strip them.')
     args = parser.parse_args()
 
-    if args.v3:
-        V3_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
-                             'segment_duration': args.segment_duration}
+    if not args.output and not args.emit_ply:
+        sys.exit('nothing to write: pass --output (a .sogst archive), --emit_ply '
+                 '(the interchange PLY), or both')
+    if args.output:
+        SOGST_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
+                                'segment_duration': args.segment_duration}
     if args.emit_ply_sidecar and not args.emit_ply:
         sys.exit('--emit_ply_sidecar requires --emit_ply')
     PLY_EXPORT_PATH = args.emit_ply

@@ -3,11 +3,10 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 """
-sog_flipbook_to_omg4.py  –  Convert a per-frame .sog flipbook sequence into a
-single .omg4 v2 file (standard layout; pipe through omg4_repack.py for the
-streamable tiled variant).
+sog_flipbook_to_sogst.py  –  Convert a per-frame .sog flipbook sequence into
+a single .sogst archive.
 
-A flipbook stores an independent splat set per frame. OMG4 v2 has no
+A flipbook stores an independent splat set per frame. .sogst has no
 per-frame data — every splat carries a temporal Gaussian — so each frame's
 splats are emitted with:
 
@@ -20,22 +19,27 @@ to a near-constant coverage over the clip (a theta function): playback
 crossfades adjacent frames (~14% ghost of each neighbour at a frame's own
 centre) instead of hard-cutting, which reads as mild motion blur.
 
-Size/feasibility: the viewer evaluates EVERY splat every rendered frame, and
-v2 costs 76 bytes/splat, so summing whole frames is untenable (a 481-frame
-flipbook holds ~68M splats). --max-splats sets a total budget divided evenly
-across frames; each frame keeps its top-k splats by visual importance
-(alpha x mean-scale^2, the same ranking omg4_repack.py streams by).
+Note what this discards: velocity = 0 and a constant sigma throw away the
+temporal modelling the format exists to carry, so a flipbook asset is
+much larger than a trained 4D one for the same clip. This path is for
+content that only exists as per-frame splats; prefer bake_sogst.py where
+a 4D model is available.
+
+Size/feasibility: a player evaluates EVERY splat every rendered frame, so
+summing whole frames is untenable (a 481-frame flipbook holds ~68M splats).
+--max-splats sets a total budget divided evenly across frames; each frame
+keeps its top-k splats by visual importance (alpha x mean-scale^2).
 
 Frame decoding shells out to the `splat-transform` CLI (npm i -g
 @playcanvas/splat-transform) for .sog -> .ply, so this script needs no webp
 codec of its own.
 
 Usage:
-    python sog_flipbook_to_omg4.py \
+    python sog_flipbook_to_sogst.py \
         --input-dir path/to/frames --pattern '{frame:04d}.sog' \
         --start 100 --end 187 --fps 24 \
         --max-splats 2500000 \
-        --output ariana.omg4
+        --output ariana.sogst
 """
 
 import argparse
@@ -49,7 +53,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from splat4d_io import OMG4_MAGIC, write_omg4_v2_header, report_output
+from sogst_io import SOGST_FIELDS, report_output
 
 
 def read_ply_float32(path):
@@ -137,7 +141,11 @@ def main():
     parser.add_argument('--prune-alpha', type=float, default=1.0 / 255,
                         help='Drop splats whose peak alpha is below this before ranking (default: 1/255)')
     parser.add_argument('--jobs', type=int, default=8, help='Parallel frame decodes (default: 8)')
-    parser.add_argument('--output', required=True, help='Destination .omg4 (standard v2 layout)')
+    parser.add_argument('--segment-duration', type=float, default=0.1,
+                        help='Temporal segment length in seconds for per-segment culling '
+                             '(default 0.1; 0 disables segmentation). A flipbook segments '
+                             'especially well: every splat is short-lived by construction.')
+    parser.add_argument('--output', required=True, help='Destination .sogst archive')
     args = parser.parse_args()
 
     frames = list(range(args.start, args.end + 1, args.stride))
@@ -154,7 +162,7 @@ def main():
     if missing:
         sys.exit(f'ERROR: missing frames, e.g. {missing[0]}')
 
-    tmp_dir = tempfile.mkdtemp(prefix='sog2omg4_')
+    tmp_dir = tempfile.mkdtemp(prefix='sog2sogst_')
     results = [None] * n_frames
     total_in = 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -185,17 +193,21 @@ def main():
     t_sigma = np.full(total, args.t_sigma_factor * dt, dtype=np.float32)
     zeros = np.zeros(total, dtype=np.float32)
 
-    arrays = ([np.ascontiguousarray(base[:, i]) for i in range(14)] +
-              [zeros, zeros, zeros, t_center, t_sigma])
-
-    with open(args.output, 'wb') as fp:
-        write_omg4_v2_header(fp, OMG4_MAGIC, total, time_min, time_max,
-                             args.fps / args.stride, flags=0)
-        for a in arrays:
-            fp.write(a.tobytes())
+    # base[:, :14] is the v2 field order minus the temporal columns, i.e.
+    # SOGST_FIELDS[:14]; velocity is identically zero for a flipbook.
+    fields = {name: np.ascontiguousarray(base[:, i])
+              for i, name in enumerate(SOGST_FIELDS[:14])}
+    fields.update({'vx': zeros, 'vy': zeros, 'vz': zeros,
+                   't_center': t_center, 't_sigma': t_sigma})
 
     print(f'  clip: [{time_min}, {time_max:.3f}]s @ {args.fps / args.stride:g}fps advisory, '
           f't_sigma={args.t_sigma_factor * dt * 1000:.1f}ms')
+
+    from sogst_pack import pack_sogst
+    pack_sogst(args.output, fields, time_min, time_max, args.fps / args.stride,
+               shn_count=0,          # a flipbook decode carries DC colour only
+               segment_duration=args.segment_duration,
+               generator='volumetric-capture-pipeline sog_flipbook_to_sogst')
     report_output(args.output)
 
 

@@ -14,9 +14,9 @@ import pytest
 
 import compare_sogst
 import make_sogst_fixture as fixture
-from sog_pack import pack_v3
+from sogst_pack import pack_sogst
 
-PIL = pytest.importorskip("PIL", reason="pack_v3 encodes webp textures")
+PIL = pytest.importorskip("PIL", reason="pack_sogst encodes webp textures")
 
 
 @pytest.fixture(scope="module")
@@ -37,7 +37,7 @@ def packer(tmp_path_factory, source):
         if mutate is not None:
             mutate(data)
         path = out_dir / f"{name}.sogst"
-        pack_v3(str(path), data, meta["time_min"], meta["time_max"], meta["fps"],
+        pack_sogst(str(path), data, meta["time_min"], meta["time_max"], meta["fps"],
                 shn_count=512, **kwargs)
         return str(path)
 
@@ -47,6 +47,22 @@ def packer(tmp_path_factory, source):
 @pytest.fixture(scope="module")
 def reference(packer):
     return packer("reference")
+
+
+def test_packed_archive_declares_sogst_v1(reference):
+    """The container is version 1 and self-identifies. The development-era
+    numbering ("3") and the .omg4 magic are gone, not deprecated -- nothing
+    was ever released that a reader would need to accept."""
+    import json
+    import zipfile
+
+    from sogst_io import SOGST_FORMAT_ID, SOGST_VERSION
+
+    with zipfile.ZipFile(reference) as zf:
+        assert zf.namelist()[0] == "meta.json", "meta.json must be the first entry"
+        meta = json.loads(zf.read("meta.json"))
+    assert meta["version"] == SOGST_VERSION == 1
+    assert meta["format"] == SOGST_FORMAT_ID == "sogst"
 
 
 def run(a, b, capsys):
@@ -156,10 +172,10 @@ def test_catches_segmentation_mismatch(packer, reference, capsys):
 
 
 def true_order(source):
-    from sog_pack import compute_v3_order
+    from sogst_pack import compute_sogst_order
 
     fields, meta = source
-    return compute_v3_order(fields, meta["time_min"], meta["time_max"], 0.1)
+    return compute_sogst_order(fields, meta["time_min"], meta["time_max"], 0.1)
 
 
 def group_bounds(segments):

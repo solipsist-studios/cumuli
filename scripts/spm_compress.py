@@ -6,7 +6,7 @@
 
 Drives the OMG4 reference implementation (MinShirley/OMG4) to compress a
 pretrained Real-Time4DGS checkpoint by reducing its Gaussian count with
-staged fine-tuning, then converts the result to a streamable .omg4 v3.
+staged fine-tuning, then converts the result to a streamable .sogst.
 The whole stage is upstream of the container: the output is the same
 representation with fewer primitives, so the viewer needs no changes.
 
@@ -15,8 +15,8 @@ Stages (each skipped when its artifact already exists, so reruns resume):
   1. compute_gradient.py  -> <model_path>/{view,t}_grad.npy   (SD score)
   2. train.py             -> <model_path>/comp.xz             (S->P->M->SVQ,
                              ~12k fine-tune iterations from iter 30000)
-  3. xz_to_omg4.py        -> v2 (baked MLPs -> explicit SH)
-  4. sog_pack.py          -> v3 (SOG container; --shn-count auto-scales
+  3. bake_sogst.py        -> interchange PLY (baked MLPs -> explicit SH)
+  4. sogst_pack.py        -> .sogst (--shn-count auto-scales
                              with the post-SPM splat count: the fixed-size
                              centroid table dominates small scenes)
 
@@ -34,7 +34,7 @@ Example:
         --config configs/custom/perframe90_omg4.yaml \
         --checkpoint output/perframe90_refit/chkpnt30000.pth \
         --fps 29.97 \
-        --output-v3 /tmp/tatum_spm_v3.omg4
+        --output /tmp/tatum_spm.sogst
 """
 
 import argparse
@@ -71,7 +71,7 @@ def main():
                     help='scene yaml with the SPM OptimizationParams block (repo-relative or absolute)')
     ap.add_argument('--checkpoint', required=True,
                     help='pretrained Real-Time4DGS chkpntNNNNN.pth (repo-relative or absolute)')
-    ap.add_argument('--output-v3', required=True, help='destination .omg4 v3 archive')
+    ap.add_argument('--output', required=True, help='destination .sogst archive')
     ap.add_argument('--fps', type=float, default=30.0, help='playback fps stored in the export')
     ap.add_argument('--shn-count', type=int, default=0,
                     help='SH VQ centroid count (0 = auto from post-SPM splat count)')
@@ -120,9 +120,9 @@ def main():
         if not os.path.exists(comp):
             raise SystemExit(f'train.py finished but {comp} is missing')
 
-    # -- 3. bake to .omg4 v2 -------------------------------------------------
-    print('[3/4] bake to v2 (xz_to_omg4.py)')
-    v2_path = os.path.join(tempfile.gettempdir(), os.path.basename(args.output_v3) + '.v2.omg4')
+    # -- 3. bake to the interchange PLY --------------------------------------
+    print('[3/4] bake to interchange PLY (bake_sogst.py)')
+    ply_path = os.path.join(tempfile.gettempdir(), os.path.basename(args.output) + '.ply')
     # The legacy corruption filters (bad_color/garbage, calibrated for the old
     # SVQ pipeline's catastrophic MLP extrapolation) are replaced here by the
     # black-floater filter: bad_color's binary out-of-range test deleted the
@@ -133,32 +133,32 @@ def main():
     # splats with an out-of-range DC rely on their higher SH bands to land in
     # range, and 1.5 zeroes exactly those bands (the actual washout cause in
     # the first SPM exports).
-    cmd = [args.python, os.path.join(scripts_dir, 'xz_to_omg4.py'),
-           '--input', comp, '--output', v2_path, '--fps', str(args.fps),
+    cmd = [args.python, os.path.join(scripts_dir, 'bake_sogst.py'),
+           '--input', comp, '--emit_ply', ply_path, '--fps', str(args.fps),
            '--no_filter_corrupted', '--filter_black_floaters', '--sh_clamp', '3.0']
     if time_duration:
         cmd += ['--time_min', str(time_duration[0]), '--time_max', str(time_duration[1])]
     run(cmd, repo, os.path.join(model_dir, 'export.log'))
 
-    # -- 4. pack v3 ----------------------------------------------------------
+    # -- 4. pack .sogst ------------------------------------------------------
     shn = args.shn_count
     if not shn:
         sys.path.insert(0, scripts_dir)
-        from sog_pack import fields_from_v2
-        header, _ = fields_from_v2(v2_path)
-        shn = sh_count_for(header['num_splats'])
-        print(f'[4/4] pack v3 (sog_pack.py, auto --shn-count {shn} for {header["num_splats"]} splats)')
+        from sogst_ply import ply_vertex_count
+        n_splats = ply_vertex_count(ply_path)
+        shn = sh_count_for(n_splats)
+        print(f'[4/4] pack .sogst (sogst_pack.py, auto --shn-count {shn} for {n_splats} splats)')
     else:
-        print(f'[4/4] pack v3 (sog_pack.py, --shn-count {shn})')
-    run([args.python, os.path.join(scripts_dir, 'sog_pack.py'),
-         '--input', v2_path, '--output', args.output_v3,
+        print(f'[4/4] pack .sogst (sogst_pack.py, --shn-count {shn})')
+    run([args.python, os.path.join(scripts_dir, 'sogst_pack.py'),
+         '--input', ply_path, '--output', args.output,
          '--shn-count', str(shn), '--segment-duration', str(args.segment_duration),
          '--verify'],
         repo, os.path.join(model_dir, 'export.log'))
 
-    os.remove(v2_path)
-    size = os.path.getsize(args.output_v3) / 1e6
-    print(f'done: {args.output_v3} ({size:.1f} MB)')
+    os.remove(ply_path)
+    size = os.path.getsize(args.output) / 1e6
+    print(f'done: {args.output} ({size:.1f} MB)')
     print('next: score it with scripts/eval_render.py against held-out views')
 
 

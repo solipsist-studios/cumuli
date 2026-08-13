@@ -39,10 +39,9 @@ perfectly and plays at the wrong speed, which no test catches and no
 reviewer sees.  An optional <name>.sogst.json sidecar overrides the
 comments for toolchains that strip them.
 
-CLI (convert an already-baked v2 or v3 asset into interchange PLY):
+CLI (convert an already-packed .sogst archive back into interchange PLY):
 
-    python sogst_ply.py --input scene.sogst --output scene.ply
-    python sogst_ply.py --input scene.omg4  --output scene.ply --sidecar
+    python sogst_ply.py --input scene.sogst --output scene.ply [--sidecar]
 
 Numpy only -- no torch, no PIL -- so this module stays trivially portable.
 """
@@ -56,10 +55,10 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from splat4d_io import OMG4_V2_FIELDS  # noqa: E402
+from sogst_io import SOGST_FIELDS  # noqa: E402
 
 # Column blocks, in the order they appear in the file.
-PLY_BASE_COLUMNS = list(OMG4_V2_FIELDS)                       # the 19 required
+PLY_BASE_COLUMNS = list(SOGST_FIELDS)                       # the 19 required
 PLY_SH_COLUMNS = [f'f_rest_{i}' for i in range(45)]           # all 45 or none
 PLY_ACCEL_COLUMNS = ['ax', 'ay', 'az']                        # all 3 or none
 
@@ -218,12 +217,31 @@ def _collect_columns(fields):
 # Reader
 # ---------------------------------------------------------------------------
 
+def ply_vertex_count(ply_path):
+    """Splat count from a PLY header, without reading the body.
+
+    The bake stages use this to size the SH codebook against a multi-hundred-
+    megabyte PLY; reading the whole file to learn one integer would dominate
+    their runtime.
+    """
+    with open(ply_path, 'rb') as fp:
+        while True:
+            line = fp.readline()
+            if not line:
+                raise ValueError(f'{ply_path}: truncated PLY header')
+            text = line.decode('ascii', 'replace').strip()
+            if text.startswith('element vertex'):
+                return int(text.split()[-1])
+            if text == 'end_header':
+                raise ValueError(f'{ply_path}: no "element vertex" in header')
+
+
 def read_sogst_ply(ply_path, require_scalars=True):
     """Read an interchange PLY into (header, fields).
 
-    `fields` matches what sog_pack.fields_from_v2() returns -- 1-D arrays
-    under the OMG4_V2_FIELDS names, plus 'f_rest' as [N, 45] and 'ax'/'ay'/
-    'az' when present -- so it feeds pack_v3() directly.
+    `fields` matches what the packer consumes -- 1-D arrays
+    under the SOGST_FIELDS names, plus 'f_rest' as [N, 45] and 'ax'/'ay'/
+    'az' when present -- so it feeds pack_sogst() directly.
 
     `header` carries time_min, time_max, fps, count, motion_degree and an
     optional cov2d_scale.  With require_scalars=True (the default) a
@@ -338,11 +356,9 @@ def read_sogst_ply(ply_path, require_scalars=True):
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Convert a baked v2 (.omg4) or v3 (.sogst/.omg4) asset into the '
-                    '4D interchange PLY consumed by the TypeScript encoder.',
+        description='Unpack a .sogst archive into the 4D interchange PLY.',
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--input', required=True,
-                        help='Source .sogst or .omg4 file (v2 binary or v3 archive)')
+    parser.add_argument('--input', required=True, help='Source .sogst archive')
     parser.add_argument('--output', required=True, help='Destination .ply path')
     parser.add_argument('--sidecar', action='store_true',
                         help='Also write the optional <name>.sogst.json sidecar')
@@ -351,23 +367,19 @@ def main():
     args = parser.parse_args()
 
     import zipfile
-    if zipfile.is_zipfile(args.input):
-        from eval_render import decode_v3_fields
-        header, fields = decode_v3_fields(args.input)
-        # A v3 source has already been quantized once; the PLY carries the
-        # decoded values, so a repack quantizes twice.  Fine for fixtures
-        # and cross-implementation checks, not for producing a shipping
-        # asset -- bake those from the trainer via xz_to_omg4 --emit_ply.
-        print(f'Read v3 archive {args.input}: {header["count"]:,} splats '
-              '(already quantized once -- repacking will quantize twice)')
-        cov = None
-    else:
-        from sog_pack import fields_from_v2
-        header, fields = fields_from_v2(args.input)
-        header = {'time_min': header['time_min'], 'time_max': header['time_max'],
-                  'fps': header.get('fps', 30.0), 'count': len(fields['x'])}
-        cov = None
-        print(f'Read v2 file {args.input}: {header["count"]:,} splats')
+    if not zipfile.is_zipfile(args.input):
+        sys.exit(f'{args.input}: not a .sogst archive (a .sogst file is a ZIP). '
+                 'To produce an interchange PLY from a trainer artifact, use '
+                 'bake_sogst.py --emit_ply.')
+    from eval_render import decode_sogst_fields
+    header, fields = decode_sogst_fields(args.input)
+    # The archive has already been quantized once; the PLY carries the
+    # decoded values, so a repack quantizes twice.  Fine for fixtures and
+    # cross-implementation checks, not for producing a shipping asset --
+    # bake those from the trainer via bake_sogst.py --emit_ply.
+    print(f'Read {args.input}: {header["count"]:,} splats '
+          '(already quantized once -- repacking will quantize twice)')
+    cov = None
 
     n = write_sogst_ply(args.output, fields, header['time_min'], header['time_max'],
                         header['fps'], cov2d_scale=cov,
