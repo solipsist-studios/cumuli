@@ -7,13 +7,17 @@ sog_pack.py – Quantize OMG4 v2 splat arrays into the SOG-compressed
 version-3 .omg4 container (webp attribute textures + k-means codebooks).
 
 The static-attribute encoding follows the PlayCanvas SOG v2 conventions
-exactly (see splat4d_io.py's v3 spec) so the engine's existing SOG decoder
-reconstructs them unmodified; motion and trbf extend the scheme with two
-additional textures.
+exactly (docs/sogst-format.md is the authoritative spec) so the engine's
+existing SOG decoder reconstructs them unmodified; motion and trbf extend
+the scheme with two additional textures.
 
 Usage (repack an existing v2 file, standard or tiled):
-    python sog_pack.py --input scene.omg4 --output scene_v3.omg4 \
+    python sog_pack.py --input scene.omg4 --output scene.sogst \
         [--shn-count 65536] [--strip-sh] [--webp-method 4] [--verify]
+
+Usage (pack a 4D interchange PLY -- the same input the TypeScript encoder
+takes, so packing one PLY both ways is the cross-implementation check):
+    python sog_pack.py --input scene.ply --output scene.sogst
 
 Or call pack_v3() with field arrays directly (used by xz_to_omg4.py).
 """
@@ -572,8 +576,10 @@ def fields_from_v2(path: str):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--input', required=True, help='v2 .omg4 file (standard or tiled)')
-    parser.add_argument('--output', required=True, help='Destination v3 .omg4 archive')
+    parser.add_argument('--input', required=True,
+                        help='v2 .omg4 file (standard or tiled), or a 4D interchange '
+                             '.ply (auto-detected by extension)')
+    parser.add_argument('--output', required=True, help='Destination v3 .sogst archive')
     parser.add_argument('--shn-count', type=int, default=65536,
                         help='VQ centroid count for higher-order SH (default 65536)')
     parser.add_argument('--strip-sh', action='store_true', help='Drop higher-order SH entirely')
@@ -590,8 +596,17 @@ def main():
                         help='Decode the output and report per-attribute quantization error')
     args = parser.parse_args()
 
-    header, fields = fields_from_v2(args.input)
-    n = header['num_splats']
+    if args.input.endswith('.ply'):
+        # Interchange PLY -> container. This is the path the TypeScript
+        # encoder mirrors, so packing the same PLY both ways is the
+        # cross-implementation equivalence check (docs/sogst-format.md
+        # section 10).
+        from sogst_ply import read_sogst_ply
+        header, fields = read_sogst_ply(args.input)
+        n = header['count']
+    else:
+        header, fields = fields_from_v2(args.input)
+        n = header['num_splats']
     has_sh = 'f_rest' in fields
     if args.strip_sh:
         fields.pop('f_rest', None)

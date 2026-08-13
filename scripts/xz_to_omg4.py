@@ -78,6 +78,13 @@ from splat4d_io import (OMG4_MAGIC, OMG4_V2_FIELDS, OMG4_V2_FLAG_SH, OMG4_V2_FLA
 # the raw-float v2 layout (same filters, same field data).
 V3_EXPORT_OPTIONS = None
 
+# Set by main() when --emit_ply is given: the destination .ply path.
+# finish_export() additionally writes the 4D interchange PLY (see
+# docs/sogst-format.md section 7) from the same post-filter field arrays
+# that feed the container writer, so the two cannot disagree.
+PLY_EXPORT_PATH = None
+PLY_EXPORT_SIDECAR = False
+
 try:
     import dahuffman
 except ImportError:
@@ -599,16 +606,30 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         print(f"    |accel|    p50/p95/p99: {np.percentile(amag, [50, 95, 99]).round(4)}")
     print(f"    t_sigma    p50/p95    : {np.percentile(t_sigma[keep], [50, 95]).round(3)}")
 
+    # The name -> array view of the pruned data.  Both the v3 container
+    # writer and the interchange-PLY writer consume this same dict, which
+    # is the point: the seam is one place, so the two outputs cannot
+    # describe different splats.
+    fields = {name: arrays[i] for i, name in enumerate(OMG4_V2_FIELDS)}
+    cursor = len(OMG4_V2_FIELDS)
+    if f_rest is not None:
+        fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
+        cursor += 45
+    if accel is not None:
+        for i, name in enumerate(('ax', 'ay', 'az')):
+            fields[name] = arrays[cursor + i]
+
+    if PLY_EXPORT_PATH is not None:
+        from sogst_ply import write_sogst_ply, write_sogst_sidecar
+        n_ply = write_sogst_ply(PLY_EXPORT_PATH, fields, time_min, time_max, fps,
+                                cov2d_scale=cov2d_scale,
+                                generator='volumetric-capture-pipeline xz_to_omg4')
+        print(f'  Interchange PLY: {n_ply:,} splats -> {PLY_EXPORT_PATH}')
+        if PLY_EXPORT_SIDECAR:
+            print(f'    sidecar: {write_sogst_sidecar(PLY_EXPORT_PATH, time_min, time_max, fps, cov2d_scale=cov2d_scale, motion_degree=2 if accel is not None else 1)}')
+
     if V3_EXPORT_OPTIONS is not None:
         from sog_pack import pack_v3
-        fields = {name: arrays[i] for i, name in enumerate(OMG4_V2_FIELDS)}
-        cursor = len(OMG4_V2_FIELDS)
-        if f_rest is not None:
-            fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
-            cursor += 45
-        if accel is not None:
-            for i, name in enumerate(('ax', 'ay', 'az')):
-                fields[name] = arrays[cursor + i]
         pack_v3(out_path, fields, time_min, time_max, fps,
                 cov2d_scale=cov2d_scale, **V3_EXPORT_OPTIONS)
     else:
@@ -994,11 +1015,25 @@ if __name__ == '__main__':
     parser.add_argument('--segment_duration', type=float, default=0.1,
                         help='v3 only: temporal segment length in seconds for per-segment '
                              'culling (default: 0.1; 0 disables segmentation)')
+    parser.add_argument('--emit_ply', type=str, default=None,
+                        help='Also write the 4D interchange PLY to this path -- the '
+                             'per-splat spacetime data the TypeScript encoder packs '
+                             '(docs/sogst-format.md section 7). Written from the same '
+                             'post-filter arrays as --output, so the two agree by '
+                             'construction. Independent of --v3.')
+    parser.add_argument('--emit_ply_sidecar', action='store_true',
+                        help='With --emit_ply, also write the optional <name>.sogst.json '
+                             'sidecar. The clip scalars are in the PLY comments either '
+                             'way; this is for toolchains that strip them.')
     args = parser.parse_args()
 
     if args.v3:
         V3_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
                              'segment_duration': args.segment_duration}
+    if args.emit_ply_sidecar and not args.emit_ply:
+        sys.exit('--emit_ply_sidecar requires --emit_ply')
+    PLY_EXPORT_PATH = args.emit_ply
+    PLY_EXPORT_SIDECAR = args.emit_ply_sidecar
 
     aniso = None
     cam_rots = None

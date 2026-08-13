@@ -172,7 +172,11 @@ import zipfile
 from typing import BinaryIO
 
 import numpy as np
-import torch
+
+# torch is imported lazily inside pack_frame_aos() and read_ply_gaussians(),
+# the only two functions that need it (both on the legacy v1 path).  At
+# module scope it dragged torch into every script that touches the format,
+# including the otherwise numpy+Pillow-only v3 container code.
 
 # ---------------------------------------------------------------------------
 # Format identifiers
@@ -504,11 +508,11 @@ def write_omg4_v3_streamed(out_path: str, meta: dict, entries, reveal_through: i
 # ---------------------------------------------------------------------------
 
 def pack_frame_aos(
-    pos: torch.Tensor,
-    rot: torch.Tensor,
-    sc: torch.Tensor,
-    op: torch.Tensor,
-    fdc: torch.Tensor,
+    pos: 'torch.Tensor',
+    rot: 'torch.Tensor',
+    sc: 'torch.Tensor',
+    op: 'torch.Tensor',
+    fdc: 'torch.Tensor',
 ) -> np.ndarray:
     """Pack per-frame Gaussian attributes into the AoS float32 layout.
 
@@ -525,6 +529,8 @@ def pack_frame_aos(
     numpy float32 array of shape [N, 14] ready to be written directly with
     .tobytes().
     """
+    import torch
+
     N = pos.shape[0]
 
     # Ensure unit quaternion
@@ -570,6 +576,8 @@ def read_ply_gaussians(ply_path: str) -> dict:
     -------
     dict with keys 'xyz', 'f_dc', 'sc', 'rot', 'op' as float32 tensors.
     """
+    import torch
+
     try:
         from plyfile import PlyData
     except ImportError:
