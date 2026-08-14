@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 4, 2026-08-13.**
+**Container version 1. Specification revision 5, 2026-08-14.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -289,7 +289,7 @@ Higher-order spherical harmonics, vector-quantized. Present only when
   entry id. B unused, A = 255. `shN.count` is the number of palette entries and
   MUST be ≤ 65536.
 
-> **Known limitation of the reference decoder.** `decode_v3_fields()` writes
+> **Known limitation of the reference decoder.** `decode_sogst_fields()` writes
 > reconstructed coefficients into a fixed 45-wide `f_rest` array at stride 15
 > regardless of `bands`, so its output layout is only correct for `bands == 3`.
 > The reference encoder only ever emits `bands == 3`. New encoders SHOULD emit
@@ -579,12 +579,21 @@ A player conforms when:
 - [ ] It renders a file with no `shN` group correctly.
 - [ ] It treats segment ranges as half-open and applies the §5 drawing rule.
 - [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
-      `meta.format == "sogst"` (§8: there is no legacy form to accept).
+      `meta.format == "sogst"` (§8: there is no legacy form to accept), and
+      names the offending value in the error.
+- [ ] It reaches that rejection from the manifest rather than from a downstream
+      parse failure. Because §8 removed the development-era formats outright, an
+      application that dispatches on file extension now routes those files to
+      whatever its default loader is; the observed failure mode is a full
+      download of a several-hundred-megabyte asset followed by a confusing error
+      from an unrelated parser, or no visible error at all. Deciding from
+      `meta.json` — the first entry, so it arrives in the first range request —
+      fails in the first few kilobytes with an accurate message.
 
 ## 10. Cross-implementation validation
 
 Two implementations of one contract diverge silently. The check that catches it:
-pack the *same* reference PLY with both, decode both with `decode_v3_fields()`,
+pack the *same* reference PLY with both, decode both with `decode_sogst_fields()`,
 and assert per-field maximum absolute error within quantization tolerance.
 
 **Compare decoded fields, not rendered PSNR.** Codebook initialisation is
@@ -649,6 +658,21 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 5** — from the first player implementation of revision 4. No change
+to the bytes; §9 only.
+
+- §9 requires a player to reach its rejection *from the manifest* and to name the
+  offending value. Revision 4 deleted the development-era formats but said
+  nothing about what a consumer does when handed one, and the answer turned out
+  to be worse than rejecting: an extension-dispatching application routes the
+  file to its default loader, downloads all several hundred megabytes of it, and
+  then fails inside a parser that has no idea what it was given — in the
+  observed case with no user-visible error at all. Deleting a format leaves that
+  failure mode behind, and the fix belongs in the consumer's dispatch rather
+  than in per-format knowledge the deletion was meant to remove.
+- §§4.8/10 corrected `decode_v3_fields()` to `decode_sogst_fields()`, missed in
+  the revision-4 rename.
 
 **Revision 4** — the development-era formats are gone, and the container is
 renumbered from 3 to **1**.
