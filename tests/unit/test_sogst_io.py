@@ -66,7 +66,21 @@ def test_offset_verification_is_live_on_the_no_sh_path(tmp_path, scene, monkeypa
 
     Perturbing the real layout by one byte has to raise; if it does not, the
     verification is passing vacuously on exactly the archives it was added to
-    protect."""
+    protect.
+
+    **Where the perturbation goes is load-bearing, so do not move it.** It
+    shifts the *observed* start_dir at read time, downstream of both the
+    fixed-point loop and serialization. Mutating `streams['geometry_bytes']`
+    earlier would prove nothing: the loop overwrites both offsets from the real
+    entry sizes on every pass, so a pre-loop mutation is erased and the writer
+    produces a self-consistent archive that passes. The same trap exists in the
+    TypeScript encoder, where the equivalent mutation has to land after
+    meta.json is serialized.
+
+    A corollary worth knowing: this test deliberately does not produce a
+    corrupt artifact. The file on disk carries the correct offset throughout —
+    only the comparison sees a wrong value. That is what a check-the-checker
+    test should do."""
     real = zipfile.ZipFile
 
     class Shifted(real):
