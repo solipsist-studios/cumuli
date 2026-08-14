@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 8, 2026-08-14.**
+**Container version 1. Specification revision 9, 2026-08-14.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -475,10 +475,20 @@ persistent/shN_labels.webp, seg_000/shN_labels.webp, …
   decide whether to hold the playhead until gap-free playback is possible.
 
 Both are absolute offsets from the start of the archive to the **local header of
-the next entry**. They are computable analytically precisely because entries are
-stored with no extra fields (§2); a writer MUST verify its computed offsets
-against the written file. Note that the values feed back into the size of the
-`meta.json` that contains them — a writer must iterate to a fixed point.
+the next entry — or, when no entry follows, to the start of the central
+directory**. That second case is not exotic: an archive with no `shN` group has
+nothing after its geometry, so `geometry_bytes` lands exactly on the central
+directory (on `blocks_gap`, offset 172404 with the file 180305 bytes long). A
+validator that checks these offsets against the set of entry header offsets MUST
+include the central-directory start, and MUST take it from the **EOCD record**
+rather than by scanning for the `PK\x01\x02` signature — a scan finds *a*
+directory header, not reliably the first one, and the difference is invisible
+until an archive ends on this boundary.
+
+They are computable analytically precisely because entries are stored with no
+extra fields (§2); a writer MUST verify its computed offsets against the written
+file. Note that the values feed back into the size of the `meta.json` that
+contains them — a writer must iterate to a fixed point.
 
 ## 7. The interchange PLY
 
@@ -704,6 +714,19 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 9** — §6 wording fix, found by a validator it misled.
+
+- §6 said `reveal_bytes` and `geometry_bytes` are offsets "to the local header of
+  the next entry". That is false whenever no entry follows: an archive with no
+  `shN` group has nothing after its geometry, so `geometry_bytes` lands on the
+  **start of the central directory**. §6 now says so, and warns that a validator
+  must read that offset from the EOCD record rather than by scanning for the
+  `PK\x01\x02` signature — a scan finds *a* directory header, not reliably the
+  first, and nothing reveals the difference until an archive ends on this
+  boundary. Both `blocks_gap` archives failed an independent structural checker
+  identically because of this, which is what identified it as the checker's bug
+  rather than the encoders'.
 
 **Revision 8** — tooling and fixtures. **No implementer action**, but the
 validation hole is worth knowing about if you have been trusting a PASS.
