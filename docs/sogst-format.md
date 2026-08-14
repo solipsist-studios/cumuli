@@ -368,11 +368,22 @@ always drawn. The rest are bucketed by `t_center` into fixed-length segments.
   therefore overlap adjacent segments, and `t0` may precede `time.min`. For an
   empty segment they fall back to the nominal bucket bounds
   `[time.min + s*duration, time.min + (s+1)*duration]`.
-- **A populated segment's `[t0, t1]` is exactly the union of its members'
-  active intervals**, i.e. `t0 = min(t_center - k_sigma*t_sigma)` and
+- **A populated segment's `[t0, t1]` is the union of its members' active
+  intervals**, i.e. `t0 = min(t_center - k_sigma*t_sigma)` and
   `t1 = max(t_center + k_sigma*t_sigma)` over the segment's splats. This is a
   definition, not an encoder preference, and two things follow from it that
   nothing else in this section needs to argue.
+
+  **It is an equality on the encoder's source values, and only
+  quantization-bounded when recomputed from a decoded archive** — do not
+  implement it as an exact conformance assertion, because it will fail on every
+  valid file. `t_center` and `t_sigma` are codebook-quantized (§4), and the
+  recomputed bound inherits `k_sigma` times that error, so the discrepancy scales
+  with the segment's largest `t_sigma` and is per-file rather than a fixed
+  tolerance. On `blocks_gap`, decoded, the worst departure across all populated
+  segments is 4.5e-3 s against a 0.1 s `duration`. A validator wanting to check
+  this should derive its tolerance from the file's own `t_sigma` codebook
+  spacing, the way §10 derives every other tolerance.
 - **`list` is ordered by segment index, and is NOT sorted by `t0`. A player MUST
   NOT binary-search it.** Because `t0` reaches back by `k_sigma*t_sigma` from the
   earliest member, a populated segment's `t0` lands *before* its own bucket
@@ -716,9 +727,13 @@ validation hole is worth knowing about if you have been trusting a PASS.
 **Revision 7** — §5 only, and it is worth reading if you wrote a player.
 
 - §5 now states the **support-bound identity**: a populated segment's
-  `[t0, t1]` is exactly the union of its members' active intervals. It was always
-  what the encoder wrote; saying it makes the rest of this entry follow instead of
-  needing to be argued.
+  `[t0, t1]` is the union of its members' active intervals. It was always what
+  the encoder wrote; saying it makes the rest of this entry follow instead of
+  needing to be argued. Revision 8 added the caveat that makes it safe to
+  implement — it is exact on source values and only quantization-bounded when
+  recomputed from a decoded archive, since `t_center`/`t_sigma` are
+  codebook-quantized and the recomputed bound inherits `k_sigma` times that
+  error. Stated as an exact equality it would fail on every conforming file.
 - **`segments.list` is not sorted by `t0`, and a player MUST NOT binary-search
   it.** Revision 6 and earlier said spans overlap and that empty segments fall
   back to nominal bucket bounds, but never drew the conclusion: because `t0`
