@@ -215,6 +215,14 @@ def reorder_source_like(fields, meta):
     records the three parameters that determine it -- duration, k_sigma and
     persistent_span_mult (which is recorded for exactly this reason; see
     docs/sogst-format.md section 5).
+
+    Returns (reordered_fields, derived_meta).  The derived segment table is
+    the PLY's *own* grouping under the archive's parameters, and the caller
+    MUST compare it against the archive's rather than assuming they agree.
+    They can disagree for real: a t_center sitting exactly on a bucket
+    boundary buckets one way at float64 and the other after a float32 PLY
+    round-trip, which silently moves a whole plateau of splats between two
+    adjacent segments.
     """
     from sogst_pack import compute_sogst_order
 
@@ -222,15 +230,16 @@ def reorder_source_like(fields, meta):
     time = (meta or {}).get('time', {})
     if not segments:
         # No segmentation: the archive is a single Morton-ordered block.
-        order, _ = compute_sogst_order(fields, time.get('min', 0.0), time.get('max', 0.0),
-                                    segment_duration=0)
+        order, derived = compute_sogst_order(
+            fields, time.get('min', 0.0), time.get('max', 0.0), segment_duration=0)
     else:
-        order, _ = compute_sogst_order(
+        order, derived = compute_sogst_order(
             fields, time.get('min', 0.0), time.get('max', 0.0),
             segment_duration=segments['duration'],
             k_sigma=segments.get('k_sigma', 3.8),
             persistent_span_mult=segments.get('persistent_span_mult', 3.0))
-    return {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
+    reordered = {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
+    return reordered, {'segments': derived, 'time': time}
 
 
 def group_ranges(meta, n):
@@ -378,11 +387,12 @@ def compare(path_a, path_b, verbose=False):
     # the PLY through the archive's ordering so the comparison is
     # index-aligned. With two archives, both are already ordered and any
     # divergence is a real finding.
+    derived_a = derived_b = None
     if meta_a is None and meta_b is not None:
-        a = reorder_source_like(a, meta_b)
+        a, derived_a = reorder_source_like(a, meta_b)
         print('(A is source PLY: reordered using B\'s recorded segment parameters)')
     elif meta_b is None and meta_a is not None:
-        b = reorder_source_like(b, meta_a)
+        b, derived_b = reorder_source_like(b, meta_a)
         print('(B is source PLY: reordered using A\'s recorded segment parameters)')
 
     n_a, n_b = len(a['x']), len(b['x'])
@@ -404,16 +414,18 @@ def compare(path_a, path_b, verbose=False):
     # splat lands in -- not the permutation within a group, which is a
     # compression heuristic (section 5). Check the former; align away the
     # latter.
-    groups_a = group_ranges(meta_a, n_a)
-    groups_b = group_ranges(meta_b, n_b)
-    # A PLY carries no group table, but reorder_source_like has already put
-    # it into the archive's grouping, so it shares the archive's ranges.
-    if meta_a is None:
-        groups_a = groups_b
-    elif meta_b is None:
-        groups_b = groups_a
-    if meta_a and meta_b:
-        seg_a, seg_b = meta_a.get('segments'), meta_b.get('segments')
+    # A PLY carries no group table of its own, so reorder_source_like derives
+    # one by re-running the ordering under the archive's parameters. Compare
+    # that, do NOT adopt the archive's: assuming they agree makes a
+    # segmentation disagreement between an archive and its own source
+    # structurally invisible, which is how a fixture whose .ply and .sogst
+    # put 1,218 splats in different segments passed this tool.
+    eff_a = meta_a or derived_a
+    eff_b = meta_b or derived_b
+    groups_a = group_ranges(eff_a, n_a)
+    groups_b = group_ranges(eff_b, n_b)
+    if eff_a and eff_b:
+        seg_a, seg_b = eff_a.get('segments'), eff_b.get('segments')
         if bool(seg_a) != bool(seg_b):
             print(f'FAIL: segmentation present in only one file '
                   f'({"A" if seg_a else "B"})')

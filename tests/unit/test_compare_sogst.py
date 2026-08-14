@@ -361,3 +361,34 @@ def test_repair_is_inert_when_keys_agree(packer, reference, capsys):
     code, out = run(reference, packer("repair_inert"), capsys)
     assert code == 0, out
     assert "re-paired" not in out
+
+
+def test_catches_archive_disagreeing_with_its_own_source_ply(tmp_path, capsys):
+    """A PLY carries no group table, so the tool derives one. It must compare
+    that derived table against the archive's rather than adopting it --
+    otherwise the single most important property of a PLY-vs-archive check
+    (did the archive segment its own source the way it claims?) is invisible.
+
+    Reproduces the real defect: t_center values sitting exactly on a bucket
+    boundary bucket one way at float64 and the other after a float32 PLY
+    round-trip, silently moving a plateau of splats between two adjacent
+    segments. This passed before the fix."""
+    from sogst_ply import write_sogst_ply
+
+    fields, meta = fixture.build_fixture(count=1500, degree=1, include_sh=False,
+                                         seed=5, gap=(0.7, 1.3), blocks=True)
+    # Park the folded plateau exactly on the boundary, undoing the nudge --
+    # this is what the fixture generator used to do.
+    tc = np.asarray(fields["t_center"], np.float64).copy()
+    tc[np.isclose(tc, 1.3, atol=2e-3)] = 1.3
+    fields["t_center"] = tc
+
+    archive = tmp_path / "boundary.sogst"
+    pack_sogst(str(archive), fields, meta["time_min"], meta["time_max"], meta["fps"],
+               shn_count=0)                                   # packed from float64
+    ply = tmp_path / "boundary.ply"
+    write_sogst_ply(str(ply), fields, meta["time_min"], meta["time_max"], meta["fps"])
+
+    code, out = run(str(ply), str(archive), capsys)           # PLY re-reads as float32
+    assert code == 1, out
+    assert "group index ranges differ" in out, out

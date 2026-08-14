@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 7, 2026-08-14.**
+**Container version 1. Specification revision 8, 2026-08-14.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -368,22 +368,29 @@ always drawn. The rest are bucketed by `t_center` into fixed-length segments.
   therefore overlap adjacent segments, and `t0` may precede `time.min`. For an
   empty segment they fall back to the nominal bucket bounds
   `[time.min + s*duration, time.min + (s+1)*duration]`.
+- **A populated segment's `[t0, t1]` is exactly the union of its members'
+  active intervals**, i.e. `t0 = min(t_center - k_sigma*t_sigma)` and
+  `t1 = max(t_center + k_sigma*t_sigma)` over the segment's splats. This is a
+  definition, not an encoder preference, and two things follow from it that
+  nothing else in this section needs to argue.
 - **`list` is ordered by segment index, and is NOT sorted by `t0`. A player MUST
-  NOT binary-search it.** Two consequences of the previous point combine here.
-  Spans overlap, so several segments can contain the same `t` — four is routine.
-  And because an empty segment falls back to nominal bucket bounds while a
-  populated one reports its members' real extent, a populated segment's `t0` can
-  precede that of the empty segment *before* it: in the `blocks_gap` fixture
-  segment 12 is empty with `t0 = 1.200` while segment 13 begins at `t0 = 1.186`.
-  A binary search over `t0` silently returns the wrong segment on a conforming
-  archive. Scan the list; it is bounded by 65536 and in practice by tens.
-- **Do not "fix" this by clamping `t0`/`t1` to the bucket bounds.** It would make
-  the list monotonic and it would be wrong: a splat whose `t_center` sits near a
-  bucket edge has support reaching well past that edge, and clamping culls it
-  while it is still on screen. Measured on `blocks_gap` at `t = 1.249`, the
-  bucket-bounds rule drops 44 splats of segment 13 that are genuinely visible,
-  the brightest at alpha 0.14 — they pop. The overlap is not sloppiness in the
-  segment table; it is what makes the table correct.
+  NOT binary-search it.** Because `t0` reaches back by `k_sigma*t_sigma` from the
+  earliest member, a populated segment's `t0` lands *before* its own bucket
+  start — so where an empty run precedes it, that populated `t0` precedes the
+  synthetic bound of the empty segment before it. In `blocks_gap`, segment 12 is
+  empty with `t0 = 1.200` while segment 13 begins at `t0 = 1.187`. Given a long
+  enough empty run this is inevitable, not merely possible, and a binary search
+  over `t0` silently returns the wrong segment on a conforming archive. Scan the
+  list; it is bounded by 65536 and in practice by tens. Spans overlap for the
+  same reason — several segments routinely contain the same `t`.
+- **Do not "fix" this by clamping `t0`/`t1` to the bucket bounds.** The identity
+  above settles it without measuring anything: bucket bounds are strictly
+  narrower than the support the encoder recorded, so clamping cannot fail to cut
+  splats that are still on screen. Measurement only calibrates how bad it looks —
+  on `blocks_gap` at `t = 1.249`, clamping drops **776 splats of segment 13 whose
+  temporal factor exceeds 0.01, 342 of them above 0.1**, the brightest at 0.22.
+  They pop. The overlap is not sloppiness in the segment table; it is what makes
+  the table correct.
 - `persistent_span_mult` is recorded so that a file's ordering can be
   re-derived — without it, no validator or re-packer can reproduce the
   persistent/dynamic split from the file alone. Players ignore it.
@@ -687,20 +694,48 @@ encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
 
+**Revision 8** — tooling and fixtures. **No implementer action**, but the
+validation hole is worth knowing about if you have been trusting a PASS.
+
+- **`compare_sogst.py` could not detect a segmentation disagreement between an
+  archive and its own source PLY.** A PLY carries no group table, so the tool
+  derived the PLY's ordering from the archive's parameters and then *adopted the
+  archive's group table for both sides* — making the one thing it most needed to
+  check structurally invisible. It now derives the PLY's own table and compares
+  it. This is not hypothetical: it passed a fixture whose `.ply` and `.sogst` put
+  1,218 splats in different segments.
+- **That fixture is fixed, and the cause generalises.** A gap bound is normally a
+  multiple of `duration`, so folding splats onto it parks a plateau exactly on a
+  bucket boundary — and `t/duration` buckets one way at float64 and the other
+  after a float32 PLY round-trip, moving the plateau between adjacent segments.
+  Any producer that computes a bucket index on one side of a PLY write and
+  compares against the other side can hit this. `make_sogst_fixture.py` now nudges
+  folded values clear of the boundary *and* packs from the written PLY rather than
+  from memory, so the pair is consistent by construction.
+
 **Revision 7** — §5 only, and it is worth reading if you wrote a player.
 
+- §5 now states the **support-bound identity**: a populated segment's
+  `[t0, t1]` is exactly the union of its members' active intervals. It was always
+  what the encoder wrote; saying it makes the rest of this entry follow instead of
+  needing to be argued.
 - **`segments.list` is not sorted by `t0`, and a player MUST NOT binary-search
   it.** Revision 6 and earlier said spans overlap and that empty segments fall
-  back to nominal bucket bounds, but never drew the conclusion those two facts
-  imply together: a populated segment can begin *earlier* than the empty one
-  before it, so binary search returns the wrong segment on a conforming file.
-  Found by running the `blocks_gap` fixture, where segment 12 is empty at
-  `t0 = 1.200` and segment 13 begins at `t0 = 1.186`. No encoder change — this
-  was always the format's behaviour, only now written down.
-- §5 also now rejects the obvious repair. Clamping `t0`/`t1` to bucket bounds
-  would make the list monotonic and would cull splats that are still visible: 44
-  of them at `t = 1.249` on `blocks_gap`, brightest at alpha 0.14. The overlap is
-  load-bearing.
+  back to nominal bucket bounds, but never drew the conclusion: because `t0`
+  reaches back by `k_sigma*t_sigma`, a populated segment following a long enough
+  empty run *necessarily* reports an earlier `t0` than the synthetic bound before
+  it. Binary search then returns the wrong segment on a conforming file. Found by
+  running the `blocks_gap` fixture — segment 12 empty at `t0 = 1.200`, segment 13
+  beginning at `t0 = 1.187`. No encoder change; this was always the behaviour.
+- §5 rejects the obvious repair. Clamping to bucket bounds is wrong by the
+  identity alone — bucket bounds are narrower than the recorded support — and the
+  measurement only sizes it: 776 splats of segment 13 above a 0.01 temporal
+  factor at `t = 1.249`, 342 above 0.1. The overlap is load-bearing.
+
+  The first published version of this entry said 44 splats. That number came from
+  a count scoped to a segment membership that existed only in the fixture's PLY
+  and not in its archive — the two disagreed, for the reason in the revision-8
+  entry below. 44 is small enough to argue the pop is tolerable; 776 is not.
 
 **Revision 6** — tooling and fixtures only. **No implementer action:** nothing
 here changes what a conforming encoder writes or a conforming player reads.
