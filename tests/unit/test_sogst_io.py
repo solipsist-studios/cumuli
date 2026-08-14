@@ -80,7 +80,14 @@ def test_offset_verification_is_live_on_the_no_sh_path(tmp_path, scene, monkeypa
     A corollary worth knowing: this test deliberately does not produce a
     corrupt artifact. The file on disk carries the correct offset throughout —
     only the comparison sees a wrong value. That is what a check-the-checker
-    test should do."""
+    test should do.
+
+    Scope of what the last-marker fix actually bought, measured rather than
+    assumed: starving the fixed-point loop to one pass raises on *reveal_bytes*
+    even under the old guard, because that marker points at a real entry. So a
+    non-converging loop was never the exposure. What was invisible is an error
+    specific to geometry_bytes — a wrong `geometry_through`, or an off-by-one
+    that only bites on the last entry — since that check did not run at all."""
     real = zipfile.ZipFile
 
     class Shifted(real):
