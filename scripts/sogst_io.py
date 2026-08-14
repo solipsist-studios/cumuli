@@ -238,16 +238,30 @@ def write_sogst_streamed(out_path: str, meta: dict, entries, reveal_through: int
         for name, data in entries:
             zf.writestr(name, data)
 
-    # Verify the analytic offsets against the real layout: the entry after
-    # each marker must start exactly at the stored byte offset.
+    # Verify the analytic offsets against the real layout. A marker points at
+    # the local header of the entry after it -- OR, when it is the last entry,
+    # at the start of the central directory. That second case is the one to be
+    # careful about: guarding this loop with `idx + 1 < len(entries)` and
+    # stopping there silently skips the check exactly when nothing follows,
+    # which is every archive with no shN group. §2 requires a writer to verify
+    # these offsets, so skipping is not a lesser check, it is no check.
+    #
+    # zipfile's start_dir comes from the EOCD record. Do NOT locate the
+    # directory by scanning for the PK\x01\x02 signature -- a scan finds *a*
+    # directory header, not reliably the first one (§6).
     with zipfile.ZipFile(out_path) as zf:
         for key, idx in (('reveal_bytes', reveal_through), ('geometry_bytes', geometry_through)):
             if idx + 1 < len(entries):
-                info = zf.getinfo(entries[idx + 1][0])
-                if info.header_offset != streams[key]:
-                    raise AssertionError(
-                        f'write_sogst_streamed: {key} {streams[key]} != '
-                        f'actual offset {info.header_offset} (zip writer added extra fields?)')
+                actual = zf.getinfo(entries[idx + 1][0]).header_offset
+                where = f'entry {entries[idx + 1][0]!r}'
+            else:
+                actual = zf.start_dir
+                where = 'the central directory'
+            if actual != streams[key]:
+                raise AssertionError(
+                    f'write_sogst_streamed: {key} {streams[key]} != '
+                    f'actual offset {actual} at {where} '
+                    '(zip writer added extra fields?)')
 
 
 # ---------------------------------------------------------------------------
