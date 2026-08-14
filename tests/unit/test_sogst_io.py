@@ -121,3 +121,43 @@ def test_archive_is_byte_reproducible(tmp_path, scene):
     _pack(a, scene, shn_count=0)
     _pack(b, scene, shn_count=0)
     assert a.read_bytes() == b.read_bytes()
+
+
+def test_sh_vector_quantization_is_deterministic_on_cpu(tmp_path, scene_with_sh,
+                                                        monkeypatch):
+    """The SH path is byte-reproducible on CPU, and NOT on GPU.
+
+    Clustering is where an encoder most easily stops being deterministic, and
+    both implementations of this format are affected. The TypeScript encoder's
+    GPU k-means lands on a different local optimum per run: two consecutive
+    encodes of heidi differ in 23 of 191 entries with a 0.15% size spread,
+    geometry bit-identical. This encoder has the same class of defect for a
+    narrower reason -- `pack_shn` runs Lloyd in torch, and on CUDA the
+    `index_add_` centroid accumulation uses atomics, so summation order varies
+    between runs. The resulting ~4e-9 wobble is absorbed by quantization in the
+    textures but survives into `meta.shN.codebook`, whose changed digit count
+    then shifts `reveal_bytes` and `geometry_bytes`.
+
+    Measured: with CUDA available, `meta.json` differs between two packs of one
+    input (187 of 256 codebook entries, last few digits). With CUDA hidden,
+    every entry is byte-identical -- which is what this test pins, since it is
+    the part that is a property of the algorithm rather than of the hardware.
+
+    Both encoders' GPU archives remain valid; the difference is a clustering
+    choice, not a quality one. But it means a hash is not a same-input check on
+    a GPU-encoded SH asset from either implementation, and §10's field
+    comparison is the check that still holds."""
+    import torch
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    a = tmp_path / "sh_a.sogst"
+    b = tmp_path / "sh_b.sogst"
+    _pack(a, scene_with_sh, shn_count=256)
+    _pack(b, scene_with_sh, shn_count=256)
+
+    with zipfile.ZipFile(a) as za, zipfile.ZipFile(b) as zb:
+        names = [i.filename for i in za.infolist()]
+        assert [i.filename for i in zb.infolist()] == names
+        assert any("shN" in n for n in names), "expected an shN group to be present"
+        differing = [n for n in names if za.read(n) != zb.read(n)]
+        assert not differing, f"nondeterministic on CPU: {differing}"
