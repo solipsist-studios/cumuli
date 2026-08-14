@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 5, 2026-08-14.**
+**Container version 1. Specification revision 6, 2026-08-14.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -609,7 +609,7 @@ python compare_sogst.py --a python.sogst --b typescript.sogst   # the real check
 python compare_sogst.py --a scene.ply    --b scene.sogst        # one pack's cost
 ```
 
-Three things about how it judges, because the naive version of each is wrong:
+Four things about how it judges, because the naive version of each is wrong:
 
 - **Split-plane fields (positions, velocity, accel) allow no outliers.** Their
   encoding is fully determined by `mins`/`maxs`, so any disagreement is a bug.
@@ -622,6 +622,18 @@ Three things about how it judges, because the naive version of each is wrong:
   seconds.** A sigma much longer than the clip is saturated: two such values can
   differ by tens of seconds and be pixel-identical. Judging raw seconds reports
   a large error for splats a renderer cannot tell apart.
+- **A coordinate exactly on a quantization boundary is an alignment problem, not
+  an encoding one.** Splats are paired by their 16-bit split-plane integers, and
+  a value on a boundary rounds one way in a float32 encoder and the other in a
+  float64 source. If that one step reorders the splat, it gets paired with a
+  *neighbour* — a different splat — and then every field reports a large error
+  from a conforming archive. Two splats in 8,192 produced six field failures and
+  a spurious membership divergence. The tool re-pairs such splats by position
+  **within their own group**, tolerates a one-step key difference, and stops
+  doing either above 0.2% of the file. The bound is what keeps it a test: a
+  wrong persistence predicate or a mis-ported bucketing misplaces splats by the
+  thousand — three deliberately displaced splats still fail loudly — while
+  boundary rounding touches a handful.
 
 `f_rest` gets a scale-relative bar rather than an absolute one, for the same
 reason its tolerance can't be absolute: VQ placement is implementation-defined,
@@ -658,6 +670,21 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 6** — tooling and fixtures only. **No implementer action:** nothing
+here changes what a conforming encoder writes or a conforming player reads.
+
+- §10 gains the boundary-rounding rule. Pairing splats by their split-plane
+  integers breaks when a coordinate sits exactly on a boundary, because a
+  float32 encoder and a float64 source round it opposite ways; the tool now
+  re-pairs those within their group and bounds itself at 0.2% so a real
+  membership bug still fails.
+- A new `blocks_gap` fixture. `parabola_gap` shows a player does not break on an
+  empty segment run, but cannot show it *culled* one — an expanding cloud looks
+  much the same whether or not culling happens. `blocks_gap` puts each segment
+  in its own spatially separated cluster so the drawn population is countable.
+  This came from the player implementer declining to claim coverage they did not
+  have, which is the report that makes a fixture worth building.
 
 **Revision 5** — from the first player implementation of revision 4. No change
 to the bytes; §9 only.

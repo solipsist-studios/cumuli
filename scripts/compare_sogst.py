@@ -163,6 +163,13 @@ def field_tolerance(meta_a, meta_b, name, values):
 # mode mapping, a wrong log transform -- affect essentially all of them.
 CODEBOOK_OUTLIER_FRACTION = 0.01
 
+# Ceiling on the share of splats repair_boundary_pairings will re-pair. Set
+# well below any real bug's blast radius: boundary rounding hits a handful of
+# splats (2 in 8,192 on the block fixture), while a mis-ported bucketing or
+# persistence predicate misplaces them by the thousand. Above this the repair
+# stands down and the membership check fails, which is the point.
+ALIGNMENT_REPAIR_LIMIT = 0.002
+
 CODEBOOK_FIELDS = ('scale_', 'f_dc_', 't_center', 't_sigma')
 
 # f_rest mean error as a fraction of the data's own standard deviation.
@@ -312,6 +319,57 @@ def apply_permutation(fields, order):
     return {k: (v[order] if v.ndim == 1 else v[order, :]) for k, v in fields.items()}
 
 
+def repair_boundary_pairings(a, b, keys_a, keys_b, groups, limit_frac):
+    """Re-pair the few splats whose alignment key rounds differently on the
+    two sides, and report how many.
+
+    Exact-key alignment has one failure mode it cannot fix on its own: a
+    coordinate sitting exactly on a quantization boundary rounds one way in a
+    float32 encoder and the other way in a float64 PLY, so the two sides
+    disagree by a single step on one axis.  That single step moves the splat
+    in the lexsort, which pairs it against a *neighbour* -- and the neighbour
+    is a different splat, so every field then reports a large error.  Two
+    splats in 8,192 produced six field failures and a spurious membership
+    divergence before this existed.
+
+    So: where the sorted keys disagree, re-pair those rows among themselves
+    by nearest decoded position, within a group (a splat may not change
+    group -- that is the thing membership is testing, and repairing across
+    groups would erase the very divergence we are looking for).
+
+    Deliberately bounded.  Above `limit_frac` this does nothing and lets the
+    membership check fail, because a real bug -- a wrong persistence
+    predicate, a mis-ported bucketing -- misplaces splats in bulk, and
+    silently repairing that would turn the tool into one that always passes.
+    """
+    mismatched = ~np.all(keys_a == keys_b, axis=1)
+    count = int(mismatched.sum())
+    n = len(mismatched)
+    none_repaired = np.zeros(n, dtype=bool)
+    if not count or count > max(1, int(limit_frac * n)):
+        return b, 0, none_repaired
+
+    pa = np.stack([np.asarray(a[k], np.float64) for k in ('x', 'y', 'z')], axis=1)
+    pb = np.stack([np.asarray(b[k], np.float64) for k in ('x', 'y', 'z')], axis=1)
+    order = np.arange(n)
+    fixed = np.zeros(n, dtype=bool)
+    repaired = 0
+    for _label, lo, hi in groups:
+        idx = np.nonzero(mismatched[lo:hi])[0] + lo
+        if len(idx) < 2:
+            continue                    # nothing in-group to swap with
+        free = list(idx)
+        for i in idx:
+            j = min(free, key=lambda c: float(np.sum((pa[i] - pb[c]) ** 2)))
+            order[i] = j
+            free.remove(j)
+            fixed[i] = True
+            repaired += 1
+    if not repaired:
+        return b, 0, none_repaired
+    return apply_permutation(b, order), repaired, fixed
+
+
 def compare(path_a, path_b, verbose=False):
     meta_a, a = load(path_a)
     meta_b, b = load(path_b)
@@ -418,7 +476,38 @@ def compare(path_a, path_b, verbose=False):
     # difference would point at the wrong bug.
     keys_a = np.stack(canonical_keys(a, key_meta)[:3], axis=1)
     keys_b = np.stack(canonical_keys(b, key_meta)[:3], axis=1)
-    mismatched = ~np.all(keys_a == keys_b, axis=1)
+    b, repaired, repaired_mask = repair_boundary_pairings(
+        a, b, keys_a, keys_b, groups_a, ALIGNMENT_REPAIR_LIMIT)
+    if repaired:
+        keys_b = np.stack(canonical_keys(b, key_meta)[:3], axis=1)
+
+    # A boundary-rounded splat shows up in one of two ways. If the one-step
+    # difference reordered it against a neighbour, the repair above already
+    # re-paired the two. If it did not reorder anything, the pairing was
+    # correct all along and only the key differs -- that is this mask.
+    #
+    # Tolerating one step is safe for the question being asked. A splat that
+    # genuinely landed in the wrong group sits somewhere else in the scene,
+    # thousands of steps away, not one. Two splats within a single step of
+    # each other are co-located to the limit of what the format can express,
+    # so confusing them is not an error a player could render.
+    delta = np.abs(keys_a - keys_b).max(axis=1)
+    rounded = (delta > 0) & (delta <= 1)
+    if repaired or rounded.any():
+        near = int(rounded.sum())
+        print(f'NOTE: {repaired + near:,} of {n_a:,} splats '
+              f'({(repaired + near) / max(n_a, 1):.3%}) have an alignment key '
+              'that rounds differently on the two sides -- a coordinate sitting '
+              'exactly on a quantization boundary, which a float32 encoder and a '
+              f'float64 source resolve opposite ways. {repaired:,} had been '
+              f'reordered against a neighbour and were re-paired by position '
+              f'within their own group; {near:,} were already paired correctly. '
+              'Both kinds are excluded from the membership check below -- the '
+              're-paired ones were only ever matched inside their own group, and '
+              'the rest sit one step from their partner in the same group -- so '
+              'their membership is settled either way. An artifact of the '
+              'comparison, not an encoder disagreement.\n')
+    mismatched = ~np.all(keys_a == keys_b, axis=1) & ~repaired_mask & ~rounded
     if mismatched.any():
         offenders = [(label, int(mismatched[lo:hi].sum()), hi - lo)
                      for label, lo, hi in groups_a if mismatched[lo:hi].any()]

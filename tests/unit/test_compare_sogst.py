@@ -285,3 +285,79 @@ def test_is_codebook_field():
     assert compare_sogst.is_codebook_field("t_sigma")
     assert not compare_sogst.is_codebook_field("x")
     assert not compare_sogst.is_codebook_field("vx")
+
+
+# --------------------------------------------------------------------------
+# Boundary-rounding repair
+#
+# A coordinate sitting exactly on a quantization boundary rounds one way in a
+# float32 encoder and the other in a float64 PLY. That one-step difference
+# moves the splat in the lexsort, pairing it against a neighbour -- so a
+# perfectly conforming archive reports large errors on every field. The repair
+# re-pairs those few splats; these tests pin down that it does so WITHOUT
+# becoming a tool that always passes.
+# --------------------------------------------------------------------------
+
+def _blocks(count=2048, gap=(0.7, 1.3)):
+    """The --blocks fixture, which is where boundary ties actually show up:
+    its clusters are tight in log space, so adjacent splats land on adjacent
+    quantization steps."""
+    return fixture.build_fixture(count=count, degree=1, include_sh=False,
+                                 seed=3, gap=gap, blocks=True)
+
+
+def test_blocks_fixture_round_trips(tmp_path, capsys):
+    """The block fixture must pass PLY-vs-archive. It did not before the
+    repair existed: 2 splats in 8,192 produced six field failures and a
+    spurious membership divergence."""
+    from sogst_ply import write_sogst_ply
+
+    fields, meta = _blocks()
+    ply = tmp_path / "blocks.ply"
+    write_sogst_ply(str(ply), fields, meta["time_min"], meta["time_max"], meta["fps"])
+    archive = tmp_path / "blocks.sogst"
+    pack_sogst(str(archive), fields, meta["time_min"], meta["time_max"], meta["fps"],
+               shn_count=0)
+    code, out = run(str(ply), str(archive), capsys)
+    assert code == 0, out
+
+
+def test_repair_stands_down_above_the_limit():
+    """Past the ceiling the repair does nothing, so a real bug still fails.
+    This is the property that keeps the tool honest."""
+    n = 1000
+    keys_a = np.zeros((n, 3), dtype=np.int64)
+    keys_b = keys_a.copy()
+    keys_b[:500] += 1                                  # 50%, far past the ceiling
+    a = {k: np.zeros(n) for k in ("x", "y", "z")}
+    b = {k: np.zeros(n) for k in ("x", "y", "z")}
+    _, repaired, mask = compare_sogst.repair_boundary_pairings(
+        a, b, keys_a, keys_b, [("g", 0, n)], compare_sogst.ALIGNMENT_REPAIR_LIMIT)
+    assert repaired == 0
+    assert not mask.any()
+
+
+def test_repair_will_not_move_a_splat_between_groups():
+    """The repair matches only within a group. A splat that genuinely landed
+    in the wrong group has no in-group partner, so it stays mismatched and
+    the membership check still sees it -- the repair cannot launder the one
+    error it is closest to."""
+    n = 4
+    keys_a = np.arange(n * 3, dtype=np.int64).reshape(n, 3)
+    keys_b = keys_a.copy()
+    keys_b[0] += 1                                     # one splat, one group
+    keys_b[3] += 1                                     # one splat, another group
+    a = {k: np.arange(n, dtype=float) for k in ("x", "y", "z")}
+    b = {k: np.arange(n, dtype=float) for k in ("x", "y", "z")}
+    groups = [("g0", 0, 2), ("g1", 2, 4)]
+    _, repaired, mask = compare_sogst.repair_boundary_pairings(
+        a, b, keys_a, keys_b, groups, 1.0)
+    assert repaired == 0, "a lone mismatch in a group has nothing to swap with"
+    assert not mask.any()
+
+
+def test_repair_is_inert_when_keys_agree(packer, reference, capsys):
+    """It must not fire on a clean comparison."""
+    code, out = run(reference, packer("repair_inert"), capsys)
+    assert code == 0, out
+    assert "re-paired" not in out

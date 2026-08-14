@@ -54,10 +54,20 @@ from sogst_ply import write_sogst_ply, write_sogst_sidecar  # noqa: E402
 FIXTURE_SEED = 20260813
 GRAVITY = -9.81           # scene units / s^2, the fixture's known constant
 
+# --blocks places each temporal segment's splats in its own spatial cluster, so
+# a viewer can COUNT which segments are being drawn.  That requires knowing the
+# segment boundaries the packer will choose, so this must match
+# sogst_pack.compute_sogst_order's `segment_duration` default; --blocks writes
+# the value it assumed into the sidecar so a mismatch is detectable rather than
+# silent.  Pass the same --segment-duration to the packer if you change it.
+SEGMENT_DURATION = 0.1
+BLOCK_SPACING = 1.0       # centre-to-centre; >> BLOCK_RADIUS so blocks never touch
+BLOCK_RADIUS = 0.12
+
 
 def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
                   include_sh=True, persistent_fraction=0.08, seed=FIXTURE_SEED,
-                  gap=None):
+                  gap=None, blocks=False):
     """Build the parabola fixture's field arrays.
 
     `gap` is an optional (start, end) window in seconds that no splat's
@@ -67,9 +77,25 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     scan, an encoder's zero-splat group -- are otherwise only ever tested by
     reading the code.
 
+    `blocks` replaces the parabola with static, spatially separated clusters,
+    one per temporal segment plus one for the persistent group.  It exists
+    because "nothing broke" is not the same claim as "the right segments were
+    drawn", and the parabola cannot tell them apart: it is an expanding cloud,
+    so a player that culls nothing at all looks the same as one that culls
+    correctly.  With `blocks` the drawn population is countable by eye -- at
+    any instant you should see the persistent block plus only the block(s)
+    whose segment spans that instant, and a culling bug shows up as a block
+    that is present when it should not be (or missing when it should).
+    Combined with `gap` it is the strong form: an empty RUN whose surviving
+    neighbours are in visibly different places.
+
+    Motion is deliberately zero here (degree 1, velocity 0): a moving block
+    would reintroduce the ambiguity the mode exists to remove.  Section 4.8
+    forbids synthesising `accel`, so block mode never emits it.
+
     Returns (fields, meta) where `meta` records the analytic constants a
-    verifier may want (the gravity term, the persistent split) alongside
-    the clip scalars.
+    verifier may want (the gravity term, the persistent split, the block
+    layout) alongside the clip scalars.
     """
     rng = np.random.default_rng(seed)
     n = int(count)
@@ -118,6 +144,37 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     xyz = launch + v0 * tc + accel_true * tc * tc
     velocity = v0 + 2.0 * accel_true * tc
 
+    block_layout = None
+    if blocks:
+        # One cluster per segment the packer will bucket into, laid out along
+        # x in segment order, plus the persistent group lifted clear on y.
+        # The bucket expression mirrors compute_sogst_order exactly -- if the
+        # two ever drift, the blocks stop lining up with the segments and the
+        # fixture silently stops testing what it claims to.
+        n_seg = max(1, int(np.ceil((time_max - time_min) / SEGMENT_DURATION)))
+        bucket = np.clip(((t_center - time_min) / SEGMENT_DURATION).astype(np.int64),
+                         0, n_seg - 1)
+        centres = np.zeros((n, 3))
+        centres[:, 0] = (bucket - 0.5 * (n_seg - 1)) * BLOCK_SPACING
+        is_persistent = np.zeros(n, dtype=bool)
+        is_persistent[persistent_idx] = True
+        centres[is_persistent, 0] = 0.0
+        centres[is_persistent, 1] = BLOCK_SPACING
+        xyz = centres + rng.normal(0.0, BLOCK_RADIUS / 3.0, (n, 3))
+        velocity = np.zeros((n, 3))
+        accel_true = np.zeros((n, 3))
+        block_layout = {
+            'segment_duration': float(SEGMENT_DURATION),
+            'segments': int(n_seg),
+            'spacing': float(BLOCK_SPACING),
+            'radius': float(BLOCK_RADIUS),
+            'segment_block_x': [float((k - 0.5 * (n_seg - 1)) * BLOCK_SPACING)
+                                for k in range(n_seg)],
+            'persistent_block': [0.0, float(BLOCK_SPACING), 0.0],
+            'splats_per_segment': [int((bucket[~is_persistent] == k).sum())
+                                   for k in range(n_seg)],
+        }
+
     # Quaternions hitting every smallest-three case by construction: cycle
     # the largest-magnitude component through w, x, y, z.
     quat = rng.normal(0.0, 1.0, (n, 4))
@@ -144,7 +201,7 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
         't_center': t_center,
         't_sigma': t_sigma,
     }
-    if degree == 2:
+    if degree == 2 and not blocks:
         fields['ax'] = accel_true[:, 0]
         fields['ay'] = accel_true[:, 1]
         fields['az'] = accel_true[:, 2]
@@ -164,11 +221,13 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
 
     meta = {
         'time_min': float(time_min), 'time_max': float(time_max),
-        'fps': 30.0, 'count': n, 'motion_degree': int(degree),
+        'fps': 30.0, 'count': n,
+        'motion_degree': 1 if blocks else int(degree),
         'gap': (None if gap is None else [float(gap[0]), float(gap[1])]),
-        'gravity_dt2_coefficient': float(0.5 * GRAVITY),
+        'gravity_dt2_coefficient': (None if blocks else float(0.5 * GRAVITY)),
         'long_lived_splats': int(n_persistent),
         'seed': int(seed),
+        'blocks': block_layout,
     }
     return fields, meta
 
@@ -190,6 +249,14 @@ def main():
                              'produced by a real capture, so it is the only way to '
                              'execute a player culling scan or an encoder group writer '
                              'against a zero-splat segment.')
+    parser.add_argument('--blocks', action='store_true',
+                        help='Static spatially-separated clusters, one per temporal '
+                             'segment plus one for the persistent group, instead of '
+                             'the parabola. Makes the drawn population countable by '
+                             'eye, so "the right segments were drawn" can be checked '
+                             'rather than only "nothing broke" -- the expanding cloud '
+                             'cannot distinguish correct culling from no culling. '
+                             'Forces degree 1 and zero motion. Pair with --gap.')
     parser.add_argument('--sidecar', action='store_true',
                         help='Also write the optional <name>.sogst.json sidecar')
     parser.add_argument('--pack', type=str, default=None,
@@ -199,10 +266,11 @@ def main():
     gap = tuple(float(v) for v in args.gap.split(',')) if args.gap else None
     fields, meta = build_fixture(count=args.count, time_max=args.time_max,
                                  degree=args.degree, include_sh=not args.no_sh,
-                                 seed=args.seed, gap=gap)
+                                 seed=args.seed, gap=gap, blocks=args.blocks)
     n = write_sogst_ply(args.output, fields, meta['time_min'], meta['time_max'],
                         meta['fps'], generator='volumetric-capture-pipeline '
-                                               'make_sogst_fixture parabola')
+                                               'make_sogst_fixture '
+                                               + ('blocks' if args.blocks else 'parabola'))
     if args.sidecar:
         write_sogst_sidecar(args.output, meta['time_min'], meta['time_max'],
                             meta['fps'], motion_degree=meta['motion_degree'])
@@ -210,8 +278,21 @@ def main():
           f"SH={'no' if args.no_sh else 'yes'}, "
           f"{meta['time_min']}..{meta['time_max']}s @ {meta['fps']} fps")
     print(f"  {meta['long_lived_splats']:,} long-lived splats (expected persistent range)")
-    print(f"  dt^2 coefficient on y: {meta['gravity_dt2_coefficient']:.4f} "
-          '(raw coefficient, not half-acceleration)')
+    if meta['gravity_dt2_coefficient'] is not None:
+        print(f"  dt^2 coefficient on y: {meta['gravity_dt2_coefficient']:.4f} "
+              '(raw coefficient, not half-acceleration)')
+    if meta['blocks']:
+        b = meta['blocks']
+        populated = [k for k, c in enumerate(b['splats_per_segment']) if c]
+        empty = [k for k, c in enumerate(b['splats_per_segment']) if not c]
+        print(f"  block layout: {b['segments']} segment blocks along x, spacing "
+              f"{b['spacing']} (cluster radius {b['radius']}), persistent block at "
+              f"{b['persistent_block']}")
+        print(f"    populated blocks {populated}")
+        print(f"    empty blocks     {empty}"
+              if empty else '    empty blocks     none (pass --gap to create some)')
+        print('    at time t the persistent block plus only the block(s) whose '
+              'segment spans t should be drawn')
 
     if args.pack:
         from sogst_pack import pack_sogst
