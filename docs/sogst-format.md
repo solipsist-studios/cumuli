@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 11, 2026-08-17.**
+**Container version 1. Specification revision 12, 2026-08-17.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -703,6 +703,23 @@ A player conforms when:
       player that is still broken. "Identically" means compare the decode or
       the rendered output against the unmodified file — "loads without error"
       does not establish the entries were ignored.
+
+      Two traps observed running this check against a real player:
+
+      - **A durable full-file cache can serve the fixture from a path the test
+        is not aiming at.** A warm cache hit that decodes the whole-clip path
+        proves nothing about the streamed path a fix touched. Guarantee a cold
+        load — a fresh filename per fixture is a cheaper and more reliable
+        guarantee than clearing the store, whose deletion can block on the
+        page's own open connection — and confirm the load path from the
+        server's request log rather than in-page instruments, which reset
+        across navigation.
+      - **A streamed fixture cannot be made by inserting an entry into an
+        existing archive.** `streams.reveal_bytes`/`geometry_bytes` are
+        absolute offsets and `meta.json` is the first entry, so inserting an
+        entry — or merely resizing the manifest — shifts everything after it
+        and the load fails for reasons unrelated to entry tolerance. Rebuild
+        through a writer that recomputes and verifies the offsets (§6).
 - [ ] It reaches that rejection from the manifest rather than from a downstream
       parse failure. Because §8 removed the development-era formats outright, an
       application that dispatches on file extension now routes those files to
@@ -792,6 +809,28 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 12** — §9 testing notes, from re-verifying revision 11's exemplar.
+**No implementer action** on the format; two traps recorded for anyone running
+the §3.1 check against a real player.
+
+- The pixel-identical verification revision 11 cites as the model was
+  re-established after a hazard was found in its own provenance: the player
+  carries a durable full-file cache, and a cache hit decodes the whole-clip
+  path — which was already conformant — so a warm post-fix PASS would have
+  proven nothing about the streamed code the fix touched. The pre-fix FAIL was
+  provably streamed (the stack said so); the post-fix PASS was not provably
+  anything until re-run cold, with fresh filenames forcing fresh cache keys and
+  the static server's request log as the arbiter of which path executed. The
+  result held. §9 now records both the cold-load guarantee and the
+  arbiter choice.
+- §9 also now warns that a streamed unknown-entry fixture must be rebuilt
+  through a writer, never made by inserting an entry into an existing archive:
+  the §6 offsets are absolute and `meta.json` is the first entry, so an
+  insertion — or a manifest resize alone — makes the load fail for reasons
+  unrelated to what the fixture tests. The reference suite's fixtures already
+  rebuild through `write_sogst_streamed`; this states why that is the only
+  valid construction.
 
 **Revision 11** — §3.1 hardened by its first player implementation, same day.
 
