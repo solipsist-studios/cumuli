@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 9, 2026-08-14.**
+**Container version 1. Specification revision 10, 2026-08-17.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -215,6 +215,28 @@ visibly quantizes motion.
 `files` arrays name the archive entries backing each group. In the streamed
 layout (§6) they name the *basenames*; actual entries are prefixed. A player
 SHOULD resolve textures through `files` rather than hardcoding names.
+
+### 3.1 Unknown keys and forward compatibility
+
+A player MUST ignore manifest keys it does not recognise — top-level keys and
+keys inside groups alike — and MUST NOT reject a file for carrying one. It MUST
+likewise ignore archive entries backing a group it does not recognise.
+Rejection is reserved for the `version` and `format` checks above.
+
+The version number, not the key set, is the compatibility signal:
+
+- A future revision MAY add new OPTIONAL groups and keys **under version 1**,
+  provided a player that ignores them still renders the file correctly at
+  reduced fidelity — the same contract §0 already imposes for `shN` and
+  `accel`. Temporally varying rotation, for example, would arrive this way: a
+  new coefficient group beside `motion`, evaluated by players that know it and
+  invisible to players that do not.
+- A change that alters the meaning of anything this revision specifies —
+  evaluation semantics, an existing key, an existing texture layout — MUST bump
+  `version`, and therefore MUST NOT be introduced under version 1.
+
+An encoder SHOULD NOT emit private keys into the top level; if it must attach
+producer-specific data, `asset` is the place for it.
 
 ## 4. Attribute groups
 
@@ -598,6 +620,41 @@ The name is unrelated to the old one on both halves: nothing in this container
 came from that paper's work. The representation is spacetime-shaped, the
 container is PlayCanvas SOG, and the streaming layer is ours.
 
+### 8.1 Relationship to TSOG (non-normative)
+
+**TSOG** ("Temporally and Spatially Ordered Gaussians", Gmira, Alexiou,
+Potetsianakis and Thomas, Xiaomi Technology Netherlands, arXiv:2607.28049, July
+2026) is an independently developed extension of PlayCanvas SOG to 4D, published
+while this specification was being finalised. Neither design derives from the
+other; anyone encountering both should know how they relate.
+
+The two converge on everything SOG already decided, plus the obvious next
+steps: static attributes stay byte-compatible with SOG v2, splats are
+Morton-ordered spatially, high-precision temporal quantities are 16-bit
+split-plane WebP pairs with min/max ranges in the manifest, motion is a
+per-splat polynomial with a first-order (velocity) base case, and temporal
+opacity is a FreeTimeGS-style Gaussian window (their "center and scale"
+timeline type is this format's `trbf.center`/`trbf.sigma`).
+
+They differ in scope. TSOG defines a generic parameterisation scheme — any
+attribute may gain `temporal_<attribute>_<order>` coefficient images, including
+polynomial rotation, and a discrete frame-id timeline mode exists alongside the
+continuous one — but ships as loose WebP files plus JSON, with no container, no
+streaming layout, no temporal segmentation or culling, linear (not log)
+quantization of motion coefficients, no stated functional form or normalisation
+for the temporal opacity window, and no conformance rules or validation
+procedure. `.sogst` fixes one normative model and specifies it completely: the
+ZIP container and streamed layout (§§2, 6), segment-based temporal culling
+(§5), the log transform (§2.2), exact evaluation semantics (§1), and the
+conformance and cross-implementation machinery (§§9–10).
+
+The manifests are mutually incompatible — TSOG's `timeline`/`temporal.*` keys
+versus this format's `motion`/`accel`/`trbf`/`segments` — and a TSOG asset is
+not a `.sogst` archive (it is not an archive at all). TSOG capabilities this
+format lacks, temporally varying rotation foremost, are additive by design and
+would land through §3.1 as new OPTIONAL groups rather than by adopting TSOG's
+naming.
+
 ## 9. Conformance checklist
 
 An encoder conforms when:
@@ -625,6 +682,8 @@ A player conforms when:
 - [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
       `meta.format == "sogst"` (§8: there is no legacy form to accept), and
       names the offending value in the error.
+- [ ] It decodes a file whose manifest carries an unrecognised key — top-level
+      or inside a group — identically to the same file without it (§3.1).
 - [ ] It reaches that rejection from the manifest rather than from a downstream
       parse failure. Because §8 removed the development-era formats outright, an
       application that dispatches on file extension now routes those files to
@@ -714,6 +773,25 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 10** — forward compatibility, prompted by the publication of TSOG.
+
+- §3.1 (new): a player MUST ignore unrecognised manifest keys and the archive
+  entries backing unrecognised groups; rejection stays reserved for
+  `version`/`format`. Additive OPTIONAL groups may arrive under version 1;
+  anything that changes the meaning of existing content must bump `version`.
+  Without this rule a strictly written version-1 player could legitimately
+  reject any future additive extension, forcing a version bump — and a hard
+  reject from every deployed player — for changes that are safe to ignore.
+  §9 gains the matching checklist bullet.
+- §8.1 (new, non-normative): the relationship to TSOG (arXiv:2607.28049), an
+  independently developed SOG 4D extension published 2026-07-30. The two
+  converge on the texture conventions and diverge on packaging, streaming,
+  segmentation, quantization transform, and conformance rigor; the manifests
+  are incompatible. TSOG's temporally varying rotation is the worked example
+  §3.1 exists for.
+
+No change to the payload or to what a conforming encoder emits.
 
 **Revision 9** — §6 wording fix, found by a validator it misled.
 
