@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 10, 2026-08-17.**
+**Container version 1. Specification revision 11, 2026-08-17.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -237,6 +237,19 @@ The version number, not the key set, is the compatibility signal:
 
 An encoder SHOULD NOT emit private keys into the top level; if it must attach
 producer-specific data, `asset` is the place for it.
+
+**An unknown entry may appear anywhere in a group's byte order, including
+before that group's required entries.** This is where "ignore" actually gets
+implemented wrong: a streamed player that gates group completion on a *count*
+of buffered entries will hit the count early when an unknown entry arrives
+before the group's last required file, and then decode the group a file short —
+while the same entry arriving after the known files is skipped harmlessly.
+Filter unrecognised names before buffering or counting; completion must be
+judged against the set of required names, never against how many entries have
+arrived. The first player implementation of this section had exactly this
+defect, and it was order-dependent enough that a test appending the unknown
+entry passed on the broken player. Test with the unknown entry placed *before*
+the known files (§9).
 
 ## 4. Attribute groups
 
@@ -684,6 +697,12 @@ A player conforms when:
       names the offending value in the error.
 - [ ] It decodes a file whose manifest carries an unrecognised key — top-level
       or inside a group — identically to the same file without it (§3.1).
+      When testing the streamed path, place the unknown archive entry *before*
+      each group's required entries: a count-gated group-completion bug is
+      order-dependent, and a fixture that appends the unknown entry passes on a
+      player that is still broken. "Identically" means compare the decode or
+      the rendered output against the unmodified file — "loads without error"
+      does not establish the entries were ignored.
 - [ ] It reaches that rejection from the manifest rather than from a downstream
       parse failure. Because §8 removed the development-era formats outright, an
       application that dispatches on file extension now routes those files to
@@ -773,6 +792,24 @@ firing at correct code. That was this document's own tooling on its first
 encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
+
+**Revision 11** — §3.1 hardened by its first player implementation, same day.
+
+- The viewer's §3.1 check found a real, order-dependent violation in its own
+  streamed path: group completion was gated on a *count* of buffered entries,
+  so an unknown entry arriving before a group's last required file hit the
+  count early and the decode ran a file short — while the same entry appended
+  after the known files was skipped harmlessly. §3.1 now states the failure
+  mode and the rule (judge completion against the set of required names, never
+  a count); §9's bullet now requires the unknown-entry fixture to place the
+  entry *before* the known files, because the appending fixture passed on the
+  broken player. The reference suite's own streamed fixture had the appending
+  shape — harmless against the reference decoder, which reads entries by name,
+  but wrong as a template — and was moved to first-in-group.
+- §9's bullet also now says what "identically" requires: compare the decode or
+  rendered output against the unmodified file. "Loads without error" tolerates;
+  it does not establish the entries were ignored. The viewer's verification
+  compared rendered pixels; the reference suite compares decoded fields.
 
 **Revision 10** — forward compatibility, prompted by the publication of TSOG.
 

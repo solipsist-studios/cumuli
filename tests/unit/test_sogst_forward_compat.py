@@ -123,7 +123,19 @@ def test_unknown_texture_entries_are_ignored_streamed(tmp_path):
     """Streamed variant of the unknown-entry case: the additive group's
     texture appears under EVERY group prefix, which is the shape a real
     per-splat attribute has -- every splat carries a value, so every group
-    stores its slice."""
+    stores its slice.
+
+    **The unknown entry goes FIRST in each group, before every required
+    file, and that placement is the test.** The first player implementation
+    of section 3.1 gated streamed group completion on a count of buffered
+    entries; an unknown entry arriving before the group's last required
+    file hit the count early and the decode ran a file short -- while the
+    same entry appended after the known files was skipped harmlessly. So a
+    fixture that appends the unknown entry passes on a player that is still
+    broken. This decoder reads entries by name rather than in byte order,
+    so it cannot fail this way -- the placement is here because this test
+    is the conformance template, and the template must be the adversarial
+    shape."""
     src = _pack(tmp_path / "plain.sogst", streamed=True)
 
     with zipfile.ZipFile(src) as zf:
@@ -132,16 +144,20 @@ def test_unknown_texture_entries_are_ignored_streamed(tmp_path):
     manifest = json.loads(payloads.pop("meta.json"))
     manifest.update(UNKNOWN_TOP_LEVEL)
 
+    trbf_of = {n.rsplit("/", 1)[0]: payloads[n]
+               for n in names if "/" in n and n.endswith("trbf.webp")}
     entries = []
+    seen_prefixes = set()
     for n in names:
         if n == "meta.json":
             continue
+        prefix = n.rsplit("/", 1)[0] if "/" in n else None
+        if prefix in trbf_of and prefix not in seen_prefixes:
+            seen_prefixes.add(prefix)
+            entries.append((f"{prefix}/rot_motion.webp", trbf_of[prefix]))
         entries.append((n, payloads[n]))
-        if "/" in n and n.endswith("trbf.webp"):
-            prefix = n.rsplit("/", 1)[0]
-            entries.append((f"{prefix}/rot_motion.webp", payloads[n]))
     reveal_through = next(i for i, (n, _) in enumerate(entries)
-                          if n.startswith("seg_000/") and n.endswith("rot_motion.webp"))
+                          if n.startswith("seg_000/") and n.endswith("trbf.webp"))
     out = tmp_path / "annotated.sogst"
     write_sogst_streamed(str(out), manifest, entries, reveal_through)
 
