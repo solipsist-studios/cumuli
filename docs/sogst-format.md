@@ -3,15 +3,14 @@ SPDX-License-Identifier: CC-BY-4.0
 Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 This specification is deliberately licensed differently from the rest of this
-repository (PolyForm-Noncommercial-1.0.0). A format nobody may implement
-commercially is not a format. The reference *implementation* in scripts/
-remains PolyForm. This document, and any independent implementation written
-from it, do not.
+repository (PolyForm-Noncommercial-1.0.0). The reference *implementation* in
+scripts/ remains PolyForm. This document, and any independent implementation
+written from it, do not.
 -->
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 13, 2026-08-18.**
+**Container version 1. Specification revision 14, 2026-08-18.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -26,8 +25,8 @@ The name is literal: **SOG** for the container, **st** for spacetime.
 ## 0. Status, scope, and conformance language
 
 This document specifies the container completely. It has no predecessors that a
-reader must accommodate. The development-era formats described in §8 were never
-released, and nothing that reads them exists.
+reader must accommodate: no earlier version of this format was ever released,
+and there is no legacy form to accept.
 
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, MAY and OPTIONAL are
 to be interpreted as in RFC 2119.
@@ -593,11 +592,11 @@ comment sogst.cov2d_scale 1.0 1.0
 ```
 
 - `sogst.time_min`, `sogst.time_max` and `sogst.fps` are REQUIRED.
-- An encoder that does not find them **MUST fail with an error**. It MUST NOT
-  substitute a default. This is the single most likely place for two
-  implementations to diverge, and the failure is silent. An assumed `fps = 30`
-  on 24 fps content produces a file that plays at the wrong speed and renders
-  perfectly while doing it.
+- An encoder that finds them in neither the comments nor the sidecar (below)
+  **MUST fail with an error**. It MUST NOT substitute a default. This is the
+  single most likely place for two implementations to diverge, and the
+  failure is silent. An assumed `fps = 30` on 24 fps content produces a file
+  that plays at the wrong speed and renders perfectly while doing it.
 - `sogst.motion_degree` is OPTIONAL and advisory. The presence of `ax, ay, az`
   is what actually determines the degree. When both are present they MUST
   agree.
@@ -605,50 +604,18 @@ comment sogst.cov2d_scale 1.0 1.0
 - Unknown `sogst.*` comments MUST be ignored, not rejected.
 
 A sidecar JSON file with the same keys MAY accompany the PLY, for toolchains
-that strip comments. Its name is the PLY's path with a trailing `.ply` **removed
-if present** and `.sogst.json` appended. So `heidi.ply` pairs with
-`heidi.sogst.json`, not `heidi.ply.sogst.json`. When both are present the
-sidecar wins. A conforming producer MUST write the comments regardless of
-whether it also writes a sidecar.
+that cannot write PLY comments or that strip them. Its name is the PLY's path
+with a trailing `.ply` **removed if present** and `.sogst.json` appended. So
+`scene.ply` pairs with `scene.sogst.json`, not `scene.ply.sogst.json`. When
+both are present the sidecar wins, because a toolchain that rewrites a PLY can
+carry stale comments through while the sidecar is regenerated.
 
-## 8. History, and why there is nothing to be compatible with
+A conforming producer MUST supply the REQUIRED scalars in at least one of the
+two carriers. It SHOULD write the comments when its PLY library supports them,
+because the comments keep the interchange unit a single file. A producer that
+cannot write comments MUST write the sidecar.
 
-This is a new format with no deployed predecessors, and that is a deliberate
-position rather than an accident of timing.
-
-Three container layouts preceded it during development, all under the extension
-`.omg4` (named after the paper whose training code first fed the pipeline). The
-first two were binary: a per-frame layout, then a structure-of-arrays layout
-with a tiled streaming variant, both identified by an ASCII magic `OMG4`. The
-third was this ZIP container, numbered "version 3" in sequence with them.
-
-None was ever released. Every asset in those forms was a development artifact
-on a workstation. The alternative was to carry a version number that starts at
-3, plus a reader branch for magic bytes nobody will ever encounter. So
-revision 4 renumbered the container to **version 1** and deleted the older
-layouts outright.
-
-Two consequences worth stating plainly, because the opposite is the usual
-expectation:
-
-- **A conforming player has no legacy path.** It rejects anything that is not a
-  ZIP with `meta.version == 1` and `meta.format == "sogst"`. There is no `.omg4`
-  extension to accept, no magic to sniff, and no absent-`format` case to
-  tolerate.
-- **The rename cost nothing to compute.** A development-era ZIP archive's
-  payload is already byte-identical to a version-1 payload. Only the manifest
-  differs. So those assets were migrated by a rewrite of `meta.json`, not by a
-  re-bake. `scripts/sogst_migrate.py` does this. The one subtlety:
-  `streams.reveal_bytes` and `geometry_bytes` are absolute offsets and
-  `meta.json` is the first entry, so a changed manifest shifts every entry
-  after it. The migrator re-emits the archive through the normal writers,
-  which recompute and verify the offsets rather than copy them.
-
-The name is unrelated to the old one on both halves: nothing in this container
-came from that paper's work. The representation is spacetime-shaped, the
-container is PlayCanvas SOG, and the streaming layer is ours.
-
-### 8.1 Relationship to TSOG (non-normative)
+## 8. Relationship to TSOG (non-normative)
 
 **TSOG** ("Temporally and Spatially Ordered Gaussians", Gmira, Alexiou,
 Potetsianakis and Thomas, Xiaomi Technology Netherlands, arXiv:2607.28049, July
@@ -714,7 +681,7 @@ A player conforms when:
 - [ ] It renders a file with no `shN` group correctly.
 - [ ] It treats segment ranges as half-open and applies the §5 drawing rule.
 - [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
-      `meta.format == "sogst"` (§8: there is no legacy form to accept). It
+      `meta.format == "sogst"` (there is no legacy form to accept). It
       names the offending value in the error.
 - [ ] It decodes a file whose manifest carries an unrecognised key (top-level
       or inside a group) identically to the same file without that key (§3.1).
@@ -743,11 +710,11 @@ A player conforms when:
         fixture through a writer that recomputes and verifies the offsets
         (§6).
 - [ ] It reaches that rejection from the manifest rather than from a
-      downstream parse failure. Because §8 removed the development-era formats
-      outright, an application that dispatches on file extension now routes
-      those files to whatever its default loader is. The observed failure mode
-      is a full download of a several-hundred-megabyte asset, followed by a
-      confusing error from an unrelated parser, or by no visible error at all.
+      downstream parse failure. An application that dispatches on file
+      extension routes an unrecognised file to whatever its default loader
+      is. The observed failure mode is a full download of a
+      several-hundred-megabyte asset, followed by a confusing error from an
+      unrelated parser, or by no visible error at all.
       Deciding from `meta.json`, which is the first entry and so arrives in
       the first range request, fails in the first few kilobytes with an
       accurate message.
@@ -835,6 +802,24 @@ first encounter with a second implementation, and that is why the guidance is
 here.
 
 ## Appendix A. Revision history
+
+**Revision 14** — review feedback on the first public draft.
+
+- §7.3: the clip-scalar carrier requirement is restated. A producer MUST
+  supply the REQUIRED scalars in at least one carrier (PLY comments or the
+  sidecar), SHOULD prefer the comments, and MUST write the sidecar when it
+  cannot write comments. Revision 13 and earlier required the comments
+  unconditionally, which contradicted the sidecar's stated purpose. The
+  sidecar-wins precedence is unchanged, and an encoder still MUST fail when
+  it finds the scalars in neither carrier.
+- The old §8 (development history) is deleted. It documented formats that
+  were never released, for readers who were present during development. Its
+  one normative point, that a player rejects anything that is not a ZIP with
+  `meta.version == 1` and `meta.format == "sogst"`, already lives in §3 and
+  §9. "Relationship to TSOG" is renumbered from §8.1 to §8. Older Appendix
+  entries keep their original section numbers.
+- The license header no longer editorializes, and the §7.3 filename example
+  is neutral.
 
 **Revision 13** — editorial only. **No implementer action.** This revision
 rewrites the whole document into Simplified Technical English structure:
@@ -1049,4 +1034,4 @@ No change alters the bytes a revision-1-conforming encoder produces.
 - §5 bounds `segments.list` at 65536 entries. Every segment gets an entry
   whether or not it holds splats, so a small `duration` on a long clip was a
   valid file with a pathological `meta.json`.
-- §7.3 pins the sidecar filename: `heidi.ply` → `heidi.sogst.json`.
+- §7.3 pins the sidecar filename: `scene.ply` → `scene.sogst.json`.
