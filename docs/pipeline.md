@@ -7,19 +7,20 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 End-to-end flow from raw multi-camera GoPro footage to a trained Brush
 gaussian splat, for a single frame/timestamp. All example paths below use
-a `heidi_1500ms` example dataset (frame extracted at 1.5s into the clip)
+a `take01_1500ms` example dataset (frame extracted at 1.5s into the clip)
 -- substitute your own working directory.
 
-Follow the sections below in order -- that's the pipeline order. Each
-script's own `--help` / docstring has the full flag reference; this doc
-is the narrative walkthrough and the conda envs each stage needs.
+Follow the sections below in order: that is the pipeline order. Each
+script's own `--help` / docstring has the full flag reference. This doc
+is the narrative walkthrough, and it names the conda envs each stage
+needs.
 
 Only the direct branch (4K masked training on the real cameras) is part
 of this build. The Diffuman4D 48-camera dense-ring branch is a planned
 addition (hallucinating extra ring views via Diffuman4D, then training
-on real + synthetic views together) but isn't wired into any script or
-this walkthrough yet -- it'll get its own doc sections once it's been
-run and validated end-to-end.
+on real + synthetic views together) but it is not wired into any script
+or this walkthrough yet. It will get its own doc sections once it has
+been run and validated end-to-end.
 
 ## Prerequisites
 
@@ -35,11 +36,11 @@ run and validated end-to-end.
 
 `scripts/run_unified_pipeline.py` runs the full pipeline end-to-end in
 one process -- sync through mask cleanup and training, plus pose
-refinement when a known-good sync is reused -- dispatching each stage
-into the right conda env itself, so you don't need to `conda activate`
+refinement when a known-good sync is reused. It dispatches each stage
+into the right conda env itself, so you do not need to `conda activate`
 between steps the way the walkthrough below shows. Read the walkthrough
-below first to understand what each stage actually does and why; use the
-orchestrator to run them without the manual bookkeeping.
+below first to understand what each stage actually does and why. Then
+use the orchestrator to run them without the manual bookkeeping.
 
 ```bash
 python3 scripts/run_unified_pipeline.py \
@@ -56,14 +57,14 @@ Key flags:
 
 - **`--config`** -- JSON file of per-rig defaults (conda env names,
   `--brush_app`, `--display`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
-  you don't have to repeat them on every run. Explicit CLI flags always
+  you do not have to repeat them on every run. Explicit CLI flags always
   override the config. See `configs/README.md`.
 - **`--start_from_stage` / `--stop_after_stage`** (`sync`, `production`,
   `poses`, `masks`, `branch`) -- resume partway through, or stop early to
   inspect intermediate output before committing GPU time to training.
   Resuming assumes the earlier stages' outputs already exist under
   `--out_dir`.
-- **Sync: verify once, reuse, don't re-trust automatically every run.**
+- **Sync: verify once, reuse, and do not re-trust automatically every run.**
   `compute_sync_offsets.py`'s sync method (envelope cross-correlation,
   always runs unless `--initial_sync_json` is given) had a sign-inversion
   bug and a confidence metric that couldn't tell a correct lock from a
@@ -73,11 +74,12 @@ Key flags:
   auto-gates on that flag yet though (`validate_stage_output.py` only
   checks that every camera is present, not its confidence), so still
   treat the live result as a draft to visually confirm rather than
-  something the pipeline itself will catch if wrong. The workflow that's
-  actually worked every time this session:
+  something the pipeline itself will catch if wrong. The workflow that
+  has worked every time in practice:
   1. Run `compute_sync_offsets.py` once, inspect `make_sync_grid.py`'s
-     sync grid by eye, hand-tune any camera's `frame_offset` that's
-     visibly off, save the result (e.g. `sync_offsets_v5.json`).
+     sync grid by eye, hand-tune any camera's `frame_offset` that
+     is visibly off, and save the result (for example
+     `sync_offsets_v5.json`).
   2. Pass that verified file back in via `--initial_sync_json` on the
      *next* run to seed it without recomputing.
   3. For every run after that on the same take (different timestamps,
@@ -101,9 +103,9 @@ Key flags:
   separately confirmed headless training completes in your own
   environment.
 - **`--display`** (default `:2`) -- the X display `brush_app` connects
-  to for `--with_viewer`. The default is specific to this machine's
-  setup; override it for your own (needs a real, composited display --
-  a detached/dummy Xorg instance is not sufficient).
+  to for `--with_viewer`. The default is machine-specific.
+  Override it for your own setup. It needs a real, composited display:
+  a detached or dummy Xorg instance is not sufficient.
 - **`--hloc_resize_max`** (default 4096) / **`--hloc_max_keypoints`**
   (default 8192) -- HLOC feature-extraction settings, passed through to
   `multiframe_sfm.py`. The 4096 default is deliberately higher than that
@@ -117,10 +119,10 @@ Key flags:
 
 ```bash
 python3 scripts/compute_sync_offsets.py \
-    /media/ai/datasets/260521-105422/movies \
-    ~/heidi_260521_undist \
+    ~/captures/take01/movies \
+    ~/take01_undist \
     0001.mp4
-# -> ~/heidi_260521_undist/sync_offsets.json
+# -> ~/take01_undist/sync_offsets.json
 
 # Hand-tune a few cameras' frame_offset by +/- a couple frames after
 # visually checking make_sync_grid.py output at a few timestamps, and
@@ -128,17 +130,17 @@ python3 scripts/compute_sync_offsets.py \
 # whichever version is your current best.
 
 python3 scripts/extract_synced_frames.py \
-    /media/ai/datasets/260521-105422/movies \
-    ~/heidi_260521_undist/sync_offsets_v5.json \
-    ~/heidi_1500ms/raw \
+    ~/captures/take01/movies \
+    ~/take01_undist/sync_offsets_v5.json \
+    ~/take01_1500ms/raw \
     1.5
 
-python3 scripts/make_sync_grid.py ~/heidi_1500ms/raw ~/heidi_1500ms/sync_grid.jpg
+python3 scripts/make_sync_grid.py ~/take01_1500ms/raw ~/take01_1500ms/sync_grid.jpg
 # eyeball the grid -- every camera should show the same instant of action
 ```
 
 **Color correction** (optional, needs a per-camera RawTherapee `.pp3`
-profile directory, e.g. thumbnail sidecar files from an NLE): pass
+profile directory, for example thumbnail sidecar files from an NLE): pass
 `--pp3_dir` to `extract_synced_frames.py` and it color-corrects each
 extracted frame before undistortion. Matters because uncorrected
 per-GoPro exposure/saturation differences show up as color noise in the
@@ -148,10 +150,10 @@ trained splat.
 
 ```bash
 python3 scripts/undistort_frames.py \
-    --frames_dir ~/heidi_1500ms/raw \
+    --frames_dir ~/take01_1500ms/raw \
     --calib_dir /path/to/calibration_pkls \
-    --out_dir ~/heidi_1500ms/undistorted \
-    --out_pkl_dir ~/heidi_1500ms/undistorted_pkls \
+    --out_dir ~/take01_1500ms/undistorted \
+    --out_pkl_dir ~/take01_1500ms/undistorted_pkls \
     --model OPENCV_FISHEYE
 ```
 
@@ -160,7 +162,7 @@ calibration `image_size` disagrees with the actual frame resolution by a
 uniform scale, it is auto-corrected with a loud warning (this was a real
 bug: a calibration made at the GoPro 5.3K full-sensor width, 5568px,
 silently applied to 5312px-wide video warped every camera by ~113px of
-focal). Read those warnings if they appear -- they mean you're pointing
+focal). Read those warnings if they appear. They mean you are pointing
 at the wrong calibration source. `--target_pkl_dir` also enables
 single-warp mode: native fisheye straight to a known target pinhole
 geometry in one resample, instead of downscale-then-undistort.
@@ -170,10 +172,10 @@ geometry in one resample, instead of downscale-then-undistort.
 ```bash
 conda activate hloc
 python3 scripts/run_hloc.py \
-    --undistorted_dir ~/heidi_1500ms/undistorted \
-    --undistorted_pkl_dir ~/heidi_1500ms/undistorted_pkls \
-    --outputs_dir ~/heidi_1500ms/solipsist_out
-# -> ~/heidi_1500ms/solipsist_out/transforms_multiframe.json (real camera poses)
+    --undistorted_dir ~/take01_1500ms/undistorted \
+    --undistorted_pkl_dir ~/take01_1500ms/undistorted_pkls \
+    --outputs_dir ~/take01_1500ms/solipsist_out
+# -> ~/take01_1500ms/solipsist_out/transforms_multiframe.json (real camera poses)
 ```
 
 ## Keypoint pose refinement
@@ -193,13 +195,13 @@ cameras far more strongly than a single pose), so this is the validated
 approach: extract a short candidate window per camera -- separate from,
 and in addition to, the single production frame extracted above --
 predict keypoints on each instant, and refine against all of them at
-once (10+ instants recommended; 5 shown here for brevity):
+once (10+ instants recommended, 5 shown here for brevity):
 
 ```bash
 python3 scripts/extract_synced_frames.py \
-    /media/ai/datasets/260521-105422/movies \
-    ~/heidi_260521_undist/sync_offsets_v5.json \
-    ~/heidi_1500ms/sync_candidates \
+    ~/captures/take01/movies \
+    ~/take01_undist/sync_offsets_v5.json \
+    ~/take01_1500ms/sync_candidates \
     1.5 \
     --window 5
 
@@ -207,28 +209,28 @@ python3 scripts/extract_synced_frames.py \
 # split_keypoints_per_camera.py on each instant subdir f0/..f4/
 for k in 0 1 2 3 4; do
     python3 scripts/undistort_frames.py \
-        --frames_dir ~/heidi_1500ms/sync_candidates/f$k \
+        --frames_dir ~/take01_1500ms/sync_candidates/f$k \
         --calib_dir /path/to/calibration_pkls \
-        --out_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
-        --out_pkl_dir ~/heidi_1500ms/sync_candidates_pkls/f$k
+        --out_dir ~/take01_1500ms/sync_candidates_undist/f$k \
+        --out_pkl_dir ~/take01_1500ms/sync_candidates_pkls/f$k
     conda activate diffuman4d
     python3 scripts/generate_masks.py \
-        --images_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
-        --out_fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
+        --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
+        --out_fmasks_dir ~/take01_1500ms/sync_candidates_fmasks/f$k
     conda activate sapiens2
     python3 scripts/predict_keypoints_2d.py \
-        --images_dir ~/heidi_1500ms/sync_candidates_undist/f$k \
-        --out_kp2d_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
-        --fmasks_dir ~/heidi_1500ms/sync_candidates_fmasks/f$k
+        --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
+        --out_kp2d_dir ~/take01_1500ms/sync_candidates_kp2d/f$k \
+        --fmasks_dir ~/take01_1500ms/sync_candidates_fmasks/f$k
     python3 scripts/split_keypoints_per_camera.py \
-        --kp2d_flat_dir ~/heidi_1500ms/sync_candidates_kp2d/f$k \
-        --out_dir ~/heidi_1500ms/sync_candidates_poses2d/f$k
+        --kp2d_flat_dir ~/take01_1500ms/sync_candidates_kp2d/f$k \
+        --out_dir ~/take01_1500ms/sync_candidates_poses2d/f$k
 done
 
 python3 scripts/run_pose_refinement.py \
-    --transforms ~/heidi_1500ms/solipsist_out/transforms_multiframe.json \
-    --kp2d_dirs ~/heidi_1500ms/sync_candidates_poses2d/f0,~/heidi_1500ms/sync_candidates_poses2d/f1,~/heidi_1500ms/sync_candidates_poses2d/f2,~/heidi_1500ms/sync_candidates_poses2d/f3,~/heidi_1500ms/sync_candidates_poses2d/f4 \
-    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --transforms ~/take01_1500ms/solipsist_out/transforms_multiframe.json \
+    --kp2d_dirs ~/take01_1500ms/sync_candidates_poses2d/f0,~/take01_1500ms/sync_candidates_poses2d/f1,~/take01_1500ms/sync_candidates_poses2d/f2,~/take01_1500ms/sync_candidates_poses2d/f3,~/take01_1500ms/sync_candidates_poses2d/f4 \
+    --out_transforms ~/take01_1500ms/transforms_refined.json \
     --report_only
 # check the printed median px error, then re-run without --report_only
 ```
@@ -241,9 +243,9 @@ singular `--kp2d`, not `--kp2d_dirs`:
 
 ```bash
 python3 scripts/refine_poses_with_keypoints.py \
-    --transforms ~/heidi_1500ms/solipsist_out/transforms_multiframe.json \
-    --kp2d ~/heidi_1500ms/poses_2d \
-    --out_transforms ~/heidi_1500ms/transforms_refined.json \
+    --transforms ~/take01_1500ms/solipsist_out/transforms_multiframe.json \
+    --kp2d ~/take01_1500ms/poses_2d \
+    --out_transforms ~/take01_1500ms/transforms_refined.json \
     --report_only
 ```
 
@@ -256,10 +258,10 @@ labels get converted to that convention -- every later stage inherits it.
 
 ```bash
 python3 scripts/build_flat_dataset.py \
-    --transforms ~/heidi_1500ms/transforms_refined.json \
-    --undistorted_dir ~/heidi_1500ms/undistorted \
-    --out_images_flat ~/heidi_1500ms/images_flat \
-    --out_transforms ~/heidi_1500ms/transforms.json
+    --transforms ~/take01_1500ms/transforms_refined.json \
+    --undistorted_dir ~/take01_1500ms/undistorted \
+    --out_images_flat ~/take01_1500ms/images_flat \
+    --out_transforms ~/take01_1500ms/transforms.json
 ```
 
 ## Masks and 2D keypoints for this frame
@@ -267,18 +269,18 @@ python3 scripts/build_flat_dataset.py \
 ```bash
 conda activate diffuman4d
 python3 scripts/generate_masks.py \
-    --images_dir ~/heidi_1500ms/images_flat \
-    --out_fmasks_dir ~/heidi_1500ms/fmasks_flat
+    --images_dir ~/take01_1500ms/images_flat \
+    --out_fmasks_dir ~/take01_1500ms/fmasks_flat
 
 conda activate sapiens2
 python3 scripts/predict_keypoints_2d.py \
-    --images_dir ~/heidi_1500ms/images_flat \
-    --out_kp2d_dir ~/heidi_1500ms/poses_2d_flat \
-    --fmasks_dir ~/heidi_1500ms/fmasks_flat
+    --images_dir ~/take01_1500ms/images_flat \
+    --out_kp2d_dir ~/take01_1500ms/poses_2d_flat \
+    --fmasks_dir ~/take01_1500ms/fmasks_flat
 
 python3 scripts/split_keypoints_per_camera.py \
-    --kp2d_flat_dir ~/heidi_1500ms/poses_2d_flat \
-    --out_dir ~/heidi_1500ms/poses_2d
+    --kp2d_flat_dir ~/take01_1500ms/poses_2d_flat \
+    --out_dir ~/take01_1500ms/poses_2d
 ```
 
 **Mask quality**: clean masks before trusting them for anything -- raw
@@ -287,10 +289,10 @@ the subject:
 
 ```bash
 python3 scripts/clean_masks.py \
-    --fmasks_dir ~/heidi_1500ms/fmasks_flat \
-    --kp2d_dir ~/heidi_1500ms/poses_2d \
-    --out_dir ~/heidi_1500ms/fmasks_clean \
-    --images_dir ~/heidi_1500ms/images_flat \
+    --fmasks_dir ~/take01_1500ms/fmasks_flat \
+    --kp2d_dir ~/take01_1500ms/poses_2d \
+    --out_dir ~/take01_1500ms/fmasks_clean \
+    --images_dir ~/take01_1500ms/images_flat \
     --retry
 ```
 
@@ -308,67 +310,69 @@ reference `transforms_refined.json` from this point on.
 
 ```bash
 python3 scripts/triangulate_and_project_keypoints.py \
-    --camera_path ~/heidi_1500ms/transforms.json \
-    --kp2d_dir ~/heidi_1500ms/poses_2d \
-    --out_kp3d_dir ~/heidi_1500ms/poses_3d \
-    --out_pcd_dir ~/heidi_1500ms/poses_pcd_fullres
+    --camera_path ~/take01_1500ms/transforms.json \
+    --kp2d_dir ~/take01_1500ms/poses_2d \
+    --out_kp3d_dir ~/take01_1500ms/poses_3d \
+    --out_pcd_dir ~/take01_1500ms/poses_pcd_fullres
 ```
 
-Then bake the cleaned masks into image alpha -- **do not** pass masks as
-a separate folder next to same-named/same-extension images; Brush has
-been observed to silently ignore that and train the full unmasked scene.
+Then bake the cleaned masks into image alpha. **Do not** pass masks as
+a separate folder next to same-named/same-extension images: Brush has
+been observed to silently ignore that and train the full unmasked
+scene.
 Training itself needs no special flag: `brush_app` has no `--alpha-mode`
 option (verified against `brush_app --help`) -- it auto-detects the
 alpha channel and applies its own `--match-alpha-weight` loss:
 
 ```bash
 python3 scripts/build_colmap_sparse.py \
-    --transforms ~/heidi_1500ms/transforms.json \
-    --points_ply ~/heidi_1500ms/poses_pcd_fullres/000000.ply \
-    --out_dir ~/heidi_1500ms/train_set \
-    --images_dir ~/heidi_1500ms/images_flat \
-    --masks_dir ~/heidi_1500ms/fmasks_clean
+    --transforms ~/take01_1500ms/transforms.json \
+    --points_ply ~/take01_1500ms/poses_pcd_fullres/000000.ply \
+    --out_dir ~/take01_1500ms/train_set \
+    --images_dir ~/take01_1500ms/images_flat \
+    --masks_dir ~/take01_1500ms/fmasks_clean
 
 python3 scripts/train_brush.py \
-    --data ~/heidi_1500ms/train_set \
+    --data ~/take01_1500ms/train_set \
     --brush_app ~/brush-app-x86_64-unknown-linux-gnu/brush_app \
     --export_path ~/brush_output \
-    --export_name heidi_1500ms_{iter}.ply
-# opens Brush's live viewer by default (see "Recommended" section above for why);
-# pass --no_viewer only if you've confirmed headless training works in your environment
+    --export_name take01_1500ms_{iter}.ply
+# opens Brush's live viewer by default (see "Recommended" section above for why)
+# pass --no_viewer only if you have confirmed headless training works in your environment
 ```
 
 ## Post-process: mask-consistency splat filtering
 
-Masked training does not prevent floaters -- trained splats routinely
-carry non-subject junk that alpha supervision never removed (measured at
-30-56% of Gaussians on warm-started per-frame sequences, a few percent
-even on clean single-frame runs). The junk occludes the subject from
-novel views and corrupts anything computed *from* the splat, e.g. a
-subject centroid used to aim novel-view render cameras.
+Masked training does not prevent floaters. Trained splats routinely
+carry non-subject junk that alpha supervision never removed (measured
+at 30-56% of Gaussians on warm-started per-frame sequences, and a few
+percent even on clean single-frame runs). The junk occludes the
+subject from novel views, and it corrupts anything computed *from* the
+splat, for example a subject centroid used to aim novel-view render
+cameras.
 
-`filter_splat_by_masks.py` removes it with a direct geometric test:
-every Gaussian is projected into every camera and dropped if it lands
-outside the subject mask in at least half the cameras whose frustum
-resolves it. Score it against the cleaned masks (same rule as eval:
-never the raw BiRefNet output):
+`filter_splat_by_masks.py` removes it with a direct geometric test: it
+projects every Gaussian into every camera, and it drops the Gaussian
+if it lands outside the subject mask in at least half the cameras
+whose frustum resolves it. Score it against the cleaned masks (same
+rule as eval: never the raw BiRefNet output):
 
 ```bash
 python3 scripts/filter_splat_by_masks.py \
-    --splat_ply ~/brush_output/heidi_1500ms_30000.ply \
-    --transforms ~/heidi_1500ms/transforms.json \
-    --masks_dir ~/heidi_1500ms/fmasks_clean \
-    --out_ply ~/brush_output/heidi_1500ms_30000_maskfilt.ply
+    --splat_ply <run>/splat_30000.ply \
+    --transforms <run>/transforms.json \
+    --masks_dir <run>/fmasks_clean \
+    --out_ply <run>/splat_30000_maskfilt.ply
 ```
 
-One class of junk survives the silhouette test: Gaussians hiding
+One class of junk survives the silhouette test. Gaussians that hide
 *behind* the subject inside the silhouette frustum project inside the
-mask from every camera and cannot be caught this way (depth is
+mask from every camera, so this test cannot catch them (depth is
 unobservable from silhouettes). If a downstream consumer computes
 statistics from the splat, either bound them spatially or add the
 optional `--subject_anchor_ply poses_pcd_fullres/<tem>.ply
 --subject_radius 3.0` test, which also drops everything farther than
 the radius from the triangulated subject's median.
 
-Run `--report_only` first to see the keep/drop split before writing
+Run `--report_only` first to see the keep/drop split before you write
 anything.
