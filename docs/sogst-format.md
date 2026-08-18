@@ -5,7 +5,7 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 This specification is deliberately licensed differently from the rest of this
 repository (PolyForm-Noncommercial-1.0.0). A format nobody may implement
 commercially is not a format. The reference *implementation* in scripts/
-remains PolyForm; this document, and any independent implementation written
+remains PolyForm. This document, and any independent implementation written
 from it, do not.
 -->
 
@@ -16,16 +16,17 @@ from it, do not.
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
 **SOG v2** conventions byte for byte, so an existing SOG decoder reconstructs
-them unmodified; the spacetime extension adds per-splat linear motion and a
+them unmodified. The spacetime extension adds per-splat linear motion, a
 temporal radial-basis window, an optional second-order motion term, and an
-optional temporal segmentation that lets a player cull and stream by time.
+optional temporal segmentation. The segmentation lets a player cull and stream
+by time.
 
 The name is literal: **SOG** for the container, **st** for spacetime.
 
 ## 0. Status, scope, and conformance language
 
-This document specifies the container completely. It has no predecessors a
-reader must accommodate: the development-era formats described in §8 were never
+This document specifies the container completely. It has no predecessors that a
+reader must accommodate. The development-era formats described in §8 were never
 released, and nothing that reads them exists.
 
 The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, MAY and OPTIONAL are
@@ -33,7 +34,7 @@ to be interpreted as in RFC 2119.
 
 Two roles are defined:
 
-- an **encoder** produces `.sogst` archives;
+- an **encoder** produces `.sogst` archives.
 - a **player** (decoder) consumes them.
 
 A **minimal player** MAY ignore the `shN` and `accel` groups and MUST still
@@ -41,19 +42,20 @@ render a conforming file correctly, at reduced fidelity. Everything else is
 required.
 
 The reference implementation is `scripts/sogst_pack.py` (encoder),
-`scripts/sogst_io.py` (container writer) and `scripts/eval_render.py`
-`decode_sogst_fields()` (the only complete inverse of the encoder — use it as
-the oracle when validating an independent implementation). The interchange PLY
-of §7 is read and written by `scripts/sogst_ply.py`.
+`scripts/sogst_io.py` (container writer) and `decode_sogst_fields()` in
+`scripts/eval_render.py`. That decoder is the only complete inverse of the
+encoder. Use it as the oracle when you validate an independent implementation.
+`scripts/sogst_ply.py` reads and writes the interchange PLY of §7.
 
 ## 1. The representation
 
-A scene is `N` **spacetime Gaussians**. Each carries the usual 3DGS attributes —
-position, rotation, scale, opacity, spherical-harmonic colour — plus a linear
-velocity and a temporal window. Attributes are stored *at the splat's own
+A scene is `N` **spacetime Gaussians**. Each carries the usual 3DGS attributes
+(position, rotation, scale, opacity, spherical-harmonic colour) plus a linear
+velocity and a temporal window. The file stores attributes *at the splat's own
 temporal centre*, not at t = 0.
 
-At clip time `t` (seconds, absolute — not normalised), a splat is evaluated as:
+At clip time `t` (seconds, absolute, not normalised), a player evaluates a
+splat as:
 
 ```
 dt        = t - t_center
@@ -69,9 +71,9 @@ Rotation, scale and colour are constant in `t`.
 Three things about this are easy to get wrong, and all three fail silently:
 
 1. **The temporal factor is unnormalised.** There is no `1/sqrt(2*pi*sigma^2)`
-   term. Both the reference encoder and the reference renderer have that
-   normalisation deliberately absent; adding it darkens every splat by a
-   sigma-dependent factor and the error looks like a global exposure bug.
+   term. The reference encoder and the reference renderer both omit that
+   normalisation deliberately. If you add it, every splat darkens by a
+   sigma-dependent factor, and the error looks like a global exposure bug.
 2. **`t_sigma` is a standard deviation in seconds, not a variance.** It MUST be
    greater than zero.
 3. **`a` is the raw `dt^2` coefficient, not half-acceleration.** There is no
@@ -90,22 +92,23 @@ A `.sogst` file is a ZIP archive.
   archive.
 - Entries MUST NOT carry ZIP extra fields.
 - Entries MUST NOT use a **data descriptor**: general-purpose bit 3 MUST be
-  clear, and the compressed and uncompressed sizes MUST be written in the local
-  header. This is not pedantry about the container. A streaming ZIP writer that
-  does not know an entry's size until it has finished writing it will set bit 3,
-  write zeros for both sizes, and append a 16-byte descriptor after the payload
-  — which has no extra fields and so satisfies the rule above as literally
-  worded, while destroying the property that rule exists to protect. A player
-  walking the archive forward reads a compressed size of zero and cannot find
-  the next entry, and every entry costs 16 bytes more than §6's offsets assume.
+  clear, and the writer MUST put the compressed and uncompressed sizes in the
+  local header. This is not pedantry about the container. A streaming ZIP
+  writer that does not know an entry's size until it has finished writing it
+  will set bit 3. It will write zeros for both sizes and append a 16-byte
+  descriptor after the payload. That descriptor has no extra fields, so it
+  satisfies the rule above as literally worded, while it destroys the
+  property that rule exists to protect. A player that walks the archive
+  forward reads a compressed size of zero and cannot find the next entry. Every entry also
+  costs 16 bytes more than §6's offsets assume.
 
 - `meta.json` MUST be the **first** entry.
 - A player identifies a `.sogst` file by the leading ZIP magic `PK\x03\x04`,
   then by `meta.version` and `meta.format`.
 
-Together the first three make a conforming writer's local entry header exactly
-`30 + len(name)` bytes, which is what makes the streaming offsets of §6
-computable analytically.
+Together, the first three rules make a conforming writer's local entry header
+exactly `30 + len(name)` bytes. That fixed size is what makes the streaming
+offsets of §6 computable analytically.
 
 Every other entry is a lossless WebP texture.
 
@@ -114,19 +117,20 @@ Every other entry is a lossless WebP texture.
 Normative, in order of what actually matters:
 
 - **Splat `i` of the covered range lives at row-major texel `i`**, where `M` is
-  the number of splats the texture covers (the whole file, or one group — see
-  §6). Every texture in a group MUST use the same dimensions.
+  the number of splats the texture covers: the whole file, or one group (§6).
+  Every texture in a group MUST use the same dimensions.
 - `width * height` MUST be at least `M`. **A player MUST take the dimensions
   from the WebP header and MUST NOT assume any particular width.**
 - Textures SHOULD be **near-square**: `width = ceil(sqrt(M))`,
-  `height = ceil(M / width)`. An encoder MAY round the dimensions up — for
-  example to a multiple of 4, which is what PlayCanvas's own SOG writer does for
-  texture-upload alignment. Because padding is at the tail of raster order,
-  splat `i` is at flat texel `i` under either convention, so the two interoperate
-  and a decoder needs no special case. Two encoders following different
-  conventions will produce archives of different sizes; that is expected, and it
-  is why §10 compares decoded fields rather than bytes.
-- Padding texels past `M` are unspecified; encoders SHOULD write zero. Players
+  `height = ceil(M / width)`. An encoder MAY round the dimensions up, for
+  example to a multiple of 4, which is what PlayCanvas's own SOG writer does
+  for texture-upload alignment. Because padding is at the tail of raster
+  order, splat `i` is at flat texel `i` under either convention. The two
+  conventions interoperate, and a decoder needs no special case. Two encoders
+  that follow different conventions will produce archives of different sizes.
+  That difference is expected, and it is why §10 compares decoded fields
+  rather than bytes.
+- Padding texels past `M` are unspecified. Encoders SHOULD write zero. Players
   MUST NOT read them.
 - Every texture MUST be encoded **lossless** WebP. Every texel is a codebook
   index or a byte of a 16-bit integer, so one lossy pixel decodes to a wrong
@@ -134,23 +138,23 @@ Normative, in order of what actually matters:
 - Encoders MUST set libwebp's `exact` flag. Without it, libwebp may rewrite the
   RGB of blocks that are entirely transparent, destroying data stored alongside
   a zero alpha.
-- **A player MUST NOT depend on the RGB of any texel whose alpha is zero.** This
-  is the complement of the rule above, and it bounds the damage when an encoder
-  cannot comply: in the group set defined by §4 the only variable alpha is
-  `sh0.webp`'s opacity, so the only reachable loss is the colour of splats that
-  are fully transparent anyway. An encoder that cannot set `exact` — a
-  prebuilt libwebp binding exposing only the simple lossless API has no way to
-  — is non-conforming on that clause but produces files no conforming player can
-  distinguish. Any future group that stores meaningful data behind a zero alpha
-  would turn that latent deviation into a real defect, which is why the
-  requirement stays a MUST.
+- **A player MUST NOT depend on the RGB of any texel whose alpha is zero.**
+  This is the complement of the rule above, and it bounds the damage when an
+  encoder cannot comply. In the group set defined by §4, the only variable
+  alpha is `sh0.webp`'s opacity, so the only reachable loss is the colour of
+  splats that are fully transparent anyway. An encoder that cannot set `exact`
+  is non-conforming on that clause, but it produces files that no conforming
+  player can distinguish. (A prebuilt libwebp binding that exposes only the
+  simple lossless API has no way to set it.) Any future group that stores
+  meaningful data behind a zero alpha would turn that latent deviation into a
+  real defect. That is why the requirement stays a MUST.
 
 ### 2.2 The 16-bit split-plane convention
 
-Positions, velocities and accelerations are stored as 16-bit values split across
-two textures — `*_l.webp` carrying the low byte and `*_u.webp` the high byte of
-each axis in R, G, B. A **log transform** is applied first, so precision follows
-magnitude:
+The format stores positions, velocities and accelerations as 16-bit values
+split across two textures. `*_l.webp` carries the low byte of each axis in R,
+G, B. `*_u.webp` carries the high byte. The encoder applies a **log
+transform** first, so precision follows magnitude:
 
 ```
 encode:  T   = sign(x) * ln(1 + |x|)
@@ -162,11 +166,12 @@ decode:  q   = (hi * 256 + lo) / 65535
          x   = sign(T) * (exp(|T|) - 1)
 ```
 
-`mins` / `maxs` are per-axis and live in `meta.json`. When `maxs[c] == mins[c]`
-an encoder MUST use a span of 1.0 to avoid dividing by zero; the decode is then
-constant at `mins[c]` regardless, so no player-side special case is needed.
+`mins` / `maxs` are per-axis and live in `meta.json`. When `maxs[c] == mins[c]`,
+an encoder MUST use a span of 1.0 to avoid division by zero. The decode is then
+constant at `mins[c]` regardless, so a player needs no special case.
 
-Alpha in `*_l.webp` / `*_u.webp` is unused and MUST be written as 255.
+Alpha in `*_l.webp` / `*_u.webp` is unused, and an encoder MUST write it as
+255.
 
 Velocity uses this scheme rather than a codebook deliberately: 256 levels
 visibly quantizes motion.
@@ -209,12 +214,12 @@ visibly quantizes motion.
 | `asset.generator` | no | Free-form producer string. |
 | `count` | yes | `N`, total splats in the file. |
 | `time.min`, `time.max` | yes | Clip bounds in seconds. |
-| `time.fps` | yes | Advisory, for UI frame counters and scrub granularity. It does **not** affect evaluation — the model is continuous in `t`. |
+| `time.fps` | yes | Advisory, for UI frame counters and scrub granularity. It does **not** affect evaluation, because the model is continuous in `t`. |
 | `cov2d_scale` | no | `[kx, ky]` screen-space 2D-covariance multiplier a player applies when rasterising. Compensates trainers whose screen-space footprints were inflated. Absent means `[1, 1]`. |
 
-`files` arrays name the archive entries backing each group. In the streamed
-layout (§6) they name the *basenames*; actual entries are prefixed. A player
-SHOULD resolve textures through `files` rather than hardcoding names.
+`files` arrays name the archive entries that back each group. In the streamed
+layout (§6), they name the *basenames*, and the actual entries are prefixed. A
+player SHOULD resolve textures through `files` rather than hardcode names.
 
 ### 3.1 Unknown keys and forward compatibility
 
@@ -266,35 +271,36 @@ Rotation as a unit quaternion in **smallest-three** form. Let the quaternion be
 component is positive.
 
 - **A** = `252 + i`, where `i` is the index **in `(w, x, y, z)` order** of the
-  largest-magnitude component — the one that is dropped. So A is 252 when `w`
-  was dropped, 253 for `x`, 254 for `y`, 255 for `z`.
+  largest-magnitude component, which is the one that is dropped. So A is 252
+  when `w` was dropped, 253 for `x`, 254 for `y`, 255 for `z`.
 - **RGB** hold the remaining three components **in their original `(w, x, y, z)`
-  relative order**, i.e. dropping `x` stores `(w, y, z)`, dropping `w` stores
+  relative order**: dropping `x` stores `(w, y, z)`, and dropping `w` stores
   `(x, y, z)`.
 - Each stored component `s` lies in `[-1/sqrt(2), +1/sqrt(2)]` and is byte-coded
-  as `round((s / sqrt(2) + 0.5) * 255)`; the decode is `(b/255 - 0.5) * sqrt(2)`.
+  as `round((s / sqrt(2) + 0.5) * 255)`. The decode is `(b/255 - 0.5) * sqrt(2)`.
 - The dropped component is recovered as `sqrt(max(0, 1 - a^2 - b^2 - c^2))` and
   is non-negative by construction.
 
 ### 4.3 `scales` — `scales.webp`
 
 RGB are indices into the shared 256-entry `scales.codebook`. Values are in
-**natural-log space**; a player applies `exp()`. Alpha unused, written 255.
+**natural-log space**, and a player applies `exp()`. Alpha is unused, and an
+encoder writes 255.
 
 ### 4.4 `sh0` — `sh0.webp`
 
 - **RGB**: indices into the shared 256-entry `sh0.codebook`, giving the raw SH
-  DC coefficients `f_dc_0..2`. These are **not** RGB colour;
+  DC coefficients `f_dc_0..2`. These are **not** RGB colour:
   `colour = 0.5 + C0 * f_dc` with `C0 = 0.28209479177387814`.
 - **A**: **linear** opacity, `round(255 * sigmoid(opacity_logit))`. Note the
-  asymmetry — everything else in this format is stored in the trainer's
-  parameter space, but opacity is stored already-activated and quantized to 8
-  bits. This is the peak opacity, reached at `t_center`.
+  asymmetry: the format stores everything else in the trainer's parameter
+  space, but it stores opacity already activated and quantized to 8 bits.
+  This is the peak opacity, reached at `t_center`.
 
 ### 4.5 `motion` — `motion_l.webp`, `motion_u.webp`
 
 Linear velocity in scene units per second, split-16 per §2.2 over
-`motion.mins` / `motion.maxs`. `motion.degree` is `1` or `2`; see §4.8.
+`motion.mins` / `motion.maxs`. `motion.degree` is `1` or `2`. See §4.8.
 
 ### 4.6 `trbf` — `trbf.webp`
 
@@ -304,8 +310,8 @@ The temporal radial-basis window.
 - **G**: index into `trbf.sigma.codebook` → `t_sigma` in seconds, `> 0`.
 - **B**: unused, 0. **A**: unused, 255.
 
-Both codebooks have 256 entries. The reference encoder clusters `t_sigma` in the
-log domain so precision is allocated by relative rather than absolute error; the
+Both codebooks have 256 entries. The reference encoder clusters `t_sigma` in
+the log domain, so precision follows relative rather than absolute error. The
 codebook it emits is in linear space either way, so players are unaffected.
 
 ### 4.7 `shN` — `shN_centroids.webp`, `shN_labels.webp` (OPTIONAL)
@@ -315,7 +321,7 @@ Higher-order spherical harmonics, vector-quantized. Present only when
 
 - `bands` ∈ {1, 2, 3}, giving `coeffs` ∈ {3, 8, 15} coefficients per colour
   channel and a centroid vector of `3 * coeffs` values.
-- `shN_centroids.webp` width MUST be `64 * coeffs` — **192, 512 or 960** for 1,
+- `shN_centroids.webp` width MUST be `64 * coeffs`: **192, 512 or 960** for 1,
   2 or 3 bands. A decoder infers the band count from this width, so it is
   normative, not incidental. Height is `ceil(count / 64)`.
 - Palette entry `n` occupies `coeffs` consecutive texels starting at
@@ -330,7 +336,7 @@ Higher-order spherical harmonics, vector-quantized. Present only when
 > reconstructed coefficients into a fixed 45-wide `f_rest` array at stride 15
 > regardless of `bands`, so its output layout is only correct for `bands == 3`.
 > The reference encoder only ever emits `bands == 3`. New encoders SHOULD emit
-> `bands == 3`; players implementing `bands < 3` MUST use the channel-major
+> `bands == 3`. Players that implement `bands < 3` MUST use the channel-major
 > stride `coeffs` given above, not 15.
 
 ### 4.8 `accel` — `accel_l.webp`, `accel_u.webp` (OPTIONAL)
@@ -360,29 +366,30 @@ Splats in a `.sogst` file are not in arbitrary order. They are laid out as
 
 with each group **Morton-ordered** internally by position (30-bit code, 10 bits
 per axis over the scene bounding box). Morton ordering is what makes the WebP
-textures compress — spatially adjacent splats land in adjacent texels and their
-byte planes become locally smooth.
+textures compress: spatially adjacent splats land in adjacent texels, and
+their byte planes become locally smooth.
 
-**The group table is normative; the order within a group is not.** What a player
-observes is `[0, P)` plus a contiguous span of whole segments, so what must agree
-between two implementations is which group each splat is in and where each
-group's range begins and ends. The permutation *inside* a group is a compression
-heuristic and nothing a player can distinguish. Two conforming encoders will
-differ there as a matter of course — the quantizer scale, the clamp, and the
-tie-break among splats sharing a Morton code are all unconstrained, and any one
-of them reshuffles every splat in the file.
+**The group table is normative. The order within a group is not.** A player
+observes `[0, P)` plus a contiguous span of whole segments. So two
+implementations must agree on which group each splat is in, and on where each
+group's range begins and ends. The permutation *inside* a group is a
+compression heuristic and nothing a player can distinguish. Two conforming
+encoders will differ there as a matter of course. The quantizer scale, the
+clamp, and the tie-break among splats that share a Morton code are all
+unconstrained, and any one of them reshuffles every splat in the file.
 
-So this specification does **not** define the Morton algorithm normatively, and
-an implementation MUST NOT be judged non-conforming for producing a different
-intra-group permutation. An encoder SHOULD use some spatially-coherent ordering,
-because the file is materially larger without one. §10 says how to compare two
-files given this.
+So this specification does **not** define the Morton algorithm normatively,
+and a validator MUST NOT judge an implementation non-conforming for producing
+a different intra-group permutation. An encoder SHOULD use some
+spatially-coherent ordering, because the file is materially larger without
+one. §10 says how to compare two files given this.
 
 A splat is **persistent** when its active interval
 `[t_center - k_sigma*t_sigma, t_center + k_sigma*t_sigma]` is longer than
-`persistent_span_mult * duration`; that is, when it is visible across enough of
-the clip that per-segment culling would not pay for itself. Persistent splats are
-always drawn. The rest are bucketed by `t_center` into fixed-length segments.
+`persistent_span_mult * duration`. That is, the splat is visible across enough
+of the clip that per-segment culling would not pay for itself. A player always
+draws persistent splats. The encoder buckets the rest by `t_center` into
+fixed-length segments.
 
 ```jsonc
 "segments": {
@@ -400,47 +407,49 @@ always drawn. The rest are bucketed by `t_center` into fixed-length segments.
 - **All index ranges are half-open, `[first, last)`.** `persistent` is
   `[0, P)`. Segment `range` is `[first, last)`. An empty segment has
   `first == last` and is legal.
-- `t0` / `t1` are the *actual* time coverage of the segment's members — the min
-  and max of their active intervals — **not** the bucket boundaries. They
+- `t0` / `t1` are the *actual* time coverage of the segment's members (the min
+  and max of their active intervals), **not** the bucket boundaries. They
   therefore overlap adjacent segments, and `t0` may precede `time.min`. For an
   empty segment they fall back to the nominal bucket bounds
   `[time.min + s*duration, time.min + (s+1)*duration]`.
 - **A populated segment's `[t0, t1]` is the union of its members' active
-  intervals**, i.e. `t0 = min(t_center - k_sigma*t_sigma)` and
+  intervals**: `t0 = min(t_center - k_sigma*t_sigma)` and
   `t1 = max(t_center + k_sigma*t_sigma)` over the segment's splats. This is a
   definition, not an encoder preference, and two things follow from it that
   nothing else in this section needs to argue.
 
   **It is an equality on the encoder's source values, and only
-  quantization-bounded when recomputed from a decoded archive** — do not
-  implement it as an exact conformance assertion, because it will fail on every
-  valid file. `t_center` and `t_sigma` are codebook-quantized (§4), and the
-  recomputed bound inherits `k_sigma` times that error, so the discrepancy scales
-  with the segment's largest `t_sigma` and is per-file rather than a fixed
-  tolerance. On `blocks_gap`, decoded, the worst departure across all populated
-  segments is 4.5e-3 s against a 0.1 s `duration`. A validator wanting to check
-  this should derive its tolerance from the file's own `t_sigma` codebook
-  spacing, the way §10 derives every other tolerance.
-- **`list` is ordered by segment index, and is NOT sorted by `t0`. A player MUST
-  NOT binary-search it.** Because `t0` reaches back by `k_sigma*t_sigma` from the
-  earliest member, a populated segment's `t0` lands *before* its own bucket
-  start — so where an empty run precedes it, that populated `t0` precedes the
-  synthetic bound of the empty segment before it. In `blocks_gap`, segment 12 is
-  empty with `t0 = 1.200` while segment 13 begins at `t0 = 1.187`. Given a long
-  enough empty run this is inevitable, not merely possible, and a binary search
-  over `t0` silently returns the wrong segment on a conforming archive. Scan the
-  list; it is bounded by 65536 and in practice by tens. Spans overlap for the
-  same reason — several segments routinely contain the same `t`.
-- **Do not "fix" this by clamping `t0`/`t1` to the bucket bounds.** The identity
-  above settles it without measuring anything: bucket bounds are strictly
-  narrower than the support the encoder recorded, so clamping cannot fail to cut
-  splats that are still on screen. Measurement only calibrates how bad it looks —
-  on `blocks_gap` at `t = 1.249`, clamping drops **776 splats of segment 13 whose
-  temporal factor exceeds 0.01, 342 of them above 0.1**, the brightest at 0.22.
-  They pop. The overlap is not sloppiness in the segment table; it is what makes
-  the table correct.
-- `persistent_span_mult` is recorded so that a file's ordering can be
-  re-derived — without it, no validator or re-packer can reproduce the
+  quantization-bounded when recomputed from a decoded archive.** Do not
+  implement it as an exact conformance assertion, because it will fail on
+  every valid file. `t_center` and `t_sigma` are codebook-quantized (§4), and
+  the recomputed bound inherits `k_sigma` times that error. The discrepancy
+  therefore scales with the segment's largest `t_sigma`, and it is per-file
+  rather than a fixed tolerance. On `blocks_gap`, decoded, the worst departure
+  across all populated segments is 4.5e-3 s against a 0.1 s `duration`. A
+  validator that wants to check this should derive its tolerance from the
+  file's own `t_sigma` codebook spacing, the way §10 derives every other
+  tolerance.
+- **`list` is ordered by segment index, and is NOT sorted by `t0`. A player
+  MUST NOT binary-search it.** Because `t0` reaches back by `k_sigma*t_sigma`
+  from the earliest member, a populated segment's `t0` lands *before* its own
+  bucket start. So where an empty run precedes it, that populated `t0`
+  precedes the synthetic bound of the empty segment before it. In
+  `blocks_gap`, segment 12 is empty with `t0 = 1.200` while segment 13 begins
+  at `t0 = 1.187`. Given a long enough empty run, this is inevitable, not
+  merely possible. A binary search over `t0` silently returns the wrong
+  segment on a conforming archive. Scan the list. It is bounded by 65536
+  entries, and in practice by tens. Spans overlap for the same reason:
+  several segments routinely contain the same `t`.
+- **Do not "fix" this by clamping `t0`/`t1` to the bucket bounds.** The
+  identity above settles it without measuring anything. Bucket bounds are
+  strictly narrower than the support the encoder recorded, so clamping always
+  cuts splats that are still on screen. Measurement only calibrates how bad
+  it looks. On `blocks_gap` at `t = 1.249`, clamping drops **776 splats of
+  segment 13 whose temporal factor exceeds 0.01, 342 of them above 0.1**, and
+  the brightest is at 0.22. They pop. The overlap is not sloppiness in the
+  segment table. It is what makes the table correct.
+- The file records `persistent_span_mult` so that its ordering can be
+  re-derived. Without it, no validator or re-packer can reproduce the
   persistent/dynamic split from the file alone. Players ignore it.
 - **`list` has one entry per segment across the whole clip, whether or not that
   segment holds any splats**, so its length is `ceil((time.max - time.min) /
@@ -458,22 +467,23 @@ if active is empty:  draw [0, P)
 else:                draw [0, P)  and  [ min(s.range[0]), max(s.range[1]) )
 ```
 
-Because segments are ordered by time and their coverage overlaps, the active set
-is contiguous, so this is two draw ranges, never a scatter. Splats outside the
-span have temporal opacity of roughly `exp(-k_sigma^2/2)` or less and are
-culled without visible error.
+Because segments are ordered by time and their coverage overlaps, the active
+set is contiguous, so this is two draw ranges, never a scatter. Splats outside
+the span have temporal opacity of roughly `exp(-k_sigma^2/2)` or less, so a
+player culls them without visible error.
 
 Segmentation is optional. When `meta.segments` is absent the file is a single
 Morton-ordered block and a player draws all `N` splats at every `t`.
 
 ## 6. The streamed layout (OPTIONAL)
 
-An archive MAY store one texture set per group instead of whole-clip textures, so
-that a sequential download becomes progressively renderable. Quantization stays
-**global** — codebooks, mins/maxs and shN centroids live in `meta.json` and are
-shared by every group — so a group is decodable the moment its own bytes arrive.
+An archive MAY store one texture set per group instead of whole-clip textures,
+so that a sequential download becomes progressively renderable. Quantization
+stays **global**: codebooks, mins/maxs and shN centroids live in `meta.json`,
+and every group shares them. So a group is decodable the moment its own bytes
+arrive.
 
-Entries are written in **play order**:
+A writer emits entries in **play order**:
 
 ```
 meta.json
@@ -490,8 +500,8 @@ persistent/shN_labels.webp, seg_000/shN_labels.webp, …
 - Texture basenames within a group are exactly the §4 names. Only their position
   in the archive changes.
 - When SH is deferred, all `shN_labels` entries move to the tail, behind
-  `shN_centroids.webp`. A player starts DC-only playback and layers the
-  view-dependent term in as the trailing entries arrive.
+  `shN_centroids.webp`. A player starts DC-only playback and adds the
+  view-dependent term as the trailing entries arrive.
 
 ```jsonc
 "streams": {
@@ -504,28 +514,29 @@ persistent/shN_labels.webp, seg_000/shN_labels.webp, …
 ```
 
 - **`reveal_bytes`** — the byte offset one past the end of the last entry a
-  player needs before it can put anything on screen: the persistent group plus
-  the first non-empty segment's geometry. A progress bar SHOULD fill against
-  this, not against the whole file.
-- **`geometry_bytes`** — the offset one past the last geometry entry, i.e. where
-  the deferred SH tail begins. A player uses it with measured bandwidth to
-  decide whether to hold the playhead until gap-free playback is possible.
+  player needs before it can put anything on screen. That is the persistent
+  group plus the first non-empty segment's geometry. A progress bar SHOULD
+  fill against this, not against the whole file.
+- **`geometry_bytes`** — the offset one past the last geometry entry, that is,
+  where the deferred SH tail begins. A player uses it with measured bandwidth
+  to decide whether to hold the playhead until gap-free playback is possible.
 
-Both are absolute offsets from the start of the archive to the **local header of
-the next entry — or, when no entry follows, to the start of the central
-directory**. That second case is not exotic: an archive with no `shN` group has
-nothing after its geometry, so `geometry_bytes` lands exactly on the central
-directory (on `blocks_gap`, offset 172404 with the file 180305 bytes long). A
-validator that checks these offsets against the set of entry header offsets MUST
-include the central-directory start, and MUST take it from the **EOCD record**
-rather than by scanning for the `PK\x01\x02` signature — a scan finds *a*
-directory header, not reliably the first one, and the difference is invisible
-until an archive ends on this boundary.
+Both are absolute offsets from the start of the archive to the **local header
+of the next entry, or, when no entry follows, the start of the central
+directory**. That second case is not exotic: an archive with no `shN` group
+has nothing after its geometry, so `geometry_bytes` lands exactly on the
+central directory. On `blocks_gap`, that is offset 172404 with the file 180305
+bytes long. A validator that checks these offsets against the set of entry
+header offsets MUST include the central-directory start. It MUST take that
+start from the **EOCD record**, not from a scan for the `PK\x01\x02`
+signature. A scan
+finds *a* directory header, not reliably the first one, and the difference is
+invisible until an archive ends on this boundary.
 
-They are computable analytically precisely because entries are stored with no
-extra fields (§2); a writer MUST verify its computed offsets against the written
-file. Note that the values feed back into the size of the `meta.json` that
-contains them — a writer must iterate to a fixed point.
+The offsets are computable analytically precisely because entries carry no
+extra fields (§2). A writer MUST verify its computed offsets against the
+written file. Note that the values feed back into the size of the `meta.json`
+that contains them, so a writer must iterate to a fixed point.
 
 ## 7. The interchange PLY
 
@@ -548,11 +559,11 @@ both.
 | column(s) | convention |
 |---|---|
 | `x, y, z` | Position **at `t_center`**, not at t = 0. Any re-anchoring in time MUST recompute position, velocity and acceleration together. |
-| `rot_0..rot_3` | Quaternion, **w first**: `rot_0 = w`. Need not be normalised — the encoder re-normalises and canonicalises sign. |
+| `rot_0..rot_3` | Quaternion, **w first**: `rot_0 = w`. It need not be normalised. The encoder re-normalises and canonicalises sign. |
 | `scale_0..scale_2` | **Natural-log** space. |
-| `opacity` | **Logit** space; the *peak* opacity, at `t_center`. |
+| `opacity` | **Logit** space. The *peak* opacity, at `t_center`. |
 | `f_dc_0..f_dc_2` | Raw SH DC coefficients, **not** RGB. |
-| `vx, vy, vz` | Linear velocity, scene units per second — the coefficient of `(t - t_center)`. |
+| `vx, vy, vz` | Linear velocity, scene units per second: the coefficient of `(t - t_center)`. |
 | `t_center` | **Seconds**, absolute clip time. Not normalised. |
 | `t_sigma` | **Standard deviation in seconds, not a variance.** MUST be `> 0`. |
 
@@ -561,7 +572,7 @@ Then, OPTIONAL:
 | column(s) | convention |
 |---|---|
 | `f_rest_0..f_rest_44` | 45 values, **channel-major**: index `j*15 + k` is channel `j`, coefficient `k`. All 45 or none. |
-| `ax, ay, az` | **Raw `dt^2` coefficient, not half-acceleration.** All three or none; see §4.8's gating rules, which apply equally to the PLY. |
+| `ax, ay, az` | **Raw `dt^2` coefficient, not half-acceleration.** All three or none. See §4.8's gating rules, which apply equally to the PLY. |
 
 All columns MUST have exactly `N` entries. Nothing downstream cross-checks
 lengths, so a mismatch corrupts silently.
@@ -569,7 +580,7 @@ lengths, so a mismatch corrupts silently.
 ### 7.3 Clip-level scalars
 
 `time_min`, `time_max`, `fps` and `cov2d_scale` are properties of the clip, not
-of a splat, so they have no column. **They are carried in PLY comments**, which
+of a splat, so they have no column. **The PLY carries them in comments**, which
 keeps the interchange unit a single file:
 
 ```
@@ -584,17 +595,18 @@ comment sogst.cov2d_scale 1.0 1.0
 - `sogst.time_min`, `sogst.time_max` and `sogst.fps` are REQUIRED.
 - An encoder that does not find them **MUST fail with an error**. It MUST NOT
   substitute a default. This is the single most likely place for two
-  implementations to diverge, and the failure is silent: an assumed `fps = 30`
+  implementations to diverge, and the failure is silent. An assumed `fps = 30`
   on 24 fps content produces a file that plays at the wrong speed and renders
   perfectly while doing it.
-- `sogst.motion_degree` is OPTIONAL and advisory; the presence of `ax, ay, az`
-  is what actually determines the degree. When both are present they MUST agree.
-- `sogst.cov2d_scale` is OPTIONAL; absent means `1.0 1.0`.
+- `sogst.motion_degree` is OPTIONAL and advisory. The presence of `ax, ay, az`
+  is what actually determines the degree. When both are present they MUST
+  agree.
+- `sogst.cov2d_scale` is OPTIONAL. Absent means `1.0 1.0`.
 - Unknown `sogst.*` comments MUST be ignored, not rejected.
 
 A sidecar JSON file with the same keys MAY accompany the PLY, for toolchains
 that strip comments. Its name is the PLY's path with a trailing `.ply` **removed
-if present** and `.sogst.json` appended — so `heidi.ply` pairs with
+if present** and `.sogst.json` appended. So `heidi.ply` pairs with
 `heidi.sogst.json`, not `heidi.ply.sogst.json`. When both are present the
 sidecar wins. A conforming producer MUST write the comments regardless of
 whether it also writes a sidecar.
@@ -605,15 +617,16 @@ This is a new format with no deployed predecessors, and that is a deliberate
 position rather than an accident of timing.
 
 Three container layouts preceded it during development, all under the extension
-`.omg4` — named after the paper whose training code first fed the pipeline. The
-first two were binary: a per-frame layout, then a structure-of-arrays layout with
-a tiled streaming variant, both identified by an ASCII magic `OMG4`. The third
-was this ZIP container, numbered "version 3" in sequence with them.
+`.omg4` (named after the paper whose training code first fed the pipeline). The
+first two were binary: a per-frame layout, then a structure-of-arrays layout
+with a tiled streaming variant, both identified by an ASCII magic `OMG4`. The
+third was this ZIP container, numbered "version 3" in sequence with them.
 
-None was ever released. Every asset in those forms was a development artifact on
-a workstation. So rather than carry a version number that starts at 3 and a
-reader branch for magic bytes nobody will ever encounter, the container was
-renumbered to **version 1** and the older layouts deleted outright.
+None was ever released. Every asset in those forms was a development artifact
+on a workstation. The alternative was to carry a version number that starts at
+3, plus a reader branch for magic bytes nobody will ever encounter. So
+revision 4 renumbered the container to **version 1** and deleted the older
+layouts outright.
 
 Two consequences worth stating plainly, because the opposite is the usual
 expectation:
@@ -623,13 +636,13 @@ expectation:
   extension to accept, no magic to sniff, and no absent-`format` case to
   tolerate.
 - **The rename cost nothing to compute.** A development-era ZIP archive's
-  payload is already byte-identical to a version-1 payload — only the manifest
-  differs — so those assets were migrated by rewriting `meta.json`, not re-baked.
-  `scripts/sogst_migrate.py` does this. The one subtlety is that
+  payload is already byte-identical to a version-1 payload. Only the manifest
+  differs. So those assets were migrated by a rewrite of `meta.json`, not by a
+  re-bake. `scripts/sogst_migrate.py` does this. The one subtlety:
   `streams.reveal_bytes` and `geometry_bytes` are absolute offsets and
-  `meta.json` is the first entry, so changing the manifest shifts every entry
-  after it; the migrator re-emits the archive through the normal writers so the
-  offsets are recomputed and verified rather than copied.
+  `meta.json` is the first entry, so a changed manifest shifts every entry
+  after it. The migrator re-emits the archive through the normal writers,
+  which recompute and verify the offsets rather than copy them.
 
 The name is unrelated to the old one on both halves: nothing in this container
 came from that paper's work. The representation is spacetime-shaped, the
@@ -669,8 +682,9 @@ the log transform (§2.2), exact evaluation semantics (§1), and the conformance
 and cross-implementation machinery (§§9–10).
 
 The manifests are mutually incompatible. TSOG uses the `timeline` and
-`temporal.*` keys. This format uses `motion`, `accel`, `trbf`, and `segments`. A TSOG asset is not
-a `.sogst` archive (it is not an archive at all). Capabilities that TSOG has
+`temporal.*` keys. This format uses `motion`, `accel`, `trbf`, and
+`segments`. A TSOG asset is not a `.sogst` archive (it is not an archive at
+all). Capabilities that TSOG has
 and this format lacks, temporally varying rotation foremost, are additive by
 design. They would land through §3.1 as new OPTIONAL groups, not through
 adoption of TSOG's naming.
@@ -679,8 +693,8 @@ adoption of TSOG's naming.
 
 An encoder conforms when:
 
-- [ ] `meta.json` is the first entry; all entries are `ZIP_STORED` with no extra
-      fields.
+- [ ] `meta.json` is the first entry. All entries are `ZIP_STORED` with no
+      extra fields.
 - [ ] Every texture is lossless WebP with `exact` set.
 - [ ] `count` equals the covered splat count, and every group's textures cover
       exactly that many texels.
@@ -700,7 +714,7 @@ A player conforms when:
 - [ ] It renders a file with no `shN` group correctly.
 - [ ] It treats segment ranges as half-open and applies the §5 drawing rule.
 - [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
-      `meta.format == "sogst"` (§8: there is no legacy form to accept), and
+      `meta.format == "sogst"` (§8: there is no legacy form to accept). It
       names the offending value in the error.
 - [ ] It decodes a file whose manifest carries an unrecognised key (top-level
       or inside a group) identically to the same file without that key (§3.1).
@@ -728,14 +742,15 @@ A player conforms when:
         the load fails for reasons unrelated to entry tolerance. Rebuild the
         fixture through a writer that recomputes and verifies the offsets
         (§6).
-- [ ] It reaches that rejection from the manifest rather than from a downstream
-      parse failure. Because §8 removed the development-era formats outright, an
-      application that dispatches on file extension now routes those files to
-      whatever its default loader is; the observed failure mode is a full
-      download of a several-hundred-megabyte asset followed by a confusing error
-      from an unrelated parser, or no visible error at all. Deciding from
-      `meta.json` — the first entry, so it arrives in the first range request —
-      fails in the first few kilobytes with an accurate message.
+- [ ] It reaches that rejection from the manifest rather than from a
+      downstream parse failure. Because §8 removed the development-era formats
+      outright, an application that dispatches on file extension now routes
+      those files to whatever its default loader is. The observed failure mode
+      is a full download of a several-hundred-megabyte asset, followed by a
+      confusing error from an unrelated parser, or by no visible error at all.
+      Deciding from `meta.json`, which is the first entry and so arrives in
+      the first range request, fails in the first few kilobytes with an
+      accurate message.
 
 ## 10. Cross-implementation validation
 
@@ -744,10 +759,10 @@ pack the *same* reference PLY with both, decode both with `decode_sogst_fields()
 and assert per-field maximum absolute error within quantization tolerance.
 
 **Compare decoded fields, not rendered PSNR.** Codebook initialisation is
-implementation-defined, so byte equality is the wrong bar; PSNR is too coarse to
-tell you *which* field is wrong. A per-field error table localises the bug
-immediately — a wrong `f_rest` stride and a wrong quaternion mode mapping look
-identical in a PSNR number and nothing alike in a field table.
+implementation-defined, so byte equality is the wrong bar. PSNR is too coarse
+to tell you *which* field is wrong. A per-field error table localises the bug
+immediately: a wrong `f_rest` stride and a wrong quaternion mode mapping look
+identical in a PSNR number, and nothing alike in a field table.
 
 `scripts/compare_sogst.py` implements this:
 
@@ -760,69 +775,72 @@ Four things about how it judges, because the naive version of each is wrong:
 
 - **Split-plane fields (positions, velocity, accel) allow no outliers.** Their
   encoding is fully determined by `mins`/`maxs`, so any disagreement is a bug.
-- **Codebook fields (scales, `f_dc`, `t_center`, `t_sigma`) are judged on the
-  *fraction* of splats past tolerance, not the worst one.** A value sitting on a
+- **The tool judges codebook fields (scales, `f_dc`, `t_center`, `t_sigma`)
+  on the *fraction* of splats past tolerance, not on the worst one.** A value
+  sitting on a
   bin boundary can legitimately land in different bins in two conforming
   encoders. The bugs worth catching move essentially every splat, not 0.5% of
   them.
-- **`t_sigma` is judged by the temporal weight it produces, not by its value in
-  seconds.** A sigma much longer than the clip is saturated: two such values can
-  differ by tens of seconds and be pixel-identical. Judging raw seconds reports
-  a large error for splats a renderer cannot tell apart.
-- **A coordinate exactly on a quantization boundary is an alignment problem, not
-  an encoding one.** Splats are paired by their 16-bit split-plane integers, and
-  a value on a boundary rounds one way in a float32 encoder and the other in a
-  float64 source. If that one step reorders the splat, it gets paired with a
-  *neighbour* — a different splat — and then every field reports a large error
-  from a conforming archive. Two splats in 8,192 produced six field failures and
-  a spurious membership divergence. The tool re-pairs such splats by position
-  **within their own group**, tolerates a one-step key difference, and stops
-  doing either above 0.2% of the file. The bound is what keeps it a test: a
-  wrong persistence predicate or a mis-ported bucketing misplaces splats by the
-  thousand — three deliberately displaced splats still fail loudly — while
-  boundary rounding touches a handful.
+- **The tool judges `t_sigma` by the temporal weight it produces, not by its
+  value in seconds.** A sigma much longer than the clip is saturated: two
+  such values can differ by tens of seconds and be pixel-identical. Judging
+  raw seconds reports a large error for splats a renderer cannot tell apart.
+- **A coordinate exactly on a quantization boundary is an alignment problem,
+  not an encoding one.** The tool pairs splats by their 16-bit split-plane
+  integers, and a value on a boundary rounds one way in a float32 encoder and
+  the other way in a float64 source. If that one step reorders the splat, the
+  tool pairs it with a *neighbour* (a different splat), and then every field
+  reports a large error from a conforming archive. Two splats in 8,192
+  produced six field failures and a spurious membership divergence. The tool
+  re-pairs such splats by position **within their own group**, tolerates a
+  one-step key difference, and stops doing either above 0.2% of the file. The
+  bound is what keeps it a test. A wrong persistence predicate or a mis-ported
+  bucketing misplaces splats by the thousand (three deliberately displaced
+  splats still fail loudly), while boundary rounding touches a handful.
 
-`f_rest` gets a scale-relative bar rather than an absolute one, for the same
-reason its tolerance can't be absolute: VQ placement is implementation-defined,
-but a wrong coefficient layout compares unrelated coefficients and so produces a
-mean error near the data's own standard deviation. On the parabola fixture the
-separation is 0.000 (correct) against 0.743 (channel/coefficient transpose).
+`f_rest` gets a scale-relative bar rather than an absolute one. VQ placement
+is implementation-defined, but a wrong coefficient layout compares unrelated
+coefficients, and so it produces a mean error near the data's own standard
+deviation. On the parabola fixture the separation is 0.000 (correct) against
+0.743 (channel/coefficient transpose).
 
 **Ordering needs care, and the naive comparison is badly wrong here.** Splat
 order splits into a normative part and a free part (§5), and a field comparison
 has to respect the split:
 
-- The **group table** is compared directly, and a mismatch is a hard failure
-  that stops the run — every field comparison downstream of a wrong range table
-  is meaningless.
-- Each group is then sorted into a **canonical, encoder-independent order**
-  before fields are compared. Sort by the 16-bit split-plane *integers* for
-  position, with velocity to break ties: those encodings are fully determined by
-  `meta`, so two conforming encoders produce identical keys — and using the
-  integers rather than the decoded floats matters when one side is an
-  unquantized PLY, since two splats closer together than a quantization step
-  could otherwise sort one way before quantization and the other way after.
-- **Group membership** — which splats ended up in each range — is then compared
-  exactly, on position keys alone. This is the check that catches a wrong
-  persistent predicate or wrong `t_center` bucketing, and it survives the
+- The tool compares the **group table** directly, and a mismatch is a hard
+  failure that stops the run. Every field comparison downstream of a wrong
+  range table is meaningless.
+- The tool then sorts each group into a **canonical, encoder-independent
+  order** before it compares fields. Sort by the 16-bit split-plane *integers*
+  for position, with velocity to break ties. Those encodings are fully
+  determined by `meta`, so two conforming encoders produce identical keys. Use
+  the integers rather than the decoded floats. When one side is an unquantized
+  PLY, two splats closer together than a quantization step could otherwise
+  sort one way before quantization and the other way after.
+- The tool then compares **group membership** (which splats ended up in each
+  range) exactly, on position keys alone. This is the check that catches a
+  wrong persistent predicate or wrong `t_center` bucketing. It survives the
   realignment because a splat sorted into the wrong group has no counterpart
   where it landed.
-- The intra-group permutation distance is **reported, never failed**.
+- The tool **reports** the intra-group permutation distance and **never
+  fails** on it.
 
-Comparing raw index order instead reports a conforming encoder as broken in
-every respect: 100% of splats displaced, every field over tolerance, and — since
-the misalignment scrambles quaternions and SH along with everything else — the
-diagnostics for a wrong quaternion mode mapping and a wrong `f_rest` stride both
-firing at correct code. That was this document's own tooling on its first
-encounter with a second implementation, which is why the guidance is here.
+A comparison of raw index order instead reports a conforming encoder as broken
+in every respect: 100% of splats displaced, and every field over tolerance.
+The misalignment scrambles quaternions and SH along with everything else, so
+the diagnostics for a wrong quaternion mode mapping and a wrong `f_rest`
+stride both fire at correct code. That was this document's own tooling on its
+first encounter with a second implementation, and that is why the guidance is
+here.
 
 ## Appendix A. Revision history
 
 **Revision 13** — editorial only. **No implementer action.** This revision
-rewrites §3.1, §8.1, the §3.1 bullet in §9, and the Appendix entries for
-revisions 10–12 into Simplified Technical English structure: shorter
-sentences, active voice, no semicolons. No rule changed. A diff against
-revision 12 shows wording changes only.
+rewrites the whole document into Simplified Technical English structure:
+shorter sentences, active voice, no semicolons in prose. No rule changed, and
+no normative statement changed meaning. A diff against revision 12 shows
+wording changes only.
 
 **Revision 12** — §9 testing notes, from re-verifying revision 11's exemplar.
 **No implementer action** on the format. It records two traps for anyone who
@@ -888,100 +906,106 @@ No change to the payload or to what a conforming encoder emits.
 
 **Revision 9** — §6 wording fix, found by a validator it misled.
 
-- §6 said `reveal_bytes` and `geometry_bytes` are offsets "to the local header of
-  the next entry". That is false whenever no entry follows: an archive with no
-  `shN` group has nothing after its geometry, so `geometry_bytes` lands on the
-  **start of the central directory**. §6 now says so, and warns that a validator
-  must read that offset from the EOCD record rather than by scanning for the
-  `PK\x01\x02` signature — a scan finds *a* directory header, not reliably the
-  first, and nothing reveals the difference until an archive ends on this
-  boundary. Both `blocks_gap` archives failed an independent structural checker
-  identically because of this, which is what identified it as the checker's bug
-  rather than the encoders'.
+- §6 said `reveal_bytes` and `geometry_bytes` are offsets "to the local header
+  of the next entry". That is false whenever no entry follows: an archive with
+  no `shN` group has nothing after its geometry, so `geometry_bytes` lands on
+  the **start of the central directory**. §6 now says so, and warns that a
+  validator must read that offset from the EOCD record rather than scan for
+  the `PK\x01\x02` signature. A scan finds *a* directory header, not reliably
+  the first, and nothing reveals the difference until an archive ends on this
+  boundary. Both `blocks_gap` archives failed an independent structural
+  checker identically because of this. That identical failure is what
+  identified it as the checker's bug rather than the encoders'.
 
 **Revision 8** — tooling and fixtures. **No implementer action**, but the
 validation hole is worth knowing about if you have been trusting a PASS.
 
 - **`compare_sogst.py` could not detect a segmentation disagreement between an
   archive and its own source PLY.** A PLY carries no group table, so the tool
-  derived the PLY's ordering from the archive's parameters and then *adopted the
-  archive's group table for both sides* — making the one thing it most needed to
-  check structurally invisible. It now derives the PLY's own table and compares
-  it. This is not hypothetical: it passed a fixture whose `.ply` and `.sogst` put
-  1,218 splats in different segments.
-- **That fixture is fixed, and the cause generalises.** A gap bound is normally a
-  multiple of `duration`, so folding splats onto it parks a plateau exactly on a
-  bucket boundary — and `t/duration` buckets one way at float64 and the other
-  after a float32 PLY round-trip, moving the plateau between adjacent segments.
-  Any producer that computes a bucket index on one side of a PLY write and
-  compares against the other side can hit this. `make_sogst_fixture.py` now nudges
-  folded values clear of the boundary *and* packs from the written PLY rather than
-  from memory, so the pair is consistent by construction.
+  derived the PLY's ordering from the archive's parameters and then *adopted
+  the archive's group table for both sides*. That made the one thing it most
+  needed to check structurally invisible. It now derives the PLY's own table
+  and compares it. This is not hypothetical: it passed a fixture whose `.ply`
+  and `.sogst` put 1,218 splats in different segments.
+- **That fixture is fixed, and the cause generalises.** A gap bound is
+  normally a multiple of `duration`, so folding splats onto it parks a plateau
+  exactly on a bucket boundary. `t/duration` buckets one way at float64 and
+  the other way after a float32 PLY round-trip, which moves the plateau
+  between adjacent segments. Any producer that computes a bucket index on one
+  side of a PLY write and compares against the other side can hit this.
+  `make_sogst_fixture.py` now nudges folded values clear of the boundary *and*
+  packs from the written PLY rather than from memory. The pair is therefore
+  consistent by construction.
 
 **Revision 7** — §5 only, and it is worth reading if you wrote a player.
 
 - §5 now states the **support-bound identity**: a populated segment's
   `[t0, t1]` is the union of its members' active intervals. It was always what
-  the encoder wrote; saying it makes the rest of this entry follow instead of
-  needing to be argued. Revision 8 added the caveat that makes it safe to
-  implement — it is exact on source values and only quantization-bounded when
-  recomputed from a decoded archive, since `t_center`/`t_sigma` are
-  codebook-quantized and the recomputed bound inherits `k_sigma` times that
-  error. Stated as an exact equality it would fail on every conforming file.
+  the encoder wrote. Saying it makes the rest of this entry follow instead of
+  needing argument. Revision 8 added the caveat that makes it safe to
+  implement: the identity is exact on source values and only
+  quantization-bounded when recomputed from a decoded archive, because
+  `t_center`/`t_sigma` are codebook-quantized and the recomputed bound
+  inherits `k_sigma` times that error. Stated as an exact equality it would
+  fail on every conforming file.
 - **`segments.list` is not sorted by `t0`, and a player MUST NOT binary-search
   it.** Revision 6 and earlier said spans overlap and that empty segments fall
-  back to nominal bucket bounds, but never drew the conclusion: because `t0`
-  reaches back by `k_sigma*t_sigma`, a populated segment following a long enough
-  empty run *necessarily* reports an earlier `t0` than the synthetic bound before
-  it. Binary search then returns the wrong segment on a conforming file. Found by
-  running the `blocks_gap` fixture — segment 12 empty at `t0 = 1.200`, segment 13
-  beginning at `t0 = 1.187`. No encoder change; this was always the behaviour.
+  back to nominal bucket bounds, but never drew the conclusion. Because `t0`
+  reaches back by `k_sigma*t_sigma`, a populated segment that follows a long
+  enough empty run *necessarily* reports an earlier `t0` than the synthetic
+  bound before it. Binary search then returns the wrong segment on a
+  conforming file. The `blocks_gap` fixture found this: segment 12 is empty at
+  `t0 = 1.200`, and segment 13 begins at `t0 = 1.187`. No encoder change was
+  needed. This was always the behaviour.
 - §5 rejects the obvious repair. Clamping to bucket bounds is wrong by the
-  identity alone — bucket bounds are narrower than the recorded support — and the
-  measurement only sizes it: 776 splats of segment 13 above a 0.01 temporal
-  factor at `t = 1.249`, 342 above 0.1. The overlap is load-bearing.
+  identity alone, because bucket bounds are narrower than the recorded
+  support. The measurement only sizes it: 776 splats of segment 13 above a
+  0.01 temporal factor at `t = 1.249`, and 342 above 0.1. The overlap is what
+  makes the table correct.
 
-  The first published version of this entry said 44 splats. That number came from
-  a count scoped to a segment membership that existed only in the fixture's PLY
-  and not in its archive — the two disagreed, for the reason in the revision-8
-  entry below. 44 is small enough to argue the pop is tolerable; 776 is not.
+  The first published version of this entry said 44 splats. That number came
+  from a count scoped to a segment membership that existed only in the
+  fixture's PLY and not in its archive. The two disagreed, for the reason in
+  the revision-8 entry below. 44 is small enough to argue that the pop is
+  tolerable. 776 is not.
 
 **Revision 6** — tooling and fixtures only. **No implementer action:** nothing
 here changes what a conforming encoder writes or a conforming player reads.
 
 - §10 gains the boundary-rounding rule. Pairing splats by their split-plane
   integers breaks when a coordinate sits exactly on a boundary, because a
-  float32 encoder and a float64 source round it opposite ways; the tool now
-  re-pairs those within their group and bounds itself at 0.2% so a real
+  float32 encoder and a float64 source round it opposite ways. The tool now
+  re-pairs those within their group, and it bounds itself at 0.2% so a real
   membership bug still fails.
-- A new `blocks_gap` fixture. `parabola_gap` shows a player does not break on an
-  empty segment run, but cannot show it *culled* one — an expanding cloud looks
-  much the same whether or not culling happens. `blocks_gap` puts each segment
-  in its own spatially separated cluster so the drawn population is countable.
-  This came from the player implementer declining to claim coverage they did not
-  have, which is the report that makes a fixture worth building.
+- A new `blocks_gap` fixture. `parabola_gap` shows a player does not break on
+  an empty segment run, but it cannot show the player *culled* one: an
+  expanding cloud looks much the same whether or not culling happens.
+  `blocks_gap` puts each segment in its own spatially separated cluster, so
+  the drawn population is countable. This came from the player implementer,
+  who declined to claim coverage they did not have. That report is the kind
+  that makes a fixture worth building.
 
 **Revision 5** — from the first player implementation of revision 4. No change
-to the bytes; §9 only.
+to the bytes. §9 only.
 
-- §9 requires a player to reach its rejection *from the manifest* and to name the
-  offending value. Revision 4 deleted the development-era formats but said
-  nothing about what a consumer does when handed one, and the answer turned out
-  to be worse than rejecting: an extension-dispatching application routes the
-  file to its default loader, downloads all several hundred megabytes of it, and
-  then fails inside a parser that has no idea what it was given — in the
-  observed case with no user-visible error at all. Deleting a format leaves that
-  failure mode behind, and the fix belongs in the consumer's dispatch rather
-  than in per-format knowledge the deletion was meant to remove.
+- §9 requires a player to reach its rejection *from the manifest* and to name
+  the offending value. Revision 4 deleted the development-era formats but said
+  nothing about what a consumer does when handed one. The answer turned out to
+  be worse than rejecting: an extension-dispatching application routes the
+  file to its default loader, downloads all several hundred megabytes of it,
+  and then fails inside a parser that has no idea what it was given. In the
+  observed case there was no user-visible error at all. Deleting a format
+  leaves that failure mode behind. The fix belongs in the consumer's dispatch,
+  not in per-format knowledge the deletion was meant to remove.
 - §§4.8/10 corrected `decode_v3_fields()` to `decode_sogst_fields()`, missed in
   the revision-4 rename.
 
 **Revision 4** — the development-era formats are gone, and the container is
 renumbered from 3 to **1**.
 
-- §3 `version` is `1` and `format` is `"sogst"`; both are REQUIRED and a player
-  MUST reject anything else. Revision 3 kept `version: 3` and tolerated a
-  missing `format` to protect deployed assets; there are none, so that
+- §3 `version` is `1` and `format` is `"sogst"`. Both are REQUIRED, and a
+  player MUST reject anything else. Revision 3 kept `version: 3` and tolerated
+  a missing `format` to protect deployed assets. There are none, so that
   tolerance only widened the surface a second implementation had to get right.
 - §2 no longer mentions the `OMG4` magic: the binary containers it identified
   have been deleted, not deprecated.
@@ -1012,11 +1036,11 @@ No change alters the bytes a revision-1-conforming encoder produces.
 
 - §2 forbids ZIP **data descriptors** explicitly. Revision 1 forbade extra
   fields, which a streaming ZIP writer satisfies while still emitting
-  descriptors and zeroed local-header sizes — defeating the byte-rangeability
-  the rule existed to protect, and shifting every §6 offset by 16 bytes per
+  descriptors and zeroed local-header sizes. That defeats the byte-rangeability
+  the rule existed to protect, and it shifts every §6 offset by 16 bytes per
   entry.
 - §2.1 no longer pins texture dimensions. Splat `i` at row-major texel `i` is
-  the normative part; near-square is a SHOULD, dimension roundup (PlayCanvas's
+  the normative part. Near-square is a SHOULD, dimension roundup (PlayCanvas's
   SOG writer aligns to a multiple of 4) is explicitly permitted, and players
   must read dimensions from the WebP header.
 - §2.1 adds the complement to the `exact` requirement: a player MUST NOT depend
