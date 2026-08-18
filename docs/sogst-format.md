@@ -11,7 +11,7 @@ from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 12, 2026-08-17.**
+**Container version 1. Specification revision 13, 2026-08-18.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -218,38 +218,40 @@ SHOULD resolve textures through `files` rather than hardcoding names.
 
 ### 3.1 Unknown keys and forward compatibility
 
-A player MUST ignore manifest keys it does not recognise — top-level keys and
-keys inside groups alike — and MUST NOT reject a file for carrying one. It MUST
-likewise ignore archive entries backing a group it does not recognise.
-Rejection is reserved for the `version` and `format` checks above.
+A player MUST ignore manifest keys that it does not recognise. This applies to
+top-level keys and to keys inside groups. A player MUST NOT reject a file
+because the file carries an unknown key. A player MUST also ignore archive
+entries that belong to a group it does not recognise. Only the `version` and
+`format` checks above permit rejection.
 
-The version number, not the key set, is the compatibility signal:
+The version number is the compatibility signal. The key set is not:
 
-- A future revision MAY add new OPTIONAL groups and keys **under version 1**,
-  provided a player that ignores them still renders the file correctly at
-  reduced fidelity — the same contract §0 already imposes for `shN` and
-  `accel`. Temporally varying rotation, for example, would arrive this way: a
-  new coefficient group beside `motion`, evaluated by players that know it and
-  invisible to players that do not.
-- A change that alters the meaning of anything this revision specifies —
-  evaluation semantics, an existing key, an existing texture layout — MUST bump
-  `version`, and therefore MUST NOT be introduced under version 1.
+- A future revision MAY add new OPTIONAL groups and keys **under version 1**.
+  The condition is the contract that §0 already imposes for `shN` and `accel`:
+  a player that ignores the new keys must still render the file correctly at
+  reduced fidelity. Temporally varying rotation is an example. It would arrive
+  as a new coefficient group beside `motion`. Players that know the group
+  evaluate it. To players that do not know it, the group is invisible.
+- A change that alters the meaning of anything this revision specifies MUST
+  bump `version`. This covers the evaluation semantics, every existing key,
+  and every existing texture layout. Such a change MUST NOT be introduced
+  under version 1.
 
-An encoder SHOULD NOT emit private keys into the top level; if it must attach
-producer-specific data, `asset` is the place for it.
+An encoder SHOULD NOT emit private keys at the top level. If an encoder must
+attach producer-specific data, the `asset` key is the place for it.
 
-**An unknown entry may appear anywhere in a group's byte order, including
-before that group's required entries.** This is where "ignore" actually gets
-implemented wrong: a streamed player that gates group completion on a *count*
-of buffered entries will hit the count early when an unknown entry arrives
-before the group's last required file, and then decode the group a file short —
-while the same entry arriving after the known files is skipped harmlessly.
-Filter unrecognised names before buffering or counting; completion must be
-judged against the set of required names, never against how many entries have
-arrived. The first player implementation of this section had exactly this
-defect, and it was order-dependent enough that a test appending the unknown
-entry passed on the broken player. Test with the unknown entry placed *before*
-the known files (§9).
+**An unknown entry may appear at any position in a group's byte order. It may
+appear before that group's required entries.** This ordering is where
+implementations of "ignore" go wrong. A streamed player that gates group
+completion on a *count* of buffered entries fills the count early when an
+unknown entry arrives before the group's last required file. It then decodes
+the group one file short. The same entry after the known files causes no
+error. Filter unrecognised names before you buffer or count. Judge completion
+against the set of required names, never against a count of arrived entries.
+The first player implementation of this section had exactly this defect. The
+defect was order-dependent: a test that appended the unknown entry passed on
+the broken player. Test with the unknown entry placed *before* the known
+files (§9).
 
 ## 4. Attribute groups
 
@@ -637,36 +639,41 @@ container is PlayCanvas SOG, and the streaming layer is ours.
 
 **TSOG** ("Temporally and Spatially Ordered Gaussians", Gmira, Alexiou,
 Potetsianakis and Thomas, Xiaomi Technology Netherlands, arXiv:2607.28049, July
-2026) is an independently developed extension of PlayCanvas SOG to 4D, published
-while this specification was being finalised. Neither design derives from the
-other; anyone encountering both should know how they relate.
+2026) is an independently developed extension of PlayCanvas SOG to 4D. It was
+published while this specification was being finalised. Neither design derives
+from the other. This section records how they relate, for anyone who
+encounters both.
 
-The two converge on everything SOG already decided, plus the obvious next
-steps: static attributes stay byte-compatible with SOG v2, splats are
-Morton-ordered spatially, high-precision temporal quantities are 16-bit
-split-plane WebP pairs with min/max ranges in the manifest, motion is a
-per-splat polynomial with a first-order (velocity) base case, and temporal
-opacity is a FreeTimeGS-style Gaussian window (their "center and scale"
-timeline type is this format's `trbf.center`/`trbf.sigma`).
+The two designs agree on everything SOG already decided, and on the obvious
+next steps:
 
-They differ in scope. TSOG defines a generic parameterisation scheme — any
-attribute may gain `temporal_<attribute>_<order>` coefficient images, including
-polynomial rotation, and a discrete frame-id timeline mode exists alongside the
-continuous one — but ships as loose WebP files plus JSON, with no container, no
-streaming layout, no temporal segmentation or culling, linear (not log)
-quantization of motion coefficients, no stated functional form or normalisation
-for the temporal opacity window, and no conformance rules or validation
-procedure. `.sogst` fixes one normative model and specifies it completely: the
-ZIP container and streamed layout (§§2, 6), segment-based temporal culling
-(§5), the log transform (§2.2), exact evaluation semantics (§1), and the
-conformance and cross-implementation machinery (§§9–10).
+- Static attributes stay byte-compatible with SOG v2.
+- Splats are Morton-ordered spatially.
+- High-precision temporal quantities are 16-bit split-plane WebP pairs with
+  min/max ranges in the manifest.
+- Motion is a per-splat polynomial with a first-order (velocity) base case.
+- Temporal opacity is a FreeTimeGS-style Gaussian window. TSOG's "center and
+  scale" timeline type is this format's `trbf.center`/`trbf.sigma`.
 
-The manifests are mutually incompatible — TSOG's `timeline`/`temporal.*` keys
-versus this format's `motion`/`accel`/`trbf`/`segments` — and a TSOG asset is
-not a `.sogst` archive (it is not an archive at all). TSOG capabilities this
-format lacks, temporally varying rotation foremost, are additive by design and
-would land through §3.1 as new OPTIONAL groups rather than by adopting TSOG's
-naming.
+The two designs differ in scope. TSOG defines a generic parameterisation
+scheme: any attribute may gain `temporal_<attribute>_<order>` coefficient
+images, including polynomial rotation, and a discrete frame-id timeline mode
+exists beside the continuous one. But TSOG ships as loose WebP files plus
+JSON. It has no container, no streaming layout, and no temporal segmentation
+or culling. It quantizes motion coefficients linearly, without a log
+transform. It states no functional form and no normalisation for the temporal
+opacity window. It has no conformance rules and no validation procedure.
+`.sogst` fixes one normative model and specifies it completely: the ZIP
+container and streamed layout (§§2, 6), segment-based temporal culling (§5),
+the log transform (§2.2), exact evaluation semantics (§1), and the conformance
+and cross-implementation machinery (§§9–10).
+
+The manifests are mutually incompatible. TSOG uses the `timeline` and
+`temporal.*` keys. This format uses `motion`, `accel`, `trbf`, and `segments`. A TSOG asset is not
+a `.sogst` archive (it is not an archive at all). Capabilities that TSOG has
+and this format lacks, temporally varying rotation foremost, are additive by
+design. They would land through §3.1 as new OPTIONAL groups, not through
+adoption of TSOG's naming.
 
 ## 9. Conformance checklist
 
@@ -695,31 +702,32 @@ A player conforms when:
 - [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
       `meta.format == "sogst"` (§8: there is no legacy form to accept), and
       names the offending value in the error.
-- [ ] It decodes a file whose manifest carries an unrecognised key — top-level
-      or inside a group — identically to the same file without it (§3.1).
-      When testing the streamed path, place the unknown archive entry *before*
-      each group's required entries: a count-gated group-completion bug is
-      order-dependent, and a fixture that appends the unknown entry passes on a
-      player that is still broken. "Identically" means compare the decode or
-      the rendered output against the unmodified file — "loads without error"
-      does not establish the entries were ignored.
+- [ ] It decodes a file whose manifest carries an unrecognised key (top-level
+      or inside a group) identically to the same file without that key (§3.1).
+      When you test the streamed path, place the unknown archive entry
+      *before* each group's required entries. A count-gated group-completion
+      bug is order-dependent: a fixture that appends the unknown entry passes
+      on a player that is still broken. "Identically" means compare the decode
+      or the rendered output against the unmodified file. "Loads without
+      error" does not show that the entries were ignored.
 
-      Two traps observed running this check against a real player:
+      Running this check against a real player exposed two traps:
 
-      - **A durable full-file cache can serve the fixture from a path the test
-        is not aiming at.** A warm cache hit that decodes the whole-clip path
-        proves nothing about the streamed path a fix touched. Guarantee a cold
-        load — a fresh filename per fixture is a cheaper and more reliable
-        guarantee than clearing the store, whose deletion can block on the
-        page's own open connection — and confirm the load path from the
-        server's request log rather than in-page instruments, which reset
-        across navigation.
-      - **A streamed fixture cannot be made by inserting an entry into an
-        existing archive.** `streams.reveal_bytes`/`geometry_bytes` are
-        absolute offsets and `meta.json` is the first entry, so inserting an
-        entry — or merely resizing the manifest — shifts everything after it
-        and the load fails for reasons unrelated to entry tolerance. Rebuild
-        through a writer that recomputes and verifies the offsets (§6).
+      - **A durable full-file cache can serve the fixture from a path the
+        test does not target.** A warm cache hit decodes the whole-clip path,
+        and that result proves nothing about the streamed path a fix touched.
+        Guarantee a cold load: use a fresh filename for each fixture. A fresh
+        filename is cheaper and more reliable than clearing the store,
+        because deletion of the store can block on the page's own open
+        connection. Confirm the load path from the server's request log, not
+        from in-page instruments, which reset across navigation.
+      - **You cannot make a streamed fixture by inserting an entry into an
+        existing archive.** `streams.reveal_bytes` and `geometry_bytes` are
+        absolute offsets, and `meta.json` is the first entry. An inserted
+        entry, or a resized manifest alone, shifts every entry after it, and
+        the load fails for reasons unrelated to entry tolerance. Rebuild the
+        fixture through a writer that recomputes and verifies the offsets
+        (§6).
 - [ ] It reaches that rejection from the manifest rather than from a downstream
       parse failure. Because §8 removed the development-era formats outright, an
       application that dispatches on file extension now routes those files to
@@ -810,62 +818,71 @@ encounter with a second implementation, which is why the guidance is here.
 
 ## Appendix A. Revision history
 
+**Revision 13** — editorial only. **No implementer action.** This revision
+rewrites §3.1, §8.1, the §3.1 bullet in §9, and the Appendix entries for
+revisions 10–12 into Simplified Technical English structure: shorter
+sentences, active voice, no semicolons. No rule changed. A diff against
+revision 12 shows wording changes only.
+
 **Revision 12** — §9 testing notes, from re-verifying revision 11's exemplar.
-**No implementer action** on the format; two traps recorded for anyone running
-the §3.1 check against a real player.
+**No implementer action** on the format. It records two traps for anyone who
+runs the §3.1 check against a real player.
 
-- The pixel-identical verification revision 11 cites as the model was
-  re-established after a hazard was found in its own provenance: the player
-  carries a durable full-file cache, and a cache hit decodes the whole-clip
-  path — which was already conformant — so a warm post-fix PASS would have
-  proven nothing about the streamed code the fix touched. The pre-fix FAIL was
-  provably streamed (the stack said so); the post-fix PASS was not provably
-  anything until re-run cold, with fresh filenames forcing fresh cache keys and
-  the static server's request log as the arbiter of which path executed. The
-  result held. §9 now records both the cold-load guarantee and the
-  arbiter choice.
-- §9 also now warns that a streamed unknown-entry fixture must be rebuilt
-  through a writer, never made by inserting an entry into an existing archive:
-  the §6 offsets are absolute and `meta.json` is the first entry, so an
-  insertion — or a manifest resize alone — makes the load fail for reasons
+- Revision 11 cites a pixel-identical verification as the model. That
+  verification had a hazard in its own provenance and had to be
+  re-established. The player carries a durable full-file cache, and a cache
+  hit decodes the whole-clip path, which was already conformant. A warm
+  post-fix PASS would therefore have proven nothing about the streamed code
+  the fix touched. The pre-fix FAIL was provably streamed: the stack trace
+  said so. The post-fix PASS proved nothing until it ran again cold. The cold
+  run used fresh filenames to force fresh cache keys, and it used the static
+  server's request log as the arbiter of which path executed. The result
+  held. §9 now records the cold-load guarantee and the arbiter choice.
+- §9 now also warns that a streamed unknown-entry fixture must come from a
+  writer, never from inserting an entry into an existing archive. The §6
+  offsets are absolute and `meta.json` is the first entry, so an inserted
+  entry, or a resized manifest alone, makes the load fail for reasons
   unrelated to what the fixture tests. The reference suite's fixtures already
-  rebuild through `write_sogst_streamed`; this states why that is the only
-  valid construction.
+  rebuild through `write_sogst_streamed`. The new text states why that is the
+  only valid construction.
 
-**Revision 11** — §3.1 hardened by its first player implementation, same day.
+**Revision 11** — the first player implementation of §3.1 hardened it, the
+same day.
 
-- The viewer's §3.1 check found a real, order-dependent violation in its own
-  streamed path: group completion was gated on a *count* of buffered entries,
-  so an unknown entry arriving before a group's last required file hit the
-  count early and the decode ran a file short — while the same entry appended
-  after the known files was skipped harmlessly. §3.1 now states the failure
-  mode and the rule (judge completion against the set of required names, never
-  a count); §9's bullet now requires the unknown-entry fixture to place the
-  entry *before* the known files, because the appending fixture passed on the
-  broken player. The reference suite's own streamed fixture had the appending
-  shape — harmless against the reference decoder, which reads entries by name,
-  but wrong as a template — and was moved to first-in-group.
-- §9's bullet also now says what "identically" requires: compare the decode or
-  rendered output against the unmodified file. "Loads without error" tolerates;
-  it does not establish the entries were ignored. The viewer's verification
-  compared rendered pixels; the reference suite compares decoded fields.
+- The viewer's §3.1 check found a real, order-dependent violation in the
+  viewer's own streamed path. The path gated group completion on a *count* of
+  buffered entries. An unknown entry that arrived before a group's last
+  required file filled the count early, and the decode ran one file short.
+  The same entry appended after the known files was skipped without error.
+  §3.1 now states the failure mode and the rule: judge completion against the
+  set of required names, never against a count. §9's bullet now requires the
+  unknown-entry fixture to place the entry *before* the known files, because
+  the appending fixture passed on the broken player. The reference suite's
+  own streamed fixture had the appending shape. That shape is harmless
+  against the reference decoder, which reads entries by name, but it is wrong
+  as a template. The fixture moved to first-in-group.
+- §9's bullet also now says what "identically" requires: compare the decode
+  or the rendered output against the unmodified file. "Loads without error"
+  tolerates the entries. It does not establish that the entries were ignored.
+  The viewer's verification compared rendered pixels. The reference suite
+  compares decoded fields.
 
 **Revision 10** — forward compatibility, prompted by the publication of TSOG.
 
 - §3.1 (new): a player MUST ignore unrecognised manifest keys and the archive
-  entries backing unrecognised groups; rejection stays reserved for
-  `version`/`format`. Additive OPTIONAL groups may arrive under version 1;
-  anything that changes the meaning of existing content must bump `version`.
-  Without this rule a strictly written version-1 player could legitimately
-  reject any future additive extension, forcing a version bump — and a hard
-  reject from every deployed player — for changes that are safe to ignore.
-  §9 gains the matching checklist bullet.
+  entries that back unrecognised groups. Rejection stays reserved for
+  `version`/`format`. Additive OPTIONAL groups may arrive under version 1.
+  Anything that changes the meaning of existing content must bump `version`.
+  Without this rule, a strictly written version-1 player could legitimately
+  reject any future additive extension. That rejection would force a version
+  bump, and a hard reject from every deployed player, for changes that are
+  safe to ignore. §9 gains the matching checklist bullet.
 - §8.1 (new, non-normative): the relationship to TSOG (arXiv:2607.28049), an
   independently developed SOG 4D extension published 2026-07-30. The two
-  converge on the texture conventions and diverge on packaging, streaming,
-  segmentation, quantization transform, and conformance rigor; the manifests
-  are incompatible. TSOG's temporally varying rotation is the worked example
-  §3.1 exists for.
+  designs converge on the texture conventions. They diverge on packaging,
+  streaming, segmentation, quantization transform, and conformance rigor. The
+  manifests are incompatible. TSOG's temporally varying rotation is the
+  worked example §3.1 exists for.
 
 No change to the payload or to what a conforming encoder emits.
 

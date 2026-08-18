@@ -4,18 +4,19 @@
 """Tests for spec section 3.1: unknown manifest keys are ignored.
 
 The rule exists so that a future revision can add OPTIONAL groups under
-version 1 without every deployed player hard-rejecting the file. The worked
-example in the spec is temporally varying rotation (which TSOG, the
-independently developed SOG 4D extension, already has): it would arrive as a
-new coefficient group beside `motion`, and a version-1 player must treat it
-as it already treats `shN` and `accel` when it does not implement them --
-render the rest of the file, identically to the same file without the group.
+version 1 without every deployed player rejecting the file. The worked
+example in the spec is temporally varying rotation, which TSOG (the
+independently developed SOG 4D extension) already has. It would arrive as a
+new coefficient group beside `motion`. A version-1 player must treat that
+group as it already treats `shN` and `accel` when it does not implement
+them: render the rest of the file, identically to the same file without the
+group.
 
-These tests pin the reference decoder to that contract by decoding a real
+These tests pin the reference decoder to that contract. They decode a real
 archive and a rebuilt copy of it that carries unknown keys and unknown
-texture entries, and asserting the decodes are identical. The rebuilt copy
-is re-emitted through the normal writers where one applies, so its stream
-offsets stay verified rather than stale.
+texture entries, and they assert that the two decodes are identical. The
+rebuilt copy is re-emitted through the normal writers where one applies, so
+its stream offsets stay verified rather than stale.
 """
 
 import json
@@ -32,8 +33,8 @@ from sogst_pack import pack_sogst
 pytest.importorskip("PIL", reason="pack_sogst encodes webp textures")
 
 
-# A future additive group, as section 3.1 sketches it: manifest keys a
-# version-1 player has never heard of.
+# A future additive group, as section 3.1 sketches it: manifest keys that a
+# version-1 player does not know.
 UNKNOWN_TOP_LEVEL = {
     "rot_motion": {
         "degree": 1,
@@ -71,9 +72,10 @@ def _assert_identical(a_path, b_path):
 
 def test_unknown_manifest_keys_are_ignored_streamed(tmp_path):
     """Streamed archive whose manifest carries unknown top-level and
-    in-group keys. Re-emitted through write_sogst_streamed, so the offsets
-    are recomputed for the larger manifest and verified -- the archive stays
-    conforming, it just says more than this decoder understands."""
+    in-group keys. The archive is re-emitted through write_sogst_streamed,
+    which recomputes and verifies the offsets for the larger manifest. The
+    archive stays conforming. It only says more than this decoder
+    understands."""
     src = _pack(tmp_path / "plain.sogst", streamed=True)
 
     with zipfile.ZipFile(src) as zf:
@@ -95,12 +97,12 @@ def test_unknown_manifest_keys_are_ignored_streamed(tmp_path):
 def test_unknown_manifest_keys_are_ignored_whole_clip(tmp_path):
     """Whole-clip variant, including an unknown texture entry.
 
-    Built with zipfile directly rather than write_sogst: that writer emits
-    only the textures its known groups list, which is correct for it but
-    would silently drop the unknown entry this test exists to include. The
-    entry is a byte-copy of trbf.webp under the unknown group's name -- a
-    valid lossless WebP of exactly the covered texel count, which is what a
-    real additive group would ship."""
+    The archive is built with zipfile directly rather than with write_sogst.
+    That writer emits only the textures that its known groups list, which is
+    correct for it, but it would silently drop the unknown entry this test
+    exists to include. The entry is a byte-copy of trbf.webp under the
+    unknown group's name: a valid lossless WebP of exactly the covered texel
+    count, which is what a real additive group would ship."""
     src = _pack(tmp_path / "plain.sogst", streamed=False)
 
     with zipfile.ZipFile(src) as zf:
@@ -120,22 +122,22 @@ def test_unknown_manifest_keys_are_ignored_whole_clip(tmp_path):
 
 
 def test_unknown_texture_entries_are_ignored_streamed(tmp_path):
-    """Streamed variant of the unknown-entry case: the additive group's
-    texture appears under EVERY group prefix, which is the shape a real
-    per-splat attribute has -- every splat carries a value, so every group
-    stores its slice.
+    """Streamed variant of the unknown-entry case. The additive group's
+    texture appears under EVERY group prefix. That is the shape of a real
+    per-splat attribute: every splat carries a value, so every group stores
+    its slice.
 
     **The unknown entry goes FIRST in each group, before every required
     file, and that placement is the test.** The first player implementation
     of section 3.1 gated streamed group completion on a count of buffered
-    entries; an unknown entry arriving before the group's last required
-    file hit the count early and the decode ran a file short -- while the
-    same entry appended after the known files was skipped harmlessly. So a
-    fixture that appends the unknown entry passes on a player that is still
-    broken. This decoder reads entries by name rather than in byte order,
-    so it cannot fail this way -- the placement is here because this test
-    is the conformance template, and the template must be the adversarial
-    shape."""
+    entries. An unknown entry that arrived before the group's last required
+    file filled the count early, and the decode ran one file short. The
+    same entry appended after the known files was skipped without error. A
+    fixture that appends the unknown entry therefore passes on a player
+    that is still broken. This decoder reads entries by name rather than in
+    byte order, so it cannot fail this way. The placement is here because
+    this test is the conformance template, and the template must be the
+    adversarial shape."""
     src = _pack(tmp_path / "plain.sogst", streamed=True)
 
     with zipfile.ZipFile(src) as zf:
