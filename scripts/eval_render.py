@@ -12,15 +12,15 @@ viewer would, evaluates the temporal model at each test camera's timestamp
 
 rasterizes with gsplat, and scores PSNR / SSIM / LPIPS against ground-truth
 frames.  Cameras come from a nerfstudio/blender-style transforms_test.json
-(OpenGL c2w, per-frame `time` in seconds); ground truth comes from a
+(OpenGL c2w, per-frame `time` in seconds).  Ground truth comes from a
 directory of frames named after each entry's file_path basename.
 
-Run under the `omg4` conda env (gsplat + lpips + torchmetrics + CUDA):
+Run under an environment with gsplat + lpips + torchmetrics + CUDA:
 
-    ~/miniconda3/envs/omg4/bin/python scripts/eval_render.py \
+    python scripts/eval_render.py \
         --model coffee_martini.sogst \
-        --transforms ~/Dev/datasets/n3v/coffee_martini/transforms_test.json \
-        --gt-dir ~/Dev/datasets/n3v/coffee_martini/eval_gt_half \
+        --transforms <dataset>/coffee_martini/transforms_test.json \
+        --gt-dir <dataset>/coffee_martini/eval_gt_half \
         --downscale 2 --every 10
 
 Numbers are directly comparable to the OMG4 trainer's eval (same test
@@ -44,8 +44,8 @@ from sogst_io import SOGST_FIELDS  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # .sogst archive -> field arrays (mirrors the engine decoder:
-# sogst_pack.verify_sogst covers the same math for scalar attributes; this
-# adds quats and shN, and so is the only complete inverse of the encoder)
+# sogst_pack.verify_sogst covers the same math for scalar attributes, and this
+# adds quats and shN, so it is the only complete inverse of the encoder)
 # ---------------------------------------------------------------------------
 
 def decode_sogst_fields(v3_path):
@@ -135,7 +135,7 @@ def decode_sogst_fields(v3_path):
         codebook = np.asarray(meta['shN']['codebook'])
         coeffs = {1: 3, 2: 8, 3: 15}[meta['shN']['bands']]
         # engine layout: palette entry n occupies texels
-        # [(n % 64) * coeffs, (n % 64 + 1) * coeffs) on row n // 64;
+        # [(n % 64) * coeffs, (n % 64 + 1) * coeffs) on row n // 64.
         # sh[j*15 + k] = codebook[centroid_bytes[(u + k)*4 + j + v*W*4]]
         u = (labels % 64) * coeffs
         v = labels // 64
@@ -226,8 +226,8 @@ def main():
     duration = header['time_max'] - header['time_min']
     tscale = args.time_scale
     if tscale is None:
-        # camera times and model times usually share units; only rescale when
-        # the ranges clearly disagree (e.g. normalized training time)
+        # camera times and model times usually share units.  Only rescale when
+        # the ranges clearly disagree (for example normalized training time).
         ratio = duration / max_cam_t if max_cam_t > 0 else 1.0
         tscale = ratio if not (0.8 < ratio < 1.25) else 1.0
         if tscale != 1.0:

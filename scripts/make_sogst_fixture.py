@@ -6,7 +6,7 @@
 
 Emits a small, fully deterministic 4D scene as an interchange PLY (and
 optionally packs it into a .sogst archive).  Its purpose is to let a second
-implementation of the format -- an encoder or a player -- check itself
+implementation of the format (an encoder or a player) check itself
 against something whose correct output is known analytically, without
 needing a real capture and without the subject-release question that real
 sample assets carry.
@@ -34,7 +34,7 @@ wrong and hard to notice:
 
 The ground truth is the PLY itself: pack it, decode the archive with
 eval_render.decode_sogst_fields(), and compare per field.  See
-docs/sogst-format.md section 10 -- compare decoded fields, not rendered
+docs/sogst-format.md section 10.  Compare decoded fields, not rendered
 PSNR, because codebook initialisation is implementation-defined.
 
     python make_sogst_fixture.py --output parabola.ply
@@ -57,12 +57,12 @@ GRAVITY = -9.81           # scene units / s^2, the fixture's known constant
 # --blocks places each temporal segment's splats in its own spatial cluster, so
 # a viewer can COUNT which segments are being drawn.  That requires knowing the
 # segment boundaries the packer will choose, so this must match
-# sogst_pack.compute_sogst_order's `segment_duration` default; --blocks writes
+# sogst_pack.compute_sogst_order's `segment_duration` default.  --blocks writes
 # the value it assumed into the sidecar so a mismatch is detectable rather than
 # silent.  Pass the same --segment-duration to the packer if you change it.
 SEGMENT_DURATION = 0.1
 GAP_EDGE_NUDGE = 1e-3     # keeps folded t_center off an exact bucket boundary
-BLOCK_SPACING = 1.0       # centre-to-centre; >> BLOCK_RADIUS so blocks never touch
+BLOCK_SPACING = 1.0       # centre-to-centre, >> BLOCK_RADIUS so blocks never touch
 BLOCK_RADIUS = 0.12
 
 
@@ -74,8 +74,8 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     `gap` is an optional (start, end) window in seconds that no splat's
     t_center falls into, which forces the encoder to emit empty segments
     (`first == last`).  Those are spec-legal (section 5) and no real capture
-    produces them, so the branches that handle them -- a player's culling
-    scan, an encoder's zero-splat group -- are otherwise only ever tested by
+    produces them, so the branches that handle them (a player's culling
+    scan, an encoder's zero-splat group) are otherwise only ever tested by
     reading the code.
 
     `blocks` replaces the parabola with static, spatially separated clusters,
@@ -83,9 +83,9 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     because "nothing broke" is not the same claim as "the right segments were
     drawn", and the parabola cannot tell them apart: it is an expanding cloud,
     so a player that culls nothing at all looks the same as one that culls
-    correctly.  With `blocks` the drawn population is countable by eye -- at
+    correctly.  With `blocks` the drawn population is countable by eye.  At
     any instant you should see the persistent block plus only the block(s)
-    whose segment spans that instant, and a culling bug shows up as a block
+    whose segment spans that instant.  A culling bug shows up as a block
     that is present when it should not be (or missing when it should).
     Combined with `gap` it is the strong form: an empty RUN whose surviving
     neighbours are in visibly different places.
@@ -106,7 +106,7 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     # long sigma and must end up in the persistent range.
     # The short sigmas are capped so that a short-lived splat's active span
     # (2 * k_sigma * sigma, k_sigma = 3.8) stays under the default
-    # persistence threshold of 3 * 0.1 s -- otherwise the encoder promotes
+    # persistence threshold of 3 * 0.1 s.  Otherwise the encoder promotes
     # most of them to persistent and the fixture stops exercising
     # per-segment culling, which is the thing it is there to exercise.
     t_center = rng.uniform(time_min, time_max, n)
@@ -118,7 +118,7 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
         inside = (t_center > lo) & (t_center < hi)
         # Nudged clear of the edge, not onto it. A gap bound is typically a
         # multiple of segment_duration, so folding *onto* it parks a large
-        # plateau of splats exactly on a bucket boundary -- and `t/duration`
+        # plateau of splats exactly on a bucket boundary.  `t/duration`
         # then buckets one way in float64 and the other after the float32 PLY
         # round-trip, moving the whole plateau between two adjacent segments.
         # That made the fixture's own .ply and .sogst disagree about 1,218
@@ -133,7 +133,7 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     t_sigma[persistent_idx] = rng.uniform(0.4, 0.7, n_persistent)
 
     # Ballistic motion.  Each splat is a particle launched at t = 0 from
-    # near the origin; its PLY columns describe that trajectory re-anchored
+    # near the origin.  Its PLY columns describe that trajectory re-anchored
     # to its own t_center, which is exactly the re-anchoring a producer has
     # to get right (position, velocity and accel move together).
     launch = rng.normal(0.0, 0.05, (n, 3))
@@ -158,7 +158,7 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
     if blocks:
         # One cluster per segment the packer will bucket into, laid out along
         # x in segment order, plus the persistent group lifted clear on y.
-        # The bucket expression mirrors compute_sogst_order exactly -- if the
+        # The bucket expression mirrors compute_sogst_order exactly.  If the
         # two ever drift, the blocks stop lining up with the segments and the
         # fixture silently stops testing what it claims to.
         n_seg = max(1, int(np.ceil((time_max - time_min) / SEGMENT_DURATION)))
@@ -217,8 +217,8 @@ def build_fixture(count=8192, time_min=0.0, time_max=2.0, degree=2,
         fields['az'] = accel_true[:, 2]
     if include_sh:
         # Channel-major, index j*15 + k, decaying by band so the values look
-        # like a real SH tail.  Crucially it is also spatially coherent --
-        # a smooth function of launch direction plus a little noise --
+        # like a real SH tail.  Crucially it is also spatially coherent
+        # (a smooth function of launch direction plus a little noise),
         # because real SH is, and because pure per-splat noise is the
         # worst possible case for the vector quantizer: it makes the
         # encoder's VQ error look like a layout bug in a field comparison.
@@ -264,7 +264,7 @@ def main():
                              'segment plus one for the persistent group, instead of '
                              'the parabola. Makes the drawn population countable by '
                              'eye, so "the right segments were drawn" can be checked '
-                             'rather than only "nothing broke" -- the expanding cloud '
+                             'rather than only "nothing broke". The expanding cloud '
                              'cannot distinguish correct culling from no culling. '
                              'Forces degree 1 and zero motion. Pair with --gap.')
     parser.add_argument('--sidecar', action='store_true',

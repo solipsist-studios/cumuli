@@ -5,16 +5,16 @@
 """sogst_ply.py - the 4D interchange PLY: reader, writer, CLI.
 
 This is the seam between the two halves of the .sogst toolchain.  Python
-produces per-splat spacetime data; a separate encoder (splat-transform, in
+produces per-splat spacetime data.  A separate encoder (splat-transform, in
 TypeScript) packs it into the .sogst container.  Their entire contract is
-one binary PLY, specified in docs/sogst-format.md section 7 -- read that
+one binary PLY, specified in docs/sogst-format.md section 7.  Read that
 before changing anything here.
 
     19 REQUIRED float32 columns, in this order:
         x y z                       position AT t_center (not at t=0)
         rot_0..rot_3                quaternion, W FIRST
         scale_0..scale_2            natural-log space
-        opacity                     logit space; peak, at t_center
+        opacity                     logit space (peak, at t_center)
         f_dc_0..f_dc_2              raw SH DC coefficients, not RGB
         vx vy vz                    scene units per second
         t_center                    seconds, absolute clip time
@@ -32,18 +32,19 @@ Clip-level scalars are not per-vertex, so they ride in PLY comments:
     comment sogst.motion_degree 1   optional, advisory
     comment sogst.cov2d_scale 1.0 1.0   optional
 
-read_sogst_ply() raises on a missing required comment rather than
-defaulting.  That is deliberate and it is the single most important line
-of defence in this file: a defaulted fps produces an asset that renders
-perfectly and plays at the wrong speed, which no test catches and no
-reviewer sees.  An optional <name>.sogst.json sidecar overrides the
-comments for toolchains that strip them.
+read_sogst_ply() raises when a required scalar is in neither the comments
+nor the sidecar, rather than defaulting.  That is deliberate and it is the
+single most important line of defence in this file: a defaulted fps
+produces an asset that renders perfectly and plays at the wrong speed,
+which no test catches and no reviewer sees.  An optional <name>.sogst.json
+sidecar overrides the comments, for toolchains that cannot write comments
+or that strip them (spec section 7.3: either carrier alone is conforming).
 
 CLI (convert an already-packed .sogst archive back into interchange PLY):
 
     python sogst_ply.py --input scene.sogst --output scene.ply [--sidecar]
 
-Numpy only -- no torch, no PIL -- so this module stays trivially portable.
+Numpy only (no torch, no PIL), so this module stays trivially portable.
 """
 
 import argparse
@@ -94,7 +95,7 @@ def write_sogst_ply(out_path, fields, time_min, time_max, fps,
     time_min,
     time_max    : Clip bounds in seconds.
     fps         : Advisory frame rate.  Recorded, never used to evaluate the
-                  model, and REQUIRED -- see the module docstring.
+                  model, and REQUIRED: see the module docstring.
     cov2d_scale : Optional (kx, ky) screen-space covariance multiplier.
     generator   : Free-form producer string for a plain PLY comment.
 
@@ -136,9 +137,11 @@ def write_sogst_sidecar(ply_path, time_min, time_max, fps, cov2d_scale=None,
                         motion_degree=1):
     """Write the optional <name>.sogst.json sidecar next to a PLY.
 
-    For toolchains that strip PLY comments.  A producer MUST write the
-    comments whether or not it also writes this; when both are present the
-    sidecar wins.  Returns the sidecar path.
+    For toolchains that cannot write PLY comments or that strip them.  The
+    spec (section 7.3) requires the clip scalars in at least one carrier,
+    comments or sidecar, and prefers the comments.  This writer always
+    emits the comments, so its sidecar is redundancy.  When both are
+    present the sidecar wins.  Returns the sidecar path.
     """
     base = ply_path[:-4] if ply_path.endswith('.ply') else ply_path
     path = base + SIDECAR_SUFFIX
@@ -221,7 +224,7 @@ def ply_vertex_count(ply_path):
     """Splat count from a PLY header, without reading the body.
 
     The bake stages use this to size the SH codebook against a multi-hundred-
-    megabyte PLY; reading the whole file to learn one integer would dominate
+    megabyte PLY.  Reading the whole file to learn one integer would dominate
     their runtime.
     """
     with open(ply_path, 'rb') as fp:
@@ -239,13 +242,13 @@ def ply_vertex_count(ply_path):
 def read_sogst_ply(ply_path, require_scalars=True):
     """Read an interchange PLY into (header, fields).
 
-    `fields` matches what the packer consumes -- 1-D arrays
+    `fields` matches what the packer consumes (1-D arrays
     under the SOGST_FIELDS names, plus 'f_rest' as [N, 45] and 'ax'/'ay'/
-    'az' when present -- so it feeds pack_sogst() directly.
+    'az' when present), so it feeds pack_sogst() directly.
 
     `header` carries time_min, time_max, fps, count, motion_degree and an
     optional cov2d_scale.  With require_scalars=True (the default) a
-    missing time_min/time_max/fps is an error rather than a default; see
+    missing time_min/time_max/fps is an error rather than a default.  See
     the module docstring for why that matters more than it looks.
     """
     with open(ply_path, 'rb') as fp:
@@ -304,8 +307,9 @@ def read_sogst_ply(ply_path, require_scalars=True):
         for c in PLY_ACCEL_COLUMNS:
             fields[c] = raw[c]
 
-    # Sidecar overrides comments (spec section 7.3) for toolchains that
-    # strip them; it is optional, and comments alone are conforming.
+    # Sidecar overrides comments (spec section 7.3).  Either carrier alone
+    # is conforming.  The sidecar exists for toolchains that cannot write
+    # comments or that strip them.
     base = ply_path[:-4] if ply_path.endswith('.ply') else ply_path
     sidecar_path = base + SIDECAR_SUFFIX
     sidecar = {}
@@ -373,10 +377,10 @@ def main():
                  'bake_sogst.py --emit_ply.')
     from eval_render import decode_sogst_fields
     header, fields = decode_sogst_fields(args.input)
-    # The archive has already been quantized once; the PLY carries the
+    # The archive has already been quantized once, and the PLY carries the
     # decoded values, so a repack quantizes twice.  Fine for fixtures and
-    # cross-implementation checks, not for producing a shipping asset --
-    # bake those from the trainer via bake_sogst.py --emit_ply.
+    # cross-implementation checks, not for producing a shipping asset.
+    # Bake those from the trainer via bake_sogst.py --emit_ply.
     print(f'Read {args.input}: {header["count"]:,} splats '
           '(already quantized once -- repacking will quantize twice)')
     cov = None

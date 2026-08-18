@@ -8,33 +8,33 @@ dataset from a *flipbook* capture layout (frame-major, as produced by the
 Diffuman4D preprocessing flow) instead of build_4dgs_dataset.py's
 camera-major layout.
 
-Input (--flipbook_root, e.g. heidi_flipbook_260521-105422):
+Input (--flipbook_root, for example capture_flipbook/):
     frame_NNNN/transforms.json      per-frame nerfstudio transforms: one
         entry per camera with 2-digit camera_label, OpenGL c2w, and
         PER-CAMERA undistorted pinhole intrinsics (zero distortion).
-        The rig is static: every frame carries the same cameras — this
+        The rig is static: every frame carries the same cameras. This
         script verifies that and reads the rig from the first frame.
     frame_NNNN/images_flat/<label>.png   undistorted RGB per camera
     frame_NNNN/fmasks_clean/<label>.png  subject masks (white = subject)
 
-Output (--out) mirrors the tatum per-frame refit dataset layout:
+Output (--out) mirrors the per-frame refit dataset layout:
     realcams/cam<label>/frame_NNNNN.png  RGBA (mask in alpha), downscaled
     transforms_train.json / transforms_test.json
         per-view entries with per-frame intrinsics (the rotor trainer's
-        Blender loader and eval_render.py both support these; there is
-        deliberately NO global intrinsics block — the cameras differ)
+        Blender loader and eval_render.py both support these. There is
+        deliberately NO global intrinsics block: the cameras differ)
     points3d.ply                     per-frame visual-hull init points
                                      with colour and per-point `time`
     eval_gt_flat/frame_NNNNN.png     held-out cam's frames composited to
-        RGB over black at output resolution — byte-consistent with what
+        RGB over black at output resolution, byte-consistent with what
         the masked trainer renders, so eval_render.py scores are honest
-        (the tatum eval GT was mis-framed against the renders; this
+        (an earlier eval GT was mis-framed against the renders. This
         writes GT and transforms from the same pixels + numbers)
 
-Usage (heidi):
+Usage:
     python build_flipbook_4dgs_dataset.py \
-        --flipbook_root /home/solipsists/datasets/heidi_flipbook_260521-105422 \
-        --out ~/Dev/datasets/heidi_4dgs \
+        --flipbook_root <flipbook_root> \
+        --out <out> \
         --fps 30 --downscale 4 --test_cameras 05
 """
 
@@ -55,7 +55,7 @@ from build_4dgs_dataset import (
 
 
 def load_flipbook_rig(frame_dirs):
-    """Static rig from the first frame's transforms.json; verified against
+    """Static rig from the first frame's transforms.json, verified against
     the last frame. Returns {label: {c2w_gl, w2c, intr=(fl_x,fl_y,cx,cy),
     w, h}}."""
     def read(frame_dir):
@@ -94,13 +94,13 @@ def drop_duplicate_frames(frame_dirs, ref_label):
     previous kept frame's, returning (kept_dirs, kept_indices).
 
     Flipbook captures can carry held frames where the source video dropped
-    one (heidi: 39 unique images across 61 frame dirs). Keeping them is
-    worse than redundant supervision — a held pose at two timestamps asks
-    the 4D model to render identical output at t and t+1/fps while moving
-    on either side, which it can only satisfy by inflating temporal sigma,
-    i.e. smearing. Dropping the holds and leaving survivors at their
-    ORIGINAL timestamps lets the model interpolate smoothly across the gap,
-    which is what physically happened.
+    one (one capture measured 39 unique images across 61 frame dirs).
+    Keeping them is worse than redundant supervision. A held pose at two
+    timestamps asks the 4D model to render identical output at t and
+    t+1/fps while moving on either side, and it can only satisfy that by
+    inflating temporal sigma (smearing). Dropping the holds and leaving
+    survivors at their ORIGINAL timestamps lets the model interpolate
+    smoothly across the gap, which is what physically happened.
     """
     kept_dirs, kept_idx = [], []
     last_hash = None
@@ -179,26 +179,27 @@ def main():
     parser.add_argument('--test_cameras', nargs='*', default=[],
                         help='camera labels held out into transforms_test.json '
                              '(also written flat into eval_gt_flat/). Use ONE for '
-                             'eval_render scoring — basenames collide otherwise.')
+                             'eval_render scoring: basenames collide otherwise.')
     parser.add_argument('--holdout_cameras', nargs='*', default=[],
                         help='additional camera labels excluded from training but NOT '
                              'scored. Rigs with stereo pairs need this: holding out one '
                              'camera whose pair-mate is 1-2 degrees away and still in '
-                             'training is not a novel-view test at all (heidi pairs: '
-                             '00/10, 01/02, 04/05, 06/07, 08/09). Hold out the mate too.')
+                             'training is not a novel-view test at all (pairs on the '
+                             'capture this was built against: 00/10, 01/02, 04/05, '
+                             '06/07, 08/09). Hold out the mate too.')
     parser.add_argument('--masks_dir', default='fmasks_clean',
                         help='per-frame mask subdirectory (default: fmasks_clean)')
     parser.add_argument('--dedupe', action='store_true',
                         help='drop frames whose images are byte-identical to the previous '
                              'kept frame (held frames from dropped source video frames). '
                              'Survivors keep their ORIGINAL timestamps, so the model '
-                             'interpolates across the gap instead of fitting a hold — '
-                             'holds otherwise force inflated temporal sigma (smearing).')
+                             'interpolates across the gap instead of fitting a hold. '
+                             'Holds otherwise force inflated temporal sigma (smearing).')
     parser.add_argument('--hull_points', type=int, default=300_000,
                         help='total visual-hull init points across all frames')
     parser.add_argument('--hull_min_views', type=int, default=9,
                         help='min cameras whose mask must contain a hull point '
-                             '(default: 9 — heidi has 11 cameras)')
+                             '(default: 9)')
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
 
@@ -210,7 +211,7 @@ def main():
         sys.exit(f'ERROR: no frame_* directories under {root}')
     rig = load_flipbook_rig(frame_dirs)
     labels = sorted(rig)
-    # frame_idx[i] is the ORIGINAL frame_NNNN index of kept frame i — it
+    # frame_idx[i] is the ORIGINAL frame_NNNN index of kept frame i. It
     # drives both the timestamp and the output filename, so names stay
     # traceable to source frames and times stay physically correct when
     # --dedupe removes holds.
@@ -289,7 +290,7 @@ def main():
             if n_done % 100 == 0 or n_done == len(jobs):
                 print(f'  images: {n_done}/{len(jobs)}', flush=True)
 
-    # ── transforms jsons (per-frame intrinsics — cameras differ) ───────────
+    # ── transforms jsons (per-frame intrinsics, cameras differ) ────────────
     ds = args.downscale
 
     def entries(cam_labels):

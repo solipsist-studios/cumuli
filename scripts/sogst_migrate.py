@@ -12,7 +12,7 @@ version 1 rather than carrying a legacy version number forever.
 The payload did not change: the textures, codebooks and segment table in a
 development-era archive are already exactly what a .sogst v1 file holds.
 So an already-baked asset needs its manifest rewritten, not a re-bake from
-the trainer -- which would cost a GPU run and re-quantize the data a second
+the trainer, which would cost a GPU run and re-quantize the data a second
 time.
 
     python sogst_migrate.py scene_v3.omg4                  # -> scene.sogst
@@ -28,7 +28,7 @@ writers a fresh bake uses, which recompute the offsets to a fixed point and
 verify them against the written file.
 
 Only ZIP archives are migratable.  The binary containers that shared the
-.omg4 extension are gone; assets in that form have to be re-baked from a
+.omg4 extension are gone.  Assets in that form have to be re-baked from a
 trainer checkpoint with bake_sogst.py.
 """
 
@@ -49,7 +49,7 @@ from sogst_io import (  # noqa: E402
 )
 
 # Development-era container version, as written in meta.json before the
-# renumbering.  Accepted as input; never produced.
+# renumbering.  Accepted as input, never produced.
 LEGACY_ZIP_VERSION = 3
 
 
@@ -84,8 +84,8 @@ def migrate(in_path, out_path):
         # Read every payload up front: the source is closed before the
         # destination is written, so in-place migration is safe.
         payloads = {name: zf.read(name) for name in names if name != 'meta.json'}
-        # Entry ORDER carries the streaming semantics -- play order, with the
-        # deferred SH tail last -- so it is preserved exactly, not sorted.
+        # Entry ORDER carries the streaming semantics (play order, with the
+        # deferred SH tail last), so it is preserved exactly, not sorted.
         order = [name for name in names if name != 'meta.json']
 
     streams = meta.get('streams')

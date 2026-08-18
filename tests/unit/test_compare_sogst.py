@@ -4,9 +4,9 @@
 """Tests for the cross-implementation equivalence check.
 
 A comparison tool that cannot fail is worse than no tool: it certifies
-divergence. So most of these are negative controls -- deliberate injections
-of the exact mistakes docs/sogst-format.md warns a second implementation
-about -- asserting that each one is caught, and by name.
+divergence. So most of these are negative controls. Each injects one of
+the exact mistakes docs/sogst-format.md warns a second implementation
+about, and asserts that the mistake is caught, and by name.
 """
 
 import numpy as np
@@ -51,7 +51,7 @@ def reference(packer):
 
 def test_packed_archive_declares_sogst_v1(reference):
     """The container is version 1 and self-identifies. The development-era
-    numbering ("3") and the .omg4 magic are gone, not deprecated -- nothing
+    numbering ("3") and the .omg4 magic are gone, not deprecated. Nothing
     was ever released that a reader would need to accept."""
     import json
     import zipfile
@@ -81,7 +81,7 @@ def test_identical_input_passes(packer, reference, capsys):
 
 
 def test_source_ply_against_its_own_pack_passes(tmp_path, source, packer, reference, capsys):
-    """A PLY is in producer order and an archive is in packing order; the
+    """A PLY is in producer order and an archive is in packing order. The
     tool must reorder before comparing, or every field reads as wrong."""
     from sogst_ply import write_sogst_ply
 
@@ -133,8 +133,9 @@ def test_catches_t_sigma_as_variance(packer, reference, capsys):
 
 def test_catches_f_rest_layout_transpose(packer, reference, capsys):
     """f_rest is channel-major, index j*coeffs + k (section 4.7). A
-    coefficient-major layout survives an absolute tolerance -- VQ noise is
-    the same order -- so it is caught by scale relative to the data spread."""
+    coefficient-major layout survives an absolute tolerance, because VQ
+    noise is the same order. So it is caught by scale relative to the
+    data spread."""
     def mutate(d):
         d["f_rest"] = d["f_rest"].reshape(-1, 3, 15).transpose(0, 2, 1).reshape(-1, 45)
 
@@ -189,10 +190,10 @@ def group_bounds(segments):
 
 def test_intra_group_shuffle_is_not_a_failure(packer, reference, source, capsys):
     """Morton ordering within a group is a compression heuristic, not part
-    of the format (section 5): a player sees [0, P) plus a span of whole
+    of the format (section 5). A player sees [0, P) plus a span of whole
     segments, so any permutation inside a group is unobservable. Two
-    conforming encoders differ here routinely -- the reference Morton and
-    splat-transform's differ in quantizer scale and tie-breaking -- so
+    conforming encoders differ here routinely (the reference Morton and
+    splat-transform's differ in quantizer scale and tie-breaking), so
     failing it would fail correct code."""
     order, segments = true_order(source)
     rng = np.random.default_rng(5)
@@ -268,7 +269,7 @@ def test_split16_tolerance_grows_with_magnitude():
 
 def test_codebook_fields_are_judged_by_fraction_not_worst_case():
     """Bin assignment at a boundary is implementation-defined, so a handful
-    of outliers must not fail a codebook field -- while a systematic error
+    of outliers must not fail a codebook field, while a systematic error
     still must."""
     err = np.zeros(1000)
     err[:3] = 10.0                                   # 0.3% way past tolerance
@@ -292,9 +293,9 @@ def test_is_codebook_field():
 #
 # A coordinate sitting exactly on a quantization boundary rounds one way in a
 # float32 encoder and the other in a float64 PLY. That one-step difference
-# moves the splat in the lexsort, pairing it against a neighbour -- so a
+# moves the splat in the lexsort, pairing it against a neighbour, so a
 # perfectly conforming archive reports large errors on every field. The repair
-# re-pairs those few splats; these tests pin down that it does so WITHOUT
+# re-pairs those few splats. These tests pin down that it does so WITHOUT
 # becoming a tool that always passes.
 # --------------------------------------------------------------------------
 
@@ -340,7 +341,7 @@ def test_repair_stands_down_above_the_limit():
 def test_repair_will_not_move_a_splat_between_groups():
     """The repair matches only within a group. A splat that genuinely landed
     in the wrong group has no in-group partner, so it stays mismatched and
-    the membership check still sees it -- the repair cannot launder the one
+    the membership check still sees it. The repair cannot launder the one
     error it is closest to."""
     n = 4
     keys_a = np.arange(n * 3, dtype=np.int64).reshape(n, 3)
@@ -365,8 +366,8 @@ def test_repair_is_inert_when_keys_agree(packer, reference, capsys):
 
 def test_catches_archive_disagreeing_with_its_own_source_ply(tmp_path, capsys):
     """A PLY carries no group table, so the tool derives one. It must compare
-    that derived table against the archive's rather than adopting it --
-    otherwise the single most important property of a PLY-vs-archive check
+    that derived table against the archive's rather than adopt it.
+    Otherwise the single most important property of a PLY-vs-archive check
     (did the archive segment its own source the way it claims?) is invisible.
 
     Reproduces the real defect: t_center values sitting exactly on a bucket
@@ -377,8 +378,8 @@ def test_catches_archive_disagreeing_with_its_own_source_ply(tmp_path, capsys):
 
     fields, meta = fixture.build_fixture(count=1500, degree=1, include_sh=False,
                                          seed=5, gap=(0.7, 1.3), blocks=True)
-    # Park the folded plateau exactly on the boundary, undoing the nudge --
-    # this is what the fixture generator used to do.
+    # Park the folded plateau exactly on the boundary, undoing the nudge.
+    # This is what the fixture generator used to do.
     tc = np.asarray(fields["t_center"], np.float64).copy()
     tc[np.isclose(tc, 1.3, atol=2e-3)] = 1.3
     fields["t_center"] = tc

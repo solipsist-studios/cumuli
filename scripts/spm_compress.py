@@ -22,19 +22,19 @@ Stages (each skipped when its artifact already exists, so reruns resume):
 
 The scene config must be an OMG4-style yaml whose OptimizationParams carry
 the SPM block (tau_GS, tau_GP, merge + SVQ settings) with iterations
-42_001 — see configs/custom/perframe90_omg4.yaml in the OMG4 repo for the
-template. Hyperparameters worth knowing: tau_GS is the sampling keep
-quantile pressure (paper headline uses 0.2 = keep ~20%; our subject scenes
-have shipped with the gentler 0.8), tau_GP the pruning quantile.
+42_001. Copy an existing custom scene config as the template.
+Hyperparameters worth knowing: tau_GS is the sampling keep quantile
+pressure (the paper headline uses 0.2 = keep ~20%, and subject scenes
+have shipped with the gentler 0.8), and tau_GP is the pruning quantile.
 
 Example:
 
     python scripts/spm_compress.py \
-        --omg4-repo ~/Dev/github/OMG4 \
-        --config configs/custom/perframe90_omg4.yaml \
-        --checkpoint output/perframe90_refit/chkpnt30000.pth \
+        --omg4-repo <path-to-OMG4> \
+        --config configs/custom/<scene>_omg4.yaml \
+        --checkpoint output/<scene>_pretrain/chkpnt30000.pth \
         --fps 29.97 \
-        --output /tmp/tatum_spm.sogst
+        --output <out>.sogst
 """
 
 import argparse
@@ -76,8 +76,9 @@ def main():
     ap.add_argument('--shn-count', type=int, default=0,
                     help='SH VQ centroid count (0 = auto from post-SPM splat count)')
     ap.add_argument('--segment-duration', type=float, default=0.1)
-    ap.add_argument('--python', default=os.path.expanduser('~/miniconda3/envs/omg4/bin/python'),
-                    help='python with torch+CUDA+diff_gaussian_rasterization (omg4 env)')
+    ap.add_argument('--python', default='python3',
+                    help='python with torch+CUDA+diff_gaussian_rasterization '
+                         '(the trainer environment)')
     args = ap.parse_args()
 
     repo = os.path.abspath(os.path.expanduser(args.omg4_repo))
@@ -125,14 +126,14 @@ def main():
     ply_path = os.path.join(tempfile.gettempdir(), os.path.basename(args.output) + '.ply')
     # The legacy corruption filters (bad_color/garbage, calibrated for the old
     # SVQ pipeline's catastrophic MLP extrapolation) are replaced here by the
-    # black-floater filter: bad_color's binary out-of-range test deleted the
-    # subject's own dark clothing along with the junk (transparency), while
-    # keeping everything left a near-black floater cloud around the subject.
-    # black_floater_mask keeps legitimate dark surface and drops only the
-    # detached murk. sh_clamp 3.0 instead of the 1.5 default because kept
-    # splats with an out-of-range DC rely on their higher SH bands to land in
-    # range, and 1.5 zeroes exactly those bands (the actual washout cause in
-    # the first SPM exports).
+    # black-floater filter. bad_color's binary out-of-range test deleted the
+    # subject's own dark clothing along with the junk (transparency), and
+    # keeping everything instead left a near-black floater cloud around the
+    # subject. black_floater_mask keeps legitimate dark surface and drops only
+    # the detached murk. sh_clamp 3.0 instead of the 1.5 default: kept splats
+    # with an out-of-range DC rely on their higher SH bands to land in range,
+    # and 1.5 zeroes exactly those bands. That zeroing was the actual washout
+    # cause in the first SPM exports.
     cmd = [args.python, os.path.join(scripts_dir, 'bake_sogst.py'),
            '--input', comp, '--emit_ply', ply_path, '--fps', str(args.fps),
            '--no_filter_corrupted', '--filter_black_floaters', '--sh_clamp', '3.0']

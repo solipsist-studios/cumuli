@@ -15,19 +15,19 @@ file's own quantization parameters.
     # quantization cost of a single pack, against the unquantized source
     python compare_sogst.py --a scene.ply --b scene.sogst
 
-Either side may be a .sogst/.omg4 archive or a 4D interchange PLY.
+Either side may be a .sogst archive or a 4D interchange PLY.
 
 **Compare decoded fields, not rendered PSNR** (docs/sogst-format.md
 section 10).  Codebook initialisation is implementation-defined, so byte
-equality is the wrong bar; PSNR is too coarse to localise which field is
+equality is the wrong bar.  PSNR is too coarse to localise which field is
 wrong.  A wrong f_rest stride and a wrong quaternion mode mapping look
 identical in a PSNR number and nothing alike in a per-field table.
 
 **Only part of splat ordering is observable, and the tool checks exactly
 that part.**  A player draws [0, P) plus a contiguous span of whole
 segments, so what is normative is the group table and which group each
-splat lands in.  The permutation *within* a group is Morton ordering -- a
-compression heuristic, explicitly not normative (section 5) -- and two
+splat lands in.  The permutation *within* a group is Morton ordering: a
+compression heuristic, explicitly not normative (section 5).  Two
 conforming encoders differ there routinely: a different quantizer scale or
 a different tie-break among splats sharing a Morton code reshuffles every
 splat while changing nothing a player can see.
@@ -57,7 +57,7 @@ SCALAR_FIELDS = list(SOGST_FIELDS)
 ACCEL_FIELDS = ['ax', 'ay', 'az']
 QUAT_FIELDS = ['rot_0', 'rot_1', 'rot_2', 'rot_3']
 
-# Fields that survive a pack unquantized are compared exactly; everything
+# Fields that survive a pack unquantized are compared exactly.  Everything
 # else gets a tolerance derived from the encoding, below.
 SPLIT16_GROUPS = {
     'means': ['x', 'y', 'z'],
@@ -67,10 +67,10 @@ SPLIT16_GROUPS = {
 
 
 def load(path):
-    """Decode a .sogst/.omg4 archive or an interchange PLY into (meta, fields).
+    """Decode a .sogst archive or an interchange PLY into (meta, fields).
 
-    `meta` is the archive's meta.json, or None for a PLY (which carries no
-    quantization parameters -- it is the unquantized side).
+    `meta` is the archive's meta.json, or None for a PLY.  A PLY carries
+    no quantization parameters: it is the unquantized side.
     """
     if zipfile.is_zipfile(path):
         from eval_render import decode_sogst_fields
@@ -105,7 +105,7 @@ def split16_tolerance(meta, group, axis, values):
 
 
 def codebook_tolerance(meta, path):
-    """Half the largest gap between adjacent codebook entries -- the worst
+    """Half the largest gap between adjacent codebook entries: the worst
     quantization error a 256-entry codebook can produce."""
     if meta is None:
         return None
@@ -136,14 +136,14 @@ def field_tolerance(meta_a, meta_b, name, values):
         elif name == 't_center':
             tol = codebook_tolerance(meta, ('trbf', 'center', 'codebook'))
         elif name == 't_sigma':
-            # Reported, but not the pass/fail bar -- see the dedicated
+            # Reported, but not the pass/fail bar: see the dedicated
             # temporal-window check in compare(). A sigma far longer than
             # the clip is saturated: the raw error can be tens of seconds
             # while the rendered difference is nil.
             tol = None
         elif name == 'opacity':
             # stored as an 8-bit LINEAR alpha, so the logit-space error
-            # blows up near the tails; bound it in linear space instead
+            # blows up near the tails.  Bound it in linear space instead.
             tol = None
         if tol is not None:
             parts.append(tol)
@@ -158,9 +158,9 @@ def field_tolerance(meta_a, meta_b, name, values):
 # Fraction of splats allowed past tolerance on a codebook-quantized field.
 # Codebook construction is implementation-defined (spec section 10), so a
 # value sitting near a bin boundary can legitimately land in a different bin
-# in two conforming encoders.  That affects a handful of splats; the bugs
-# this tool exists to catch -- a wrong f_rest stride, a wrong quaternion
-# mode mapping, a wrong log transform -- affect essentially all of them.
+# in two conforming encoders.  That affects a handful of splats.  The bugs
+# this tool exists to catch (a wrong f_rest stride, a wrong quaternion
+# mode mapping, a wrong log transform) affect essentially all of them.
 CODEBOOK_OUTLIER_FRACTION = 0.01
 
 # Ceiling on the share of splats repair_boundary_pairings will re-pair. Set
@@ -174,7 +174,7 @@ CODEBOOK_FIELDS = ('scale_', 'f_dc_', 't_center', 't_sigma')
 
 # f_rest mean error as a fraction of the data's own standard deviation.
 # Two conforming encoders differ only by VQ centroid placement and land
-# a couple of percent in; a wrong coefficient layout compares unrelated
+# a couple of percent in.  A wrong coefficient layout compares unrelated
 # coefficients and lands near 1. Measured separation on the parabola
 # fixture: 0.000 correct vs 0.743 for a channel/coefficient transpose.
 SH_LAYOUT_RATIO = 0.25
@@ -209,11 +209,11 @@ def judge(name, err, tol, codebook=False):
 def reorder_source_like(fields, meta):
     """Apply an archive's splat ordering to unordered source fields.
 
-    A PLY is in producer order; an archive is in [persistent | segments]
+    A PLY is in producer order.  An archive is in [persistent | segments]
     order.  Comparing the two index-by-index without this reports every
     field as wrong.  The ordering is re-derivable because the archive
-    records the three parameters that determine it -- duration, k_sigma and
-    persistent_span_mult (which is recorded for exactly this reason; see
+    records the three parameters that determine it: duration, k_sigma and
+    persistent_span_mult (which is recorded for exactly this reason, see
     docs/sogst-format.md section 5).
 
     Returns (reordered_fields, derived_meta).  The derived segment table is
@@ -248,7 +248,7 @@ def group_ranges(meta, n):
     A player draws [0, P) plus a contiguous span of whole segments, so what
     is observable about splat order is which group a splat is in, and where
     each group's range starts and ends.  The permutation *within* a group is
-    a compression heuristic (Morton), explicitly not normative -- see
+    a compression heuristic (Morton), explicitly not normative: see
     docs/sogst-format.md section 5.
     """
     segments = (meta or {}).get('segments')
@@ -336,20 +336,20 @@ def repair_boundary_pairings(a, b, keys_a, keys_b, groups, limit_frac):
     coordinate sitting exactly on a quantization boundary rounds one way in a
     float32 encoder and the other way in a float64 PLY, so the two sides
     disagree by a single step on one axis.  That single step moves the splat
-    in the lexsort, which pairs it against a *neighbour* -- and the neighbour
+    in the lexsort, which pairs it against a *neighbour*.  The neighbour
     is a different splat, so every field then reports a large error.  Two
     splats in 8,192 produced six field failures and a spurious membership
     divergence before this existed.
 
     So: where the sorted keys disagree, re-pair those rows among themselves
-    by nearest decoded position, within a group (a splat may not change
-    group -- that is the thing membership is testing, and repairing across
-    groups would erase the very divergence we are looking for).
+    by nearest decoded position, within a group.  A splat may not change
+    group: that is the thing membership is testing, and repairing across
+    groups would erase the very divergence we are looking for.
 
     Deliberately bounded.  Above `limit_frac` this does nothing and lets the
-    membership check fail, because a real bug -- a wrong persistence
-    predicate, a mis-ported bucketing -- misplaces splats in bulk, and
-    silently repairing that would turn the tool into one that always passes.
+    membership check fail.  A real bug (a wrong persistence predicate, a
+    mis-ported bucketing) misplaces splats in bulk, and silently repairing
+    that would turn the tool into one that always passes.
     """
     mismatched = ~np.all(keys_a == keys_b, axis=1)
     count = int(mismatched.sum())
@@ -383,7 +383,7 @@ def compare(path_a, path_b, verbose=False):
     meta_a, a = load(path_a)
     meta_b, b = load(path_b)
 
-    # A PLY is unordered source; an archive carries the packing order. Put
+    # A PLY is unordered source, and an archive carries the packing order. Put
     # the PLY through the archive's ordering so the comparison is
     # index-aligned. With two archives, both are already ordered and any
     # divergence is a real finding.
@@ -411,8 +411,8 @@ def compare(path_a, path_b, verbose=False):
     # -- grouping, which IS normative, before anything else ----------------
     # A player draws [0, P) plus a contiguous span of whole segments. So the
     # observable part of splat order is the group table and which group each
-    # splat lands in -- not the permutation within a group, which is a
-    # compression heuristic (section 5). Check the former; align away the
+    # splat lands in, not the permutation within a group, which is a
+    # compression heuristic (section 5). Check the former.  Align away the
     # latter.
     # A PLY carries no group table of its own, so reorder_source_like derives
     # one by re-running the ordering under the archive's parameters. Compare
@@ -477,7 +477,7 @@ def compare(path_a, path_b, verbose=False):
           'only group membership and the range table are, and both are checked '
           'above.\n')
 
-    # Group membership -- which IS observable, since a player culls whole
+    # Group membership IS observable, since a player culls whole
     # groups. Compared exactly rather than by a threshold: both sides are
     # now sorted by the same integer grid, so a group holding the same
     # splats has an identical key matrix. Anything else means the two
@@ -496,7 +496,7 @@ def compare(path_a, path_b, verbose=False):
     # A boundary-rounded splat shows up in one of two ways. If the one-step
     # difference reordered it against a neighbour, the repair above already
     # re-paired the two. If it did not reorder anything, the pairing was
-    # correct all along and only the key differs -- that is this mask.
+    # correct all along and only the key differs.  That is this mask.
     #
     # Tolerating one step is safe for the question being asked. A splat that
     # genuinely landed in the wrong group sits somewhere else in the scene,
@@ -580,7 +580,7 @@ def compare(path_a, path_b, verbose=False):
             sa = np.maximum(np.asarray(a['t_sigma'], np.float64), 1e-9)
             sb = np.maximum(np.asarray(b['t_sigma'], np.float64), 1e-9)
             err = np.abs(np.exp(-0.5 * (dt / sa) ** 2) - np.exp(-0.5 * (dt / sb) ** 2))
-            # one 8-bit alpha step; codebook-judged, since t_sigma is
+            # one 8-bit alpha step, codebook-judged, since t_sigma is
             # codebook-quantized and bin assignment is implementation-defined
             rows.append(judge('t_sigma (as alpha)', err, 2.0 / 255.0, codebook=True))
             if not rows[-1][-1]:
@@ -605,11 +605,11 @@ def compare(path_a, path_b, verbose=False):
                   '(w,x,y,z) relative order.\n')
 
     # Higher-order SH. VQ centroid initialisation is implementation-defined,
-    # so an absolute tolerance would produce false alarms -- but the failure
+    # so an absolute tolerance would produce false alarms. But the failure
     # this actually has to catch is a wrong coefficient layout (section 4.7:
     # channel-major with stride `coeffs`, not stride 15), and that is
     # separable from VQ noise by scale. Two conforming encoders land within
-    # a few percent of the data's own spread; a transposed layout lands at
+    # a few percent of the data's own spread.  A transposed layout lands at
     # a large fraction of it, because it is comparing unrelated
     # coefficients.
     if 'f_rest' in a and 'f_rest' in b:
@@ -622,7 +622,7 @@ def compare(path_a, path_b, verbose=False):
             ok = ratio <= SH_LAYOUT_RATIO
             # Show measured against threshold explicitly. Printing the ratio
             # alone under a "past tol" heading reads as a derived tolerance,
-            # which it is not -- the threshold is the fixed SH_LAYOUT_RATIO.
+            # which it is not: the threshold is the fixed SH_LAYOUT_RATIO.
             rows.append(('f_rest (of spread)', err, None,
                          f'{ratio:.3f}/{SH_LAYOUT_RATIO:.2f}', ok))
             if not ok:

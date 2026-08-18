@@ -78,7 +78,7 @@ def resolve_calib_path(calib_dir: Path, cam_id: str) -> Path:
     """Match a calibration pkl to a camera id across the naming conventions
     seen across capture rigs: Camera_<id>.pkl (this script's documented
     convention) or cam<N>_calibration_data.pkl (no zero-padding, "cam"
-    prefix -- e.g. the 260521 rig's calibration_pkls_heidi). Returns the
+    prefix, seen on one production rig). Returns the
     first candidate that exists, or the documented-convention path (for a
     clean "no calibration file at ..." error message) if neither does.
     """

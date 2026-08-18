@@ -9,8 +9,8 @@ ZIP container: webp attribute textures plus k-means codebooks.
 docs/sogst-format.md is the authoritative spec.
 
 The static-attribute encoding follows the PlayCanvas SOG v2 conventions
-exactly, so the engine's existing SOG decoder reconstructs them unmodified;
-motion and trbf extend the scheme with two additional textures.
+exactly, so the engine's existing SOG decoder reconstructs them unmodified.
+Motion and trbf extend the scheme with two additional textures.
 
 Usage:
     python sogst_pack.py --input scene.ply --output scene.sogst \
@@ -61,7 +61,7 @@ def tex_dims(n: int):
 def to_rgba(w: int, h: int, channels, n: int) -> np.ndarray:
     """Build an [h, w, 4] uint8 image from per-channel uint8[n] arrays.
 
-    `channels` is a 4-tuple; entries may be None (filled with 0) or a
+    `channels` is a 4-tuple.  Entries may be None (filled with 0) or a
     scalar (broadcast).  Padding texels beyond n are zero (never read by
     the decoder, and zeros compress best).
     """
@@ -113,8 +113,8 @@ def kmeans_1d(values: np.ndarray, k: int = SOGST_CODEBOOK_SIZE, iters: int = 16,
 
     With log_domain=True, clustering runs on ln(values) so precision is
     allocated by relative rather than absolute error (use for strictly
-    positive scale-like attributes, e.g. t_sigma); the returned codebook
-    is still in linear space, so decoders are unaffected.
+    positive scale-like attributes, for example t_sigma).  The returned
+    codebook is still in linear space, so decoders are unaffected.
     """
     shape = values.shape
     v = np.asarray(values, dtype=np.float64).ravel()
@@ -238,8 +238,8 @@ def compute_sogst_order(fields: dict, time_min: float, time_max: float,
     segments = {
         'duration': float(segment_duration),
         'k_sigma': float(k_sigma),
-        # Recorded so the persistent/dynamic split — and therefore the
-        # file's whole ordering — can be re-derived from the file alone.
+        # Recorded so the persistent/dynamic split (and therefore the
+        # file's whole ordering) can be re-derived from the file alone.
         # Players ignore it.  See docs/sogst-format.md section 5.
         'persistent_span_mult': float(persistent_span_mult),
         'persistent': [0, int(len(p_idx))],
@@ -249,7 +249,7 @@ def compute_sogst_order(fields: dict, time_min: float, time_max: float,
 
 
 def morton_order(xyz: np.ndarray) -> np.ndarray:
-    """Permutation sorting splats by 30-bit Morton code of position —
+    """Permutation sorting splats by 30-bit Morton code of position:
     the spatial ordering that makes the webp textures compress well."""
     mins, maxs = xyz.min(axis=0), xyz.max(axis=0)
     span = np.where(maxs - mins > 0, maxs - mins, 1.0)
@@ -284,16 +284,16 @@ def compute_quat_planes(rot_wxyz: np.ndarray):
     where mode = 252 + dropped-component code (texture alpha channel)."""
     q = rot_wxyz.astype(np.float64)
     q /= np.linalg.norm(q, axis=1, keepdims=True)
-    # decoder component order is (x, y, z, w); v2 stores (w, x, y, z)
+    # decoder component order is (x, y, z, w).  v2 stores (w, x, y, z).
     xyzw = q[:, [1, 2, 3, 0]]
     dropped = np.argmax(np.abs(xyzw), axis=1)
     sign = np.sign(np.take_along_axis(xyzw, dropped[:, None], axis=1))
     sign[sign == 0] = 1.0
     xyzw *= sign
 
-    # stored component triples per dropped index (see sogst_io v3 spec):
+    # stored component triples per dropped index (spec section 4.2):
     #   dropped x -> (w,y,z)  dropped y -> (w,x,z)  dropped z -> (w,x,y)
-    #   dropped w -> (x,y,z);  mode byte = 252 + (dropped + 1) % 4
+    #   dropped w -> (x,y,z).  Mode byte = 252 + (dropped + 1) % 4.
     keep = np.array([[3, 1, 2], [3, 0, 2], [3, 0, 1], [0, 1, 2]])
     stored = np.take_along_axis(xyzw, keep[dropped], axis=1)
     b = np.clip(np.rint((stored / SQRT2 + 0.5) * 255.0), 0, 255).astype(np.uint8)
@@ -312,12 +312,12 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
     # rediscover it: sorting palette entries by magnitude (and remapping
     # labels to match) makes each centroid-texture row a smooth ramp instead
     # of unrelated entries side by side.  It is exactly neutral on decoded
-    # output -- every splat resolves to the same coefficients, and the 1-D
-    # codebook below sees the same multiset either way -- so a decoder
+    # output (every splat resolves to the same coefficients, and the 1-D
+    # codebook below sees the same multiset either way), so a decoder
     # cannot tell.  But the size effect is conditional, not a win:
     #
-    #   heidi spm-native (75,848 splats): -32% shN_centroids, -6.0% file
-    #   heidi full      (682,389 splats): +0.4% file
+    #   a 75,848-splat SPM-native export: -32% shN_centroids, -6.0% file
+    #   a 682,389-splat full export:      +0.4% file
     #
     # shN_centroids is fixed-size at a given palette count while
     # shN_labels grows with the splat count, so the gain only survives when
@@ -327,8 +327,8 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
     # restructuring for a conditional few percent.
     codebook, cidx = kmeans_1d(centroids)
     # centroid texture: 64 palette entries per row, each `coeffs` texels
-    # wide; texel (u+k, v) RGB = codebook indices of coefficient k for the
-    # three color channels (channel-major f_rest layout: j*coeffs + k)
+    # wide.  Texel (u+k, v) RGB = codebook indices of coefficient k for the
+    # three color channels (channel-major f_rest layout: j*coeffs + k).
     width = SOGST_SHN_WIDTHS[bands]
     height = int(math.ceil(k / 64))
     cent_img = np.zeros((height, width, 4), dtype=np.uint8)
@@ -351,18 +351,19 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
             generator: str = 'volumetric-capture-pipeline sogst_pack',
             cov2d_scale=None, segment_duration: float = 0.1,
             order_segments=None, stream: bool = True) -> dict:
-    """Quantize v2-style field arrays and write a version-3 .omg4 archive.
+    """Quantize per-splat field arrays and write a version-1 .sogst archive.
 
     `fields` maps SOGST_FIELDS names to float32[N] arrays, plus optional
     'f_rest' as float32[N, 45].  `order_segments` accepts a precomputed
-    (order, segments) pair from compute_sogst_order() (the CLI shares it with
-    verify_sogst); otherwise it is computed here.  Returns the written meta.
+    (order, segments) pair from compute_sogst_order() (the CLI shares it
+    with verify_sogst).  Otherwise it is computed here.  Returns the
+    written meta.
 
     With stream=True (and segmentation on), the archive uses the streamed
     layout: one webp texture set per group (persistent, then one per
     temporal segment), written in play order so a sequential download can
     decode and reveal the scene progressively.  Quantization is global
-    either way — codebooks, mins/maxs and shN centroids live in meta.json
+    either way: codebooks, mins/maxs and shN centroids live in meta.json
     and are shared by every group.
     """
     n = len(fields['x'])
@@ -443,9 +444,9 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
         # Streamed layout, SH deferred behind geometry:
         #   [meta | persistent/* | seg_NNN/* | shN_centroids | */shN_labels]
         # The reveal point covers geometry + DC color only: the viewer
-        # starts DC-only playback after the first segment and layers the
-        # view-dependent SH in as the trailing entries arrive.  Entry
-        # names are unchanged — only their position in the archive moves.
+        # starts DC-only playback after the first segment and adds the
+        # view-dependent SH as the trailing entries arrive.  Entry
+        # names are unchanged.  Only their position in the archive moves.
         p_end = segments['persistent'][1]
         groups = [('persistent', 0, p_end)]
         prefixes = []
@@ -588,10 +589,10 @@ def main():
                         help='VQ centroid count for higher-order SH (default 65536)')
     parser.add_argument('--strip-sh', action='store_true', help='Drop higher-order SH entirely')
     parser.add_argument('--webp-method', type=int, default=4, choices=range(7),
-                        help='libwebp effort 0-6 (default 4; 6 is smallest/slowest)')
+                        help='libwebp effort 0-6 (default 4, 6 is smallest/slowest)')
     parser.add_argument('--segment-duration', type=float, default=0.1,
                         help='Temporal segment length in seconds for per-segment culling '
-                             '(default 0.1; 0 disables segmentation)')
+                             '(default 0.1, 0 disables segmentation)')
     parser.add_argument('--monolithic', action='store_true',
                         help='Write whole-clip textures instead of the streamed '
                              'per-segment layout (streamed is the default when '

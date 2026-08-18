@@ -70,7 +70,7 @@ def read_meta(path):
     ("scene_v3.omg4", "scene.sogst"),
     ("scene-v3.omg4", "scene.sogst"),
     ("scene.omg4", "scene.sogst"),
-    ("heidi_hires_full_v3.omg4", "heidi_hires_full.sogst"),
+    ("capture_full_v3.omg4", "capture_full.sogst"),
     ("already_v3_named_v3.omg4", "already_v3_named.sogst"),
 ])
 def test_migrated_name(name, expected, tmp_path):
@@ -109,8 +109,8 @@ def test_payloads_survive_byte_for_byte(tmp_path, streamed):
 
 
 def test_entry_order_is_preserved(tmp_path):
-    """Entry order carries the streaming semantics -- play order, deferred SH
-    last -- so sorting it would silently break progressive playback."""
+    """Entry order carries the streaming semantics (play order, deferred SH
+    last), so sorting it would silently break progressive playback."""
     src = make_legacy(tmp_path / "scene_v3.omg4", streamed=True)
     with zipfile.ZipFile(src) as zf:
         before = zf.namelist()
@@ -146,8 +146,8 @@ def test_stream_offsets_are_recomputed_not_copied(tmp_path):
 
 
 def test_reveal_point_still_covers_the_first_segment(tmp_path):
-    """reveal_bytes must still mark the same logical point -- the end of the
-    first segment's geometry -- not merely some valid boundary."""
+    """reveal_bytes must still mark the same logical point (the end of the
+    first segment's geometry), not merely some valid boundary."""
     src = make_legacy(tmp_path / "scene_v3.omg4", streamed=True)
     out = tmp_path / "scene.sogst"
     sogst_migrate.migrate(str(src), str(out))
@@ -173,8 +173,8 @@ def test_unsegmented_archive_migrates(tmp_path):
 
 
 def test_already_migrated_archive_is_accepted(tmp_path):
-    """Re-running the migrator must be a no-op, not an error -- it will be
-    pointed at directories that are partly converted."""
+    """Re-running the migrator must be a no-op, not an error, because it
+    will be pointed at directories that are partly converted."""
     src = make_legacy(tmp_path / "scene_v3.omg4", streamed=True)
     once = tmp_path / "once.sogst"
     sogst_migrate.migrate(str(src), str(once))
@@ -190,7 +190,7 @@ def test_already_migrated_archive_is_accepted(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_non_zip_is_rejected_with_the_rebake_instruction(tmp_path):
-    """The binary containers are gone; the error has to say what to do."""
+    """The binary containers are gone. The error has to say what to do."""
     binary = tmp_path / "old.omg4"
     binary.write_bytes(b"OMG4" + b"\x00" * 64)
 

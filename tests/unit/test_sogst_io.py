@@ -5,17 +5,17 @@
 
 Section 2 requires a writer to verify its computed streaming offsets against
 the file it actually wrote. The interesting case is the one that looks like
-it needs no attention: when a marker falls on the LAST entry there is no
-following entry to compare against, and the offset points at the start of the
-central directory instead. Guarding the check with "is there a next entry?"
-therefore skips it precisely when nothing follows -- which is every archive
-with no shN group.
+it needs no attention. When a marker falls on the LAST entry, there is no
+following entry to compare against, and the offset points at the start of
+the central directory instead. Guarding the check with "is there a next
+entry?" therefore skips it precisely when nothing follows, which is every
+archive with no shN group.
 
-That is not a hypothetical. The same wrong assumption -- that an offset always
-points at an entry -- appeared independently in four places: this repo's spec
-section 6, this writer, and both the checker and the writer verification of the
-independent TypeScript encoder. None was a typo; each came from reasoning about
-offsets without asking what happens at the end.
+That is not a hypothetical. The same wrong assumption (that an offset always
+points at an entry) appeared independently in four places: this repo's spec
+section 6, this writer, and both the checker and the writer verification of
+the independent TypeScript encoder. None was a typo. Each came from
+reasoning about offsets without asking what happens at the end.
 """
 
 import zipfile
@@ -64,7 +64,7 @@ def test_geometry_bytes_lands_on_the_central_directory_without_sh(tmp_path, scen
 def test_offset_verification_is_live_on_the_no_sh_path(tmp_path, scene, monkeypatch):
     """The check must actually run when the marker is last, not skip.
 
-    Perturbing the real layout by one byte has to raise; if it does not, the
+    Perturbing the real layout by one byte has to raise. If it does not, the
     verification is passing vacuously on exactly the archives it was added to
     protect.
 
@@ -78,16 +78,17 @@ def test_offset_verification_is_live_on_the_no_sh_path(tmp_path, scene, monkeypa
     meta.json is serialized.
 
     A corollary worth knowing: this test deliberately does not produce a
-    corrupt artifact. The file on disk carries the correct offset throughout —
-    only the comparison sees a wrong value. That is what a check-the-checker
+    corrupt artifact. The file on disk carries the correct offset throughout.
+    Only the comparison sees a wrong value. That is what a check-the-checker
     test should do.
 
     Scope of what the last-marker fix actually bought, measured rather than
-    assumed: starving the fixed-point loop to one pass raises on *reveal_bytes*
-    even under the old guard, because that marker points at a real entry. So a
-    non-converging loop was never the exposure. What was invisible is an error
-    specific to geometry_bytes — a wrong `geometry_through`, or an off-by-one
-    that only bites on the last entry — since that check did not run at all."""
+    assumed: starving the fixed-point loop to one pass raises on
+    *reveal_bytes* even under the old guard, because that marker points at a
+    real entry. So a non-converging loop was never the exposure. What was
+    invisible is an error specific to geometry_bytes (a wrong
+    `geometry_through`, or an off-by-one that only bites on the last entry),
+    since that check did not run at all."""
     real = zipfile.ZipFile
 
     class Shifted(real):
@@ -118,9 +119,9 @@ def test_offset_verification_still_covers_the_entry_case(tmp_path, scene_with_sh
 def test_archive_is_byte_reproducible(tmp_path, scene):
     """Two packs of the same input must be byte-identical.
 
-    The TypeScript encoder is not: its ZIP writer stamps DOS timestamps from
-    the wall clock, so re-encoding the same input changes 484 bytes across 121
-    entries while every payload stays identical. That makes a hash a false
+    The TypeScript encoder is not. Its ZIP writer stamps DOS timestamps from
+    the wall clock, so re-encoding the same input changes 484 bytes across
+    121 entries while every payload stays identical. That makes a hash a false
     negative as a same-input check there. This side has no such excuse, and a
     regression would silently break any tooling that dedupes by hash."""
     a = tmp_path / "a.sogst"
@@ -135,24 +136,26 @@ def test_sh_vector_quantization_is_deterministic_on_cpu(tmp_path, scene_with_sh,
     """The SH path is byte-reproducible on CPU, and NOT on GPU.
 
     Clustering is where an encoder most easily stops being deterministic, and
-    both implementations of this format are affected. The TypeScript encoder's
-    GPU k-means lands on a different local optimum per run: two consecutive
-    encodes of heidi differ in 23 of 191 entries with a 0.15% size spread,
-    geometry bit-identical. This encoder has the same class of defect for a
-    narrower reason -- `pack_shn` runs Lloyd in torch, and on CUDA the
-    `index_add_` centroid accumulation uses atomics, so summation order varies
-    between runs. The resulting ~4e-9 wobble is absorbed by quantization in the
-    textures but survives into `meta.shN.codebook`, whose changed digit count
-    then shifts `reveal_bytes` and `geometry_bytes`.
+    both implementations of this format are affected. The TypeScript
+    encoder's GPU k-means lands on a different local optimum per run: two
+    consecutive encodes of one real asset differ in 23 of 191 entries with a
+    0.15% size spread, geometry bit-identical. This encoder has the same
+    class of defect for a narrower reason. `pack_shn` runs Lloyd in torch,
+    and on CUDA the `index_add_` centroid accumulation uses atomics, so
+    summation order varies between runs. The resulting ~4e-9 wobble is
+    absorbed by quantization in the textures but survives into
+    `meta.shN.codebook`, whose changed digit count then shifts
+    `reveal_bytes` and `geometry_bytes`.
 
-    Measured: with CUDA available, `meta.json` differs between two packs of one
-    input (187 of 256 codebook entries, last few digits). With CUDA hidden,
-    every entry is byte-identical -- which is what this test pins, since it is
-    the part that is a property of the algorithm rather than of the hardware.
+    Measured: with CUDA available, `meta.json` differs between two packs of
+    one input (187 of 256 codebook entries, last few digits). With CUDA
+    hidden, every entry is byte-identical. That is what this test pins,
+    since it is the part that is a property of the algorithm rather than of
+    the hardware.
 
-    Both encoders' GPU archives remain valid; the difference is a clustering
-    choice, not a quality one. But it means a hash is not a same-input check on
-    a GPU-encoded SH asset from either implementation, and §10's field
+    Both encoders' GPU archives remain valid. The difference is a clustering
+    choice, not a quality one. But it means a hash is not a same-input check
+    on a GPU-encoded SH asset from either implementation, and §10's field
     comparison is the check that still holds."""
     import torch
 

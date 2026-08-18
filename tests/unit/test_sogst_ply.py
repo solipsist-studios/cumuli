@@ -66,7 +66,7 @@ def test_round_trip_is_bit_exact(tmp_path, degree, include_sh):
 
 def test_column_order_matches_the_spec(tmp_path):
     """The encoder reads columns by name, but a reordered header is still a
-    contract change -- and the base block's order is what section 7.2 fixes."""
+    contract change, and the base block's order is what section 7.2 fixes."""
     path = tmp_path / "scene.ply"
     write_sogst_ply(str(path), make_fields(degree=2, include_sh=True), 0.0, 1.0, 30.0)
 
@@ -102,7 +102,7 @@ def strip_comment(path, key):
 @pytest.mark.parametrize("key", ["time_min", "time_max", "fps"])
 def test_missing_clip_scalar_raises(tmp_path, key):
     """A defaulted fps or time range renders perfectly and plays at the wrong
-    speed -- no test downstream catches it, so refusing here is the defence."""
+    speed. No test downstream catches it, so refusing here is the defence."""
     path = tmp_path / "scene.ply"
     write_sogst_ply(str(path), make_fields(), 0.0, 2.0, 24.0)
     strip_comment(path, key)
@@ -251,7 +251,7 @@ def test_truncated_header_is_rejected(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_fixture_exercises_all_four_quaternion_modes():
-    """Section 4.2's smallest-three encoding has four cases; a fixture that
+    """Section 4.2's smallest-three encoding has four cases. A fixture that
     only hits three lets a wrong mode mapping pass."""
     fields, _ = fixture.build_fixture(count=256, seed=1)
     quat = np.stack([fields[f"rot_{i}"] for i in range(4)], axis=1)
@@ -267,7 +267,7 @@ def test_fixture_motion_is_genuinely_second_order():
 
 
 def test_fixture_reanchoring_reproduces_the_trajectory():
-    """Columns are anchored at each splat's own t_center; a producer that
+    """Columns are anchored at each splat's own t_center. A producer that
     re-anchors position without also re-anchoring velocity produces a file
     that is wrong everywhere except t_center, and looks right there."""
     fields, meta = fixture.build_fixture(count=512, degree=2)

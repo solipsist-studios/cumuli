@@ -13,11 +13,11 @@ same cleaned masks the training consumed.
 
 Why this exists: masked training does not prevent floaters. Real runs
 accumulate substantial non-subject junk that alpha supervision never
-removes -- warm-started per-frame sequences have measured 30-56% of
+removes.  Warm-started per-frame sequences have measured 30-56% of
 splats failing this check, and even clean cold-start runs carry a few
 percent. The junk both occludes the subject from novel views and corrupts
-anything computed from the splat (e.g. a subject centroid used to aim
-novel-view render cameras). Unlike density/outlier heuristics (which
+anything computed from the splat (for example a subject centroid used to
+aim novel-view render cameras). Unlike density/outlier heuristics (which
 misclassify embedded high-opacity blobs) this is a direct geometric test
 against ground truth: a Gaussian that projects outside the subject
 silhouette in most views that resolve it is not subject geometry.
@@ -25,15 +25,15 @@ silhouette in most views that resolve it is not subject geometry.
 Known limitation: splats hiding BEHIND the subject inside the silhouette
 frustum project inside the mask in most views and are NOT caught (depth
 is unobservable from silhouettes alone). If downstream consumers compute
-statistics from the splat (centroids etc.), bound them spatially as well
--- see --subject_radius / --subject_anchor_ply.
+statistics from the splat (centroids etc.), bound them spatially as well:
+see --subject_radius / --subject_anchor_ply.
 
 Only Gaussians with opacity above --opacity_check_thresh are tested
 (below that they are visually negligible either way), and only cameras
-whose frustum actually contains the projection count toward the vote;
+whose frustum actually contains the projection count toward the vote.
 Gaussians no camera resolves are kept rather than guessed at.
 
-conda env: none (numpy + PIL + plyfile).
+Dependencies: numpy + PIL + plyfile only.
 
 Usage:
     python3 filter_splat_by_masks.py \\
@@ -104,12 +104,12 @@ def main() -> int:
     ap.add_argument("--opacity_check_thresh", type=float, default=0.1,
                     help="only test Gaussians with sigmoid(opacity) above this (default 0.1)")
     ap.add_argument("--subject_anchor_ply", type=Path, default=None,
-                    help="optional subject point cloud (e.g. poses_pcd_fullres/<tem>.ply); "
-                         "with --subject_radius, also drops Gaussians farther than the "
-                         "radius from its median -- catches behind-the-subject junk the "
+                    help="optional subject point cloud (for example poses_pcd_fullres/<tem>.ply). "
+                         "With --subject_radius, also drops Gaussians farther than the "
+                         "radius from its median: catches behind-the-subject junk the "
                          "silhouette test cannot see")
     ap.add_argument("--subject_radius", type=float, default=None,
-                    help="radius (world units) around the subject anchor; requires --subject_anchor_ply")
+                    help="radius (world units) around the subject anchor. Requires --subject_anchor_ply")
     ap.add_argument("--report_only", action="store_true",
                     help="print the keep/drop summary without writing the output ply")
     args = ap.parse_args()

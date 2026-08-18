@@ -5,15 +5,15 @@
 """spm_native.py - OMG4 sampling->pruning->merging with explicit SH kept.
 
 The SPM-native counterpart to spm_compress.py. Both drive the OMG4
-reference implementation's SD-score compression schedule; the difference
+reference implementation's SD-score compression schedule. The difference
 is what happens after the merge rounds:
 
   spm_compress.py  -> OMG4's full pipeline: appearance is distilled into
                       6-dim latents + MLPs + SVQ, then baked back to SH
                       by the exporter. The count reduction is excellent
                       but the appearance round-trip reads soft/washed on
-                      subject captures (measured on tatum: the loss is
-                      count-independent).
+                      subject captures (measured on a subject capture:
+                      the loss is count-independent).
   spm_native.py    -> train.py --spm_native_out: after S->P->M the
                       surviving Gaussians keep their explicit per-splat
                       SH and fine-tune a few thousand more iterations,
@@ -32,17 +32,16 @@ Stages (each skipped when its artifact already exists, so reruns resume):
 
 The scene config must be an OMG4-style yaml whose OptimizationParams
 carry the SPM block (tau_GS, tau_GP, merge settings) with iterations
-42_001 — see configs/custom/heidi_spm_native.yaml in the OMG4 repo.
-Requires the OMG4 clone's feature/ftgs-degree2 branch (or later), which
-carries the --spm_native_out patch.
+42_001. Copy an existing custom scene config as the template. Requires
+an OMG4 clone that carries the --spm_native_out patch.
 
 Example:
 
     python scripts/spm_native.py \
-        --omg4-repo ~/Dev/github/OMG4 \
-        --config configs/custom/heidi_spm_native.yaml \
-        --checkpoint output/heidi_pretrain/chkpnt30000.pth \
-        --fps 30 --output /tmp/heidi_spm_native.sogst
+        --omg4-repo <path-to-OMG4> \
+        --config configs/custom/<scene>_spm_native.yaml \
+        --checkpoint output/<scene>_pretrain/chkpnt30000.pth \
+        --fps 30 --output <out>.sogst
 """
 
 import argparse
@@ -57,7 +56,8 @@ from spm_compress import run, sh_count_for
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--omg4-repo', required=True, help='path to the MinShirley/OMG4 clone (with the spm_native patch)')
+    ap.add_argument('--omg4-repo', required=True,
+                    help='path to the MinShirley/OMG4 clone (with the spm_native patch)')
     ap.add_argument('--config', required=True,
                     help='scene yaml with the SPM OptimizationParams block (repo-relative or absolute)')
     ap.add_argument('--checkpoint', required=True,
@@ -76,18 +76,19 @@ def main():
                     help='freeze t / scaling_t / rotation_r during the recovery fine-tune. '
                          'OMG4s update_learning_rate() decays only the xyz group, so temporal '
                          'parameters keep their initial lr for the whole run and drift during '
-                         'recovery. MEASURED: this makes no difference (22.56 vs 22.32 dB) — a '
-                         'parameter diff showed opacity drifting most (24.5%% relative), not the '
-                         'temporal group. Kept as plumbing for further experiments; do not '
-                         'expect it to recover quality.')
+                         'recovery. MEASURED: this makes no difference (22.56 vs 22.32 dB). A '
+                         'parameter diff showed opacity drifting most (24.5%% relative), not '
+                         'the temporal group. Kept as plumbing for further experiments. Do '
+                         'not expect it to recover quality.')
     ap.add_argument('--filter-black-floaters', action='store_true',
                     help='drop the detached near-black streaks a merge can leave behind. '
-                         'Not needed on every scene (heidi renders clean without it); '
-                         'check a white-background render before deciding — black floaters '
+                         'Not needed on every scene (some scenes render clean without it). '
+                         'Check a white-background render before deciding: black floaters '
                          'are invisible over the eval renders black background.')
     ap.add_argument('--segment-duration', type=float, default=0.1)
-    ap.add_argument('--python', default=os.path.expanduser('~/miniconda3/envs/omg4/bin/python'),
-                    help='python with torch+CUDA+diff_gaussian_rasterization (omg4 env)')
+    ap.add_argument('--python', default='python3',
+                    help='python with torch+CUDA+diff_gaussian_rasterization '
+                         '(the trainer environment)')
     args = ap.parse_args()
 
     repo = os.path.abspath(os.path.expanduser(args.omg4_repo))

@@ -7,27 +7,27 @@ sog_flipbook_to_sogst.py  –  Convert a per-frame .sog flipbook sequence into
 a single .sogst archive.
 
 A flipbook stores an independent splat set per frame. .sogst has no
-per-frame data — every splat carries a temporal Gaussian — so each frame's
+per-frame data (every splat carries a temporal Gaussian), so each frame's
 splats are emitted with:
 
     t_center = frame time
     t_sigma  = t_sigma_factor * frame_interval
     velocity = 0
 
-With the default t_sigma_factor of 0.5 the per-frame temporal Gaussians sum
-to a near-constant coverage over the clip (a theta function): playback
+With the default t_sigma_factor of 0.5, the per-frame temporal Gaussians
+sum to a near-constant coverage over the clip (a theta function). Playback
 crossfades adjacent frames (~14% ghost of each neighbour at a frame's own
 centre) instead of hard-cutting, which reads as mild motion blur.
 
 Note what this discards: velocity = 0 and a constant sigma throw away the
 temporal modelling the format exists to carry, so a flipbook asset is
 much larger than a trained 4D one for the same clip. This path is for
-content that only exists as per-frame splats; prefer bake_sogst.py where
+content that only exists as per-frame splats. Prefer bake_sogst.py where
 a 4D model is available.
 
 Size/feasibility: a player evaluates EVERY splat every rendered frame, so
 summing whole frames is untenable (a 481-frame flipbook holds ~68M splats).
---max-splats sets a total budget divided evenly across frames; each frame
+--max-splats sets a total budget divided evenly across frames. Each frame
 keeps its top-k splats by visual importance (alpha x mean-scale^2).
 
 Frame decoding shells out to the `splat-transform` CLI (npm i -g
@@ -39,7 +39,7 @@ Usage:
         --input-dir path/to/frames --pattern '{frame:04d}.sog' \
         --start 100 --end 187 --fps 24 \
         --max-splats 2500000 \
-        --output ariana.sogst
+        --output <out>.sogst
 """
 
 import argparse
@@ -125,25 +125,25 @@ def main():
     parser.add_argument('--start', type=int, required=True, help='First frame number (inclusive)')
     parser.add_argument('--end', type=int, required=True, help='Last frame number (inclusive)')
     parser.add_argument('--stride', type=int, default=1,
-                        help='Take every Nth frame (default: 1). Halves splat count per doubling; '
-                             'playback stays real-time (frame interval widens and t_sigma with it).')
+                        help='Take every Nth frame (default: 1). Halves splat count per doubling. '
+                             'Playback stays real-time (frame interval widens and t_sigma with it).')
     parser.add_argument('--fps', type=float, default=30.0,
                         help='Source flipbook playback rate (default: 30). Frame i maps to '
                              't = i*stride/fps, so the clip duration matches the original.')
     parser.add_argument('--max-splats', type=int, default=2_500_000,
-                        help='Total splat budget divided evenly across frames; each frame keeps its '
-                             'top share by importance (default: 2500000; 0 = keep everything, which '
-                             'is usually untenable — see module docstring)')
+                        help='Total splat budget divided evenly across frames. Each frame keeps its '
+                             'top share by importance (default: 2500000, and 0 keeps everything, '
+                             'which is usually untenable: see module docstring)')
     parser.add_argument('--t-sigma-factor', type=float, default=0.5,
-                        help='t_sigma as a fraction of the frame interval (default: 0.5 — near-flat '
-                             'total coverage, mild crossfade; smaller = crisper cuts but pulsing '
-                             'between frame centres)')
+                        help='t_sigma as a fraction of the frame interval (default: 0.5, near-flat '
+                             'total coverage with a mild crossfade. Smaller values give crisper '
+                             'cuts but pulsing between frame centres)')
     parser.add_argument('--prune-alpha', type=float, default=1.0 / 255,
                         help='Drop splats whose peak alpha is below this before ranking (default: 1/255)')
     parser.add_argument('--jobs', type=int, default=8, help='Parallel frame decodes (default: 8)')
     parser.add_argument('--segment-duration', type=float, default=0.1,
                         help='Temporal segment length in seconds for per-segment culling '
-                             '(default 0.1; 0 disables segmentation). A flipbook segments '
+                             '(default 0.1, and 0 disables segmentation). A flipbook segments '
                              'especially well: every splat is short-lived by construction.')
     parser.add_argument('--output', required=True, help='Destination .sogst archive')
     args = parser.parse_args()
@@ -160,7 +160,7 @@ def main():
     paths = [in_dir / args.pattern.format(frame=f) for f in frames]
     missing = [p for p in paths if not p.is_file()]
     if missing:
-        sys.exit(f'ERROR: missing frames, e.g. {missing[0]}')
+        sys.exit(f'ERROR: missing frames, for example {missing[0]}')
 
     tmp_dir = tempfile.mkdtemp(prefix='sog2sogst_')
     results = [None] * n_frames
@@ -193,8 +193,8 @@ def main():
     t_sigma = np.full(total, args.t_sigma_factor * dt, dtype=np.float32)
     zeros = np.zeros(total, dtype=np.float32)
 
-    # base[:, :14] is the v2 field order minus the temporal columns, i.e.
-    # SOGST_FIELDS[:14]; velocity is identically zero for a flipbook.
+    # base[:, :14] is the v2 field order minus the temporal columns, that
+    # is, SOGST_FIELDS[:14]. Velocity is identically zero for a flipbook.
     fields = {name: np.ascontiguousarray(base[:, i])
               for i, name in enumerate(SOGST_FIELDS[:14])}
     fields.update({'vx': zeros, 'vy': zeros, 'vz': zeros,
