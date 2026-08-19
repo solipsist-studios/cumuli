@@ -3,8 +3,14 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 """
-xz_to_omg4.py  –  Convert an OMG4 compressed 4DGS model (comp.xz) to the
-compact .omg4 v2 binary format consumed by the supersplat-viewer.
+bake_sogst.py  –  Bake an OMG4-trained 4DGS model into the .sogst container
+and/or the 4D interchange PLY.
+
+Input is a trainer artifact: an OMG4 compressed model (comp.xz) or a
+Real-Time-4DGS checkpoint (chkpntNNNNN.pth).  Output is a .sogst archive
+(--output), the interchange PLY that feeds an external encoder
+(--emit_ply), or both.  Both are written from the same post-filter arrays,
+so they cannot disagree.
 
 OMG4 (arXiv 2510.03857) represents a dynamic scene with 4D space-time
 Gaussians. Each Gaussian has a 4x4 covariance built from two quaternions
@@ -20,46 +26,36 @@ time t "slices" the 4D Gaussian:
 
 Color and (peak) opacity come from small MLPs evaluated on the contracted
 position and normalised time. This exporter bakes every per-Gaussian
-quantity once (evaluating the MLPs at each Gaussian's own temporal centre,
-where it is most visible) and stores the temporal parameters explicitly so
+quantity once, evaluating the MLPs at each Gaussian's own temporal centre,
+where it is most visible. It stores the temporal parameters explicitly so
 the viewer can evaluate motion and temporal fade per rendered frame on the
 GPU. There is no per-frame data: the file covers the full clip continuously.
 
 Requirements: torch numpy dahuffman  (the OMG4 training environment)
 
 Usage:
-    python xz_to_omg4.py \
+    python bake_sogst.py \
         --input  path/to/comp.xz \
-        --output path/to/scene.omg4 \
+        --output path/to/scene.sogst \
         --time_min 0.0 --time_max 10.0 --fps 30
 
+    # interchange PLY only, for an external encoder:
+    python bake_sogst.py --input chkpnt30000.pth --emit_ply scene.ply \
+        --time_min 0 --time_max 2 --fps 30
+
 time_min/time_max MUST match the `time_duration` the model was trained
-with (configs/dynerf/*.yaml in the OMG4 repo: [0.0, 10.0]); both the
+with (configs/dynerf/*.yaml in the OMG4 repo: [0.0, 10.0]). Both the
 temporal-opacity units and the MLP time normalisation depend on it.
 
-.omg4 v2 file format (all values little-endian) — see splat4d_io.py for the
-shared spec:
-    Header (32 bytes):
-        uint32  magic = 0x34474D4F ("OMG4")
-        uint32  version = 2
-        uint32  numSplats (N)
-        uint32  flags = 0 (reserved)
-        float32 timeMin, timeMax   (clip time range, seconds)
-        float32 fps                (advisory, for UI only)
-        uint32  reserved = 0
-    Data: 19 SoA float32[N] arrays, in order:
-        x y z                      position at t = t_center
-        rot_0 rot_1 rot_2 rot_3    quaternion (w,x,y,z) of sliced 3D covariance
-        scale_0 scale_1 scale_2    log-space sqrt eigenvalues of sliced 3D cov
-        opacity                    logit-space peak opacity
-        f_dc_0 f_dc_1 f_dc_2       SH DC coefficients
-        vx vy vz                   velocity, scene units / second
-        t_center                   temporal centre, seconds
-        t_sigma                    temporal std-dev, seconds
+The per-splat columns this produces are specified in
+docs/sogst-format.md section 7, and mirrored in sogst_ply.py: position at
+t_center, w-first quaternion, log scales, logit opacity, raw SH DC,
+velocity in units/second, and t_center / t_sigma in seconds.
 """
 
 import argparse
 import lzma
+import os
 import math
 import pickle
 import sys
@@ -69,7 +65,19 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from splat4d_io import OMG4_MAGIC, write_omg4_v2_header, report_output
+from sogst_io import SOGST_FIELDS, report_output
+
+# Set by main() when --output is given: the packer options for the .sogst
+# container, {'shn_count': int, 'webp_method': int, 'segment_duration': float}.
+# None means this bake writes only the interchange PLY.
+SOGST_EXPORT_OPTIONS = None
+
+# Set by main() when --emit_ply is given: the destination .ply path.
+# finish_export() writes the 4D interchange PLY (docs/sogst-format.md
+# section 7) from the same post-filter field arrays that feed the container
+# writer, so the two cannot disagree.
+PLY_EXPORT_PATH = None
+PLY_EXPORT_SIDECAR = False
 
 try:
     import dahuffman
@@ -210,8 +218,8 @@ def bad_color_mask(f_dc):
 
     f_dc comes straight out of an MLP with no output activation, so it is
     unbounded. An early version of this exporter CLAMPED these into [0,1]
-    instead of dropping them -- that was wrong: clamping a garbage value to
-    the nearest valid boundary doesn't recover the true colour, it just
+    instead of dropping them. That was wrong: clamping a garbage value to
+    the nearest valid boundary does not recover the true colour, it just
     picks black or white almost arbitrarily depending which side of zero
     the garbage landed on. Scattered across a meaningful fraction of splats
     (observed: ~50% after aggressive SVQ appearance-codebook quantization
@@ -234,7 +242,7 @@ def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     Splats observed from a narrow cone of training views can have SH
     coefficients that explode when evaluated from novel directions
     (saturated 'firework' spikes). A conservative bound on the band
-    contribution is sum(|c_lm| * max|Y_lm|); per splat, if
+    contribution is sum(|c_lm| * max|Y_lm|). Per splat, if
     base + bound exceeds sh_clamp (in colour units), the f_rest coefficients
     are scaled so it does not. sh_clamp <= 0 disables.
     """
@@ -320,7 +328,7 @@ def main_cluster_mask(xyz, opacity_logit, cell_frac=0.03):
 
     Removes isolated floater clusters (mask noise, stray props) that
     reconstruct away from the subject. Cell size is cell_frac of the bbox
-    diagonal; clusters are ranked by opacity mass.
+    diagonal. Clusters are ranked by opacity mass.
     """
     from scipy import ndimage
     lo, hi = xyz.min(axis=0), xyz.max(axis=0)
@@ -347,7 +355,7 @@ def garbage_splat_mask(log_scales, max_scale_thresh=0.2, max_aspect_thresh=10.0)
     """Flag splats with grossly oversized, needle-thin covariance.
 
     A small fraction of splats (observed: ~1.6% of a compressed model, but
-    ~96% correlated with also having an out-of-range base colour -- see
+    ~96% correlated with also having an out-of-range base colour: see
     bad_color_mask, which independently drops those) come out of
     SVQ-quantized decode with geometry that was never anything real:
     eigenvalue aspect ratios up to 10^6:1 and a long axis tens of times the
@@ -371,9 +379,9 @@ def dark_occluder_mask(f_dc, opacity_logit, log_scales, brightness_thresh=0.05,
     """Flag oversized, near-black, high-opacity splats.
 
     A known Gaussian-splatting failure mode: the optimizer grows dark
-    "shadow-filling" splats to explain away self-occlusion/shadowing that's
-    only visible from a subset of training cameras -- this capture has a
-    lot of that (fast human motion, limbs crossing the body). Those splats
+    "shadow-filling" splats to explain away self-occlusion/shadowing that
+    is only visible from a subset of training cameras. Fast-motion human
+    captures, with limbs crossing the body, have a lot of that. Those splats
     look correct from the cameras that saw the shadow, but from a novel
     angle they just sit there as opaque black blobs occluding the real
     geometry behind them. Distinguished from legitimate dark material
@@ -397,23 +405,149 @@ def dark_occluder_mask(f_dc, opacity_logit, log_scales, brightness_thresh=0.05,
     return ~bad
 
 
+def black_floater_mask(f_dc, opacity_logit, log_scales,
+                       black_thresh=-0.25, dim_thresh=0.05,
+                       alpha_thresh=0.30, aspect_thresh=6.0):
+    """Flag the black-floater cloud an SPM fine-tune leaves around a masked
+    subject, without deleting its legitimate dark material.
+
+    The SPM export's below-range-DC population does double duty: most of it
+    is the subject's own dark clothing (deleting it all is the transparency
+    failure bad_color_mask caused), but a subset is detached near-black
+    streaks that read as an "evil cloud" against a light viewer background
+    (invisible over the black eval background, which is how it survived the
+    metric checks). The junk subset is distinguished by being *deeply*
+    negative in colour (mean below black_thresh, where no SH band can bring
+    it back), or dark (below dim_thresh) while ALSO low-alpha (murk, not
+    surface) or spike-elongated. Calibrated on a subject-capture SPM
+    export, where the drop set turned out to be ~95% identical to
+    bad_color_mask's. The old filter had the right suspects. The washout it
+    caused came from the sh_clamp interaction, not the deletions. This
+    variant keeps the ~5%
+    that are real surface and, unlike bad_color_mask, never touches the
+    above-range (bright) side.
+    """
+    SH_C0 = 0.28209479177387814
+    mean_col = (f_dc * SH_C0 + 0.5).mean(axis=1)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit))
+    scale = np.exp(log_scales)
+    aspect = scale.max(axis=1) / np.maximum(scale.min(axis=1), 1e-12)
+    bad = (mean_col < black_thresh) | (
+        (mean_col < dim_thresh) & ((alpha < alpha_thresh) | (aspect > aspect_thresh)))
+    print(f'  Black-floater filter: dropping {int(bad.sum()):,} / {len(f_dc):,} splats '
+          f'(mean colour<{black_thresh}, or <{dim_thresh} with alpha<{alpha_thresh} '
+          f'or aspect>{aspect_thresh}:1)')
+    return ~bad
+
+
+def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacity_logit,
+                          outside_frac=0.5, downscale=4, time_stride=4, k_sigma=2.0,
+                          alpha_thresh=0.02):
+    """Keep-mask from multi-view silhouette consistency, evaluated across each
+    splat's visible lifetime rather than only at its temporal centre.
+
+    Projects every Gaussian into every training camera at several times where
+    it actually contributes, and drops those landing OUTSIDE the subject mask
+    in more than `outside_frac` of the (time, camera) tests that resolve them.
+    The masks come from the training RGBA alpha, so this is a direct geometric
+    test against ground truth rather than a density heuristic.
+
+    Note on scope: this removes splats that leave the silhouette. It does
+    NOT remove splats sitting at wrong depths INSIDE the silhouette,
+    because depth is unobservable from silhouettes alone (measured:
+    dropping the flagged set leaves view-aligned streak artifacts
+    untouched).
+
+    Do not reach for anisotropy regularisation as the fix for those,
+    either. It was built (OMG4 lambda_aniso / aniso_max) and measured on
+    one capture: aspect p50 25.8 -> 5.7, p95 4376 -> 10.6, rounder than
+    scenes that look correct, yet it costs 1.7 dB and the streaks survive.
+    The cause is view sparsity (10-11 frontal cameras), so the remaining
+    levers are more views or depth priors during training, not any
+    post-hoc geometry edit. Forcing THIS filter as a fix costs 2.1 dB
+    (48.60 -> 46.51) for the same reason: with 11 cameras the 2D test
+    misclassifies legitimate boundary and partially-occluded geometry.
+    Keep it for what it is: removal of genuine escaping junk.
+    """
+    import json
+    from PIL import Image
+
+    root = os.path.expanduser(dataset_root)
+    t = json.load(open(os.path.join(root, 'transforms_train.json')))
+    cams = {}
+    for fr in t['frames']:
+        lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
+        cams.setdefault(lab, {'meta': fr, 'frames': {}})['frames'][round(fr['time'], 4)] = fr['file_path']
+    labels = sorted(cams)
+    times = sorted(cams[labels[0]]['frames'])[::max(1, time_stride)]
+
+    masks = {}
+    for lab in labels:
+        for tt in times:
+            a = Image.open(os.path.join(root, cams[lab]['frames'][tt] + '.png')).split()[3]
+            if downscale > 1:
+                a = a.resize((a.width // downscale, a.height // downscale), Image.BILINEAR)
+            masks[(lab, tt)] = np.asarray(a) > 100
+
+    n = len(xyz)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit))
+    ts = np.maximum(np.abs(t_sigma), 1e-9)
+    inside = np.zeros(n, np.int32)
+    tested = np.zeros(n, np.int32)
+    for tt in times:
+        w = alpha * np.exp(-0.5 * ((tt - t_center) / ts) ** 2)
+        live = np.where(w > alpha_thresh)[0]
+        if not len(live):
+            continue
+        pts = xyz[live] + velocity[live] * (tt - t_center[live])[:, None]
+        for lab in labels:
+            m = cams[lab]['meta']
+            mask = masks[(lab, tt)]
+            c2w = np.asarray(m['transform_matrix'], np.float64).copy()
+            c2w[:3, 1:3] *= -1
+            w2c = np.linalg.inv(c2w)
+            cam = (w2c[:3, :3] @ pts.T + w2c[:3, 3:4]).T
+            z = cam[:, 2]
+            front = z > 0.05
+            zs = np.where(front, z, 1.0)
+            u = (m['fl_x'] / downscale) * cam[:, 0] / zs + (m['cx'] / downscale)
+            v = (m['fl_y'] / downscale) * cam[:, 1] / zs + (m['cy'] / downscale)
+            h_, w_ = mask.shape
+            ok = front & (u >= 0) & (u < w_) & (v >= 0) & (v < h_)
+            ui = np.clip(u, 0, w_ - 1).astype(np.int32)
+            vi = np.clip(v, 0, h_ - 1).astype(np.int32)
+            idx = live[ok]
+            inside[idx] += mask[vi[ok], ui[ok]]
+            tested[idx] += 1
+    resolved = tested > 0
+    frac_out = np.zeros(n)
+    frac_out[resolved] = 1.0 - inside[resolved] / tested[resolved]
+    keep = ~(resolved & (frac_out > outside_frac))
+    print(f'  Mask-consistency filter: dropping {int((~keep).sum()):,} / {n:,} splats '
+          f'outside the subject silhouette in >{outside_frac:.0%} of '
+          f'{len(times)} times x {len(labels)} cameras '
+          f'({int((~resolved).sum()):,} resolved by no camera, kept)')
+    return keep
+
+
 def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scale,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=False, filter_corrupted=True,
-                  filter_dark_occluders=False, extra_keep_mask=None):
-    """Shared tail: prune, diagnostics, write the v2 file.
+                  filter_dark_occluders=False, filter_black_floaters=False,
+                  extra_keep_mask=None, accel=None):
+    """Shared tail: prune, diagnostics, write the outputs.
 
     filter_corrupted controls the bad_color_mask/garbage_splat_mask checks,
     which were calibrated against SVQ compression's specific failure mode
-    (catastrophic MLP extrapolation on badly-quantized inputs -- f_dc values
-    in the hundreds). convert_from_checkpoint()'s data doesn't have that
-    failure mode (no quantization at all): a bare f_dc outside [0,1] there
-    is usually just normal SH representation (the real colour only becomes
-    valid once combined with f_rest, which clamp_sh_overshoot already
-    accounts for), not corruption. Applying these filters there flagged
-    ~34% of splats as "bad" -- clearly miscalibrated for clean data -- so
-    convert_from_checkpoint() passes filter_corrupted=False and relies on
-    prune_threshold + clamp_sh_overshoot + keep_main_cluster instead.
+    (catastrophic MLP extrapolation on badly-quantized inputs, with f_dc
+    values in the hundreds). convert_from_checkpoint()'s data does not have
+    that failure mode (no quantization at all): a bare f_dc outside [0,1]
+    there is usually just normal SH representation (the real colour only
+    becomes valid once combined with f_rest, which clamp_sh_overshoot
+    already accounts for), not corruption. Applying these filters there
+    flagged ~34% of splats as "bad", clearly miscalibrated for clean data,
+    so convert_from_checkpoint() passes filter_corrupted=False and relies
+    on prune_threshold + clamp_sh_overshoot + keep_main_cluster instead.
     """
     N = xyz.shape[0]
     dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
@@ -425,10 +559,12 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         keep &= bad_color_mask(f_dc)
     if filter_dark_occluders:
         keep &= dark_occluder_mask(f_dc, opacity_logit, log_scales)
+    if filter_black_floaters:
+        keep &= black_floater_mask(f_dc, opacity_logit, log_scales)
     if extra_keep_mask is not None:
         n_before = int(keep.sum())
         keep &= extra_keep_mask
-        print(f'  External keep-mask (e.g. real-mask consistency): dropping '
+        print(f'  External keep-mask (for example real-mask consistency): dropping '
               f'{n_before - int(keep.sum()):,} additional splats')
     if keep_main_cluster:
         keep &= main_cluster_mask(xyz, opacity_logit)
@@ -450,6 +586,10 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         for ch in range(3):
             for k in range(15):
                 arrays.append(f_rest[:, k, ch])
+    if accel is not None:
+        # degree-2 motion: the raw dt^2 coefficient (spec section 4.8)
+        for c in range(3):
+            arrays.append(accel[:, c])
     arrays = [np.ascontiguousarray(a[keep], dtype=np.float32) for a in arrays]
 
     for t in np.linspace(time_min, time_max, 5):
@@ -458,39 +598,63 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         print(f"    t={t:6.2f}s  active(alpha>1/255): {(alpha > 1 / 255).mean() * 100:5.1f}%")
     vmag = np.linalg.norm(velocity[keep], axis=1)
     print(f"    |velocity| p50/p95/p99: {np.percentile(vmag, [50, 95, 99]).round(4)}")
+    if accel is not None:
+        amag = np.linalg.norm(accel[keep], axis=1)
+        print(f"    |accel|    p50/p95/p99: {np.percentile(amag, [50, 95, 99]).round(4)}")
     print(f"    t_sigma    p50/p95    : {np.percentile(t_sigma[keep], [50, 95]).round(3)}")
 
-    flags = 1 if f_rest is not None else 0
-    with open(out_path, 'wb') as fp:
-        write_omg4_v2_header(fp, OMG4_MAGIC, kept, time_min, time_max, fps, flags,
-                             cov2d_scale=cov2d_scale)
-        for a in arrays:
-            fp.write(a.tobytes())
+    # The name -> array view of the pruned data.  Both the .sogst container
+    # writer and the interchange-PLY writer consume this same dict, which
+    # is the point: the seam is one place, so the two outputs cannot
+    # describe different splats.
+    fields = {name: arrays[i] for i, name in enumerate(SOGST_FIELDS)}
+    cursor = len(SOGST_FIELDS)
+    if f_rest is not None:
+        fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
+        cursor += 45
+    if accel is not None:
+        for i, name in enumerate(('ax', 'ay', 'az')):
+            fields[name] = arrays[cursor + i]
 
-    report_output(out_path)
+    if PLY_EXPORT_PATH is not None:
+        from sogst_ply import write_sogst_ply, write_sogst_sidecar
+        n_ply = write_sogst_ply(PLY_EXPORT_PATH, fields, time_min, time_max, fps,
+                                cov2d_scale=cov2d_scale,
+                                generator='volumetric-capture-pipeline bake_sogst')
+        print(f'  Interchange PLY: {n_ply:,} splats -> {PLY_EXPORT_PATH}')
+        if PLY_EXPORT_SIDECAR:
+            print(f'    sidecar: {write_sogst_sidecar(PLY_EXPORT_PATH, time_min, time_max, fps, cov2d_scale=cov2d_scale, motion_degree=2 if accel is not None else 1)}')
+
+    if SOGST_EXPORT_OPTIONS is not None:
+        from sogst_pack import pack_sogst
+        pack_sogst(out_path, fields, time_min, time_max, fps,
+                   cov2d_scale=cov2d_scale, **SOGST_EXPORT_OPTIONS)
+        report_output(out_path)
 
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
                             include_sh=True, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
-                            top_k_fraction=1.0, extra_keep_mask_path=None):
+                            top_k_fraction=1.0, extra_keep_mask_path=None,
+                            filter_black_floaters=False, mask_filter_root=None,
+                            mask_filter_outside_frac=0.5):
     """Export directly from an OMG4 train_scratch.py checkpoint (chkpntNNNN.pth),
     bypassing OMG4's SVQ+MLP compression (train.py) entirely.
 
     The checkpoint stores full per-splat SH coefficients (gaussian_model.py
-    capture()/restore(), gaussian_dim==4 branch) -- no quantization, no MLP
+    capture()/restore(), gaussian_dim==4 branch): no quantization, no MLP
     distillation. Compression's codebooks proved too small for a complex
-    scene (dense self-motion, thousands of training views): a large
+    scene (dense self-motion, thousands of training views). A large
     fraction of splats got quantized into appearance-feature combinations
     the compact appearance MLPs never saw in training and extrapolated
-    into unusable colour/geometry. Reading the checkpoint directly can't
-    reproduce that failure mode since there's no quantization step at all.
-    Same 4D-covariance-slicing + temporal-SH-fold math as convert(), just
-    sourced from real per-splat data instead of a decoded codebook.
+    into unusable colour/geometry. Reading the checkpoint directly cannot
+    reproduce that failure mode, since there is no quantization step at
+    all. Same 4D-covariance-slicing + temporal-SH-fold math as convert(),
+    just sourced from real per-splat data instead of a decoded codebook.
 
     top_k_fraction (0.0-1.0, default 1.0 = keep everything): keep only the
     top fraction of splats ranked by peak visibility (opacity x temporal-
     fade weight at each splat's own t_center). A size/quality knob that
-    degrades gracefully -- drops the least-visible splats first -- rather
+    degrades gracefully, dropping the least-visible splats first, rather
     than reusing the SVQ pipeline, which corrupts unpredictably instead of
     shrinking gracefully.
     """
@@ -508,7 +672,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
     t_center = to_numpy(t_center_t)[:, 0]              # [N]
     opacity_logit = to_numpy(opacity_t)[:, 0]          # [N]
     features_dc = to_numpy(features_dc_t)[:, 0, :]     # [N,3]
-    features_rest = to_numpy(features_rest_t)          # [N,47,3] -- same layout as convert()'s view_sh
+    features_rest = to_numpy(features_rest_t)          # [N,47,3], same layout as convert()'s view_sh
 
     N = xyz.shape[0]
     print(f"  {N:,} Gaussians (uncompressed checkpoint) | time range [{time_min}, {time_max}] s")
@@ -518,7 +682,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
         extra_keep_mask = np.load(extra_keep_mask_path)
         if extra_keep_mask.shape[0] != N:
             raise ValueError(f'extra_keep_mask has {extra_keep_mask.shape[0]} entries, '
-                             f'checkpoint has {N} splats -- must be computed against this exact checkpoint')
+                             f'checkpoint has {N} splats. It must be computed against this exact checkpoint')
         n_drop = int((~extra_keep_mask).sum())
         print(f"  External keep-mask ({extra_keep_mask_path}): dropping {n_drop:,} / {N:,} splats "
               f"before covariance slicing")
@@ -549,7 +713,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
 
     # Temporal SH fold at t = t_center (dirs_t = 0 -> both cosine bands = 1),
     # matching eval_shfs_4d()'s coefficient layout (utils/sh_utils.py): index
-    # 0 = static DC, 16 = t1*DC, 32 = t2*DC fold into f_dc; the three
+    # 0 = static DC, 16 = t1*DC, 32 = t2*DC fold into f_dc. The three
     # temporal copies of spatial bands 1..15 fold into f_rest. Identical
     # arithmetic to convert()'s MLP path, just fed real coefficients.
     print("  Folding temporal SH at each splat's own t_center …")
@@ -575,10 +739,18 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
         if f_rest is not None:
             f_rest = f_rest[top_mask]
 
+    mask_keep = None
+    if mask_filter_root:
+        mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
+                                          t_sigma, opacity_logit,
+                                          outside_frac=mask_filter_outside_frac)
+
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
-                  filter_corrupted=False, filter_dark_occluders=(extra_keep_mask is None))
+                  filter_corrupted=False, filter_dark_occluders=(extra_keep_mask is None),
+                  filter_black_floaters=filter_black_floaters,
+                  extra_keep_mask=mask_keep)
 
 
 def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
@@ -595,9 +767,16 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
     quats = decode_all_layers(save_dict['rotation_code'], save_dict['rotation_index'], save_dict['rotation_htable'], N)  # [N,4] (w,x,y,z)
     durations = decode_all_layers(save_dict['durations_code'], save_dict['durations_index'], save_dict['durations_htable'], N).reshape(-1)  # log
     velocity = decode_all_layers(save_dict['velocities_code'], save_dict['velocities_index'], save_dict['velocities_htable'], N)  # [N,3]
+    # degree-2 motion (FTGS trainer extension): quadratic coefficient,
+    # center(t) = x + v*dt + a*dt^2
+    accel = None
+    if 'accels_code' in save_dict:
+        accel = decode_all_layers(save_dict['accels_code'], save_dict['accels_index'], save_dict['accels_htable'], N).astype(np.float32)  # [N,3]
+    elif 'accels' in save_dict:
+        accel = np.asarray(save_dict['accels'], dtype=np.float32)  # [N,3] uncompressed
     appearance = decode_all_layers(save_dict['app_code'], save_dict['app_index'], save_dict['app_htable'], N)            # [N,6]
     t_sigma = np.exp(durations).astype(np.float32)
-    # normalise quats; renderer expects w-first which matches gsplat's storage
+    # normalise quats. The renderer expects w-first, which matches gsplat's storage
     quats = quats / np.maximum(np.linalg.norm(quats, axis=1, keepdims=True), 1e-9)
 
     print("  Evaluating appearance MLPs (tcnn layout) …")
@@ -620,12 +799,13 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   means, quats, log_scales.astype(np.float32), opacity_logit,
                   f_dc, f_rest, velocity, times, t_sigma,
-                  keep_main_cluster=keep_main_cluster)
+                  keep_main_cluster=keep_main_cluster, accel=accel)
 
 
 def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include_sh=True,
             scale_boost=1.0, aniso_boost=None, aniso_camera_rotations=None,
-            cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False):
+            cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False,
+            filter_corrupted=True, filter_black_floaters=False):
     print(f"Loading {xz_path} …")
     with lzma.open(xz_path, "rb") as f:
         save_dict = pickle.load(f)
@@ -667,7 +847,7 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
     # Anisotropic compensation for the FoV-sentinel training bug: inflate each
     # splat's covariance by (kx, ky) along the average training-camera x/y axes
     # (a good approximation when the rig's cameras share one orientation, as in
-    # N3V). Exact per-view compensation would be screen-space; this bakes the
+    # N3V). Exact per-view compensation would be screen-space. This bakes the
     # dominant effect into world space so any renderer benefits.
     if aniso_boost is not None:
         kx, ky = aniso_boost
@@ -709,13 +889,13 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
     # the effective spatial coefficient k collapses to
     #   eff[k] = sh[k] + sh[k+16] + sh[k+32]
     # which is exactly a standard 3-band 3DGS SH set. Coefficient 0 folds into
-    # f_dc; coefficients 1..15 become f_rest (PLY channel-major layout).
+    # f_dc. Coefficients 1..15 become f_rest (PLY channel-major layout).
     f_rest = None
     if include_sh:
         features_view = appearance[:, 3:6]
         view_feat = np.concatenate([cont_feat, features_view], axis=1)          # [N,16]
         view_sh = mlp_forward(save_dict['MLP_sh'], view_feat, 64, 141, 'leaky_relu').reshape(-1, 47, 3)
-        # full coeff j (1..47) = view_sh[:, j-1]; temporal fold at t = t_center:
+        # full coeff j (1..47) = view_sh[:, j-1]. Temporal fold at t = t_center:
         f_dc = f_dc + view_sh[:, 15, :] + view_sh[:, 31, :]
         # eff[k] for k=1..15: view indices k-1, k+15, k+31
         f_rest = (view_sh[:, 0:15, :] + view_sh[:, 16:31, :] + view_sh[:, 32:47, :])  # [N,15,3]
@@ -725,34 +905,40 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scale,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
-                  velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster)
+                  velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
+                  filter_corrupted=filter_corrupted,
+                  filter_black_floaters=filter_black_floaters)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Convert OMG4 comp.xz checkpoint to compact .omg4 v2 for supersplat-viewer')
-    parser.add_argument('--input', required=True, help='Path to comp.xz (OMG4 output)')
-    parser.add_argument('--output', required=True, help='Destination .omg4 file')
+        description='Bake an OMG4 trainer artifact (comp.xz or chkpntNNNNN.pth) '
+                    'into the .sogst container and/or the 4D interchange PLY')
+    parser.add_argument('--input', required=True,
+                        help='Trainer artifact: comp.xz (OMG4) or chkpntNNNNN.pth')
+    parser.add_argument('--output', default=None,
+                        help='Destination .sogst archive. Optional when --emit_ply is '
+                             'given, so a bake can produce only the interchange PLY.')
     parser.add_argument('--time_min', type=float, default=0.0,
                         help='Training time_duration min in seconds (default: 0.0)')
     parser.add_argument('--time_max', type=float, default=10.0,
                         help='Training time_duration max in seconds (default: 10.0)')
     parser.add_argument('--fps', type=float, default=30.0, help='Advisory fps for UI (default: 30)')
     parser.add_argument('--prune_threshold', type=float, default=1.0 / 1024,
-                        help='Drop Gaussians whose peak alpha inside the time range is below this (default: 1/1024; 0 disables)')
+                        help='Drop Gaussians whose peak alpha inside the time range is below this (default: 1/1024, 0 disables)')
     parser.add_argument('--keep_main_cluster', action='store_true',
                         help='Drop splats outside the largest connected cluster (removes isolated '
-                             'floater blobs; intended for masked single-subject captures)')
+                             'floater blobs, intended for masked single-subject captures)')
     parser.add_argument('--sh_clamp', type=float, default=1.5,
                         help='Attenuate higher SH bands per splat so total colour excursion stays below '
-                             'this (colour units) from every direction; kills firework artifacts on '
-                             'under-observed splats (default: 1.5; 0 disables)')
+                             'this (colour units) from every direction. Kills firework artifacts on '
+                             'under-observed splats (default: 1.5, 0 disables)')
     parser.add_argument('--no_sh', action='store_true',
                         help='Skip baking the 3-band view-dependent SH coefficients (smaller file, flatter shading)')
     parser.add_argument('--cov2d_scale', type=str, default=None,
                         help='"kx,ky": store a screen-space 2D-covariance scale in the header for the '
                              'viewer to apply per view. Reproduces the reference renderer exactly at '
-                             'training-like views but smears at oblique angles; for free-viewpoint '
+                             'training-like views but smears at oblique angles. For free-viewpoint '
                              'viewing prefer --aniso_boost, which bakes the compensation statically '
                              'along the training-rig axes.')
     parser.add_argument('--aniso_boost', type=str, default=None,
@@ -776,18 +962,68 @@ if __name__ == '__main__':
                         help='Only used with --input pointing at a checkpoint (chkpntNNNN.pth), not comp.xz. '
                              'Keep only this fraction (0.0-1.0) of splats, ranked by peak visibility '
                              '(opacity x temporal-fade weight at each splat\'s own t_center). 1.0 (default) '
-                             'keeps every splat -- full fidelity, largest file. Size/quality knob that '
+                             'keeps every splat: full fidelity, largest file. Size/quality knob that '
                              'degrades gracefully by dropping the least-visible splats first, as an '
                              'alternative to OMG4\'s SVQ compression pipeline.')
     parser.add_argument('--extra_keep_mask', type=str, default=None,
                         help='Only used with --input pointing at a checkpoint. Path to a .npy boolean array '
                              '(one entry per splat, in the checkpoint\'s original order) precomputed by a '
-                             'separate dataset-specific script -- e.g. a real-camera-mask consistency check '
+                             'separate dataset-specific script, for example a real-camera-mask consistency check '
                              '(project each splat into the real training cameras at its own t_center and '
-                             'test against the ground-truth subject segmentation masks; splats that fall '
+                             'test against the ground-truth subject segmentation masks. Splats that fall '
                              'outside the mask in most views that can see them are floaters, not real '
                              'subject geometry). Applied before covariance slicing.')
+    parser.add_argument('--no_filter_corrupted', action='store_true',
+                        help='comp.xz path only: skip the bad_color/garbage-geometry corruption '
+                             'filters. Those were calibrated for the legacy SVQ pipeline\'s '
+                             'catastrophic-extrapolation failure (f_dc in the hundreds). On a '
+                             'healthy SPM fine-tune an out-of-range bare f_dc is normal SH '
+                             'representation, and the filter deletes ~40%% of good splats '
+                             '(visible as transparency). Same rationale as the checkpoint path, '
+                             'which never applies them.')
+    parser.add_argument('--mask_filter_root', type=str, default=None,
+                        help='Checkpoint path only: 4DGS dataset root (with transforms_train.json '
+                             'and RGBA realcams frames). Drops Gaussians projecting OUTSIDE the '
+                             'subject silhouette in most (time, camera) tests across their visible '
+                             'lifetime, not just at t_center. Removes splats that drift off the '
+                             'body. Does NOT fix wrong-depth splats inside the silhouette.')
+    parser.add_argument('--mask_filter_outside_frac', type=float, default=0.5,
+                        help='Drop a Gaussian when it lands outside the mask in more than this '
+                             'fraction of the tests that resolve it (default 0.5)')
+    parser.add_argument('--filter_black_floaters', action='store_true',
+                        help='comp.xz path only: drop the detached near-black floater cloud an SPM '
+                             'fine-tune leaves around a masked subject (deeply-negative mean colour, '
+                             'or dark + low-alpha / spike-elongated) while keeping legitimate dark '
+                             'material. Pair with --no_filter_corrupted for SPM exports.')
+    parser.add_argument('--shn_count', type=int, default=65536,
+                        help='--output only: VQ centroid count for higher-order SH (default: 65536)')
+    parser.add_argument('--webp_method', type=int, default=4, choices=range(7),
+                        help='--output only: libwebp effort 0-6 (default: 4, and 6 is smallest/slowest)')
+    parser.add_argument('--segment_duration', type=float, default=0.1,
+                        help='--output only: temporal segment length in seconds for per-segment '
+                             'culling (default: 0.1, 0 disables segmentation)')
+    parser.add_argument('--emit_ply', type=str, default=None,
+                        help='Write the 4D interchange PLY to this path: the per-splat '
+                             'spacetime data an external encoder packs '
+                             '(docs/sogst-format.md section 7). Written from the same '
+                             'post-filter arrays as --output, so the two agree by '
+                             'construction. May be given with or instead of --output.')
+    parser.add_argument('--emit_ply_sidecar', action='store_true',
+                        help='With --emit_ply, also write the optional <name>.sogst.json '
+                             'sidecar. The clip scalars are in the PLY comments either '
+                             'way. This is for toolchains that strip them.')
     args = parser.parse_args()
+
+    if not args.output and not args.emit_ply:
+        sys.exit('nothing to write: pass --output (a .sogst archive), --emit_ply '
+                 '(the interchange PLY), or both')
+    if args.output:
+        SOGST_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
+                                'segment_duration': args.segment_duration}
+    if args.emit_ply_sidecar and not args.emit_ply:
+        sys.exit('--emit_ply_sidecar requires --emit_ply')
+    PLY_EXPORT_PATH = args.emit_ply
+    PLY_EXPORT_SIDECAR = args.emit_ply_sidecar
 
     aniso = None
     cam_rots = None
@@ -808,9 +1044,14 @@ if __name__ == '__main__':
                                 scale_boost=args.scale_boost, sh_clamp=args.sh_clamp,
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
-                                extra_keep_mask_path=args.extra_keep_mask)
+                                extra_keep_mask_path=args.extra_keep_mask,
+                                filter_black_floaters=args.filter_black_floaters,
+                                mask_filter_root=args.mask_filter_root,
+                                mask_filter_outside_frac=args.mask_filter_outside_frac)
     else:
         convert(args.input, args.output, args.time_min, args.time_max, args.fps,
                 args.prune_threshold, include_sh=not args.no_sh, scale_boost=args.scale_boost,
                 aniso_boost=aniso, aniso_camera_rotations=cam_rots, cov2d_scale=cov2d,
-                sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster)
+                sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
+                filter_corrupted=not args.no_filter_corrupted,
+                filter_black_floaters=args.filter_black_floaters)

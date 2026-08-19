@@ -33,7 +33,7 @@ Usage:
         --data /path/to/brush_dataset \\
         --brush_app ~/brush-app-x86_64-unknown-linux-gnu/brush_app \\
         --export_path ~/brush_output \\
-        --export_name heidi_75k_{iter}.ply \\
+        --export_name <scene>_{iter}.ply \\
         [--total_steps 75000] [--with_viewer] [--match_alpha_weight 0.1]
 """
 
