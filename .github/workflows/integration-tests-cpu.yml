@@ -218,12 +218,35 @@ jobs:
         id: conda-cache
         uses: actions/cache@v4
         with:
-          path: ${{ env.CONDA_BASE }}/envs
+          # /tmp/hloc-src must be cached WITH the envs: hloc is installed
+          # editable (see the create step for why), so site-packages holds
+          # only a pointer at /tmp/hloc-src and the code lives there. The
+          # first-ever cache-hit run (2026-08-19) restored envs without it
+          # and died on `import hloc` mid-pipeline.
+          path: |
+            ${{ env.CONDA_BASE }}/envs
+            /tmp/hloc-src
           # Hashes every envs/*.yml (hloc, diffuman4d, sapiens2, queen) --
           # any pin change in any of them busts all four, which is the
           # safe default (cheap to over-invalidate, expensive to silently
-          # run stale deps).
-          key: conda-envs-${{ runner.os }}-${{ hashFiles('envs/*.yml') }}
+          # run stale deps). The -v2 suffix retires the pre-2026-08-19
+          # entries that lack /tmp/hloc-src.
+          key: conda-envs-v2-${{ runner.os }}-${{ hashFiles('envs/*.yml') }}
+
+      - name: Verify restored envs actually import (cache-hit only)
+        # A restored cache that passes actions/cache's own checks can still
+        # be unusable (the /tmp/hloc-src case above). Probe the one import
+        # per env the pipeline cannot run without, and fail HERE with a
+        # named cause instead of 25 minutes later inside the pipeline. If
+        # this fires, delete the conda-envs cache entry (gh api -X DELETE
+        # /repos/{repo}/actions/caches?key=...) and re-run.
+        if: steps.conda-cache.outputs.cache-hit == 'true'
+        shell: bash -l {0}
+        run: |
+          conda run -n hloc python -c "import hloc"
+          conda run -n diffuman4d python -c "import torch"
+          conda run -n sapiens2 python -c "import torch"
+          conda run -n queen python -c "import numpy"
 
       - name: Create conda envs, one at a time, CPU-only from the start (cache miss only)
         # Real CI failure (2026-07-29): creating all 4 envs first (each
