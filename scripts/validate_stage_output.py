@@ -153,35 +153,6 @@ def validate_masks(L, real_cameras):
             raise ValidationError(f"{label}: implausible mask coverage {frac:.3f}")
 
 
-def validate_branch(L, real_cameras):
-    sparse_dir = L["train_set"] / "sparse" / "0"
-    for name in ("cameras.txt", "images.txt", "points3D.txt"):
-        if not (sparse_dir / name).is_file():
-            raise ValidationError(f"{sparse_dir / name} was not produced")
-
-    cam_lines = [line for line in (sparse_dir / "cameras.txt").read_text().splitlines() if not line.startswith("#")]
-    img_lines = [line for line in (sparse_dir / "images.txt").read_text().splitlines()
-                 if line.strip() and not line.startswith("#")]
-    pts_lines = [line for line in (sparse_dir / "points3D.txt").read_text().splitlines() if not line.startswith("#")]
-
-    if len(cam_lines) != len(real_cameras):
-        raise ValidationError(f"cameras.txt has {len(cam_lines)} entries, expected {len(real_cameras)}")
-    if len(img_lines) != len(real_cameras):
-        raise ValidationError(f"images.txt has {len(img_lines)} entries, expected {len(real_cameras)}")
-    if not pts_lines:
-        raise ValidationError("points3D.txt has zero triangulated points")
-
-    plys = sorted(L["brush_output"].glob("*.ply"))
-    if not plys:
-        raise ValidationError(f"no .ply exported under {L['brush_output']}")
-
-    # An empty/truncated export (Brush crashing mid-write) still leaves a
-    # .ply on disk -- require the newest one to declare at least one splat.
-    newest = max(plys, key=lambda p: p.stat().st_mtime)
-    if ply_vertex_count(newest) < 1:
-        raise ValidationError(f"{newest} declares zero splats (truncated/failed export?)")
-
-
 def validate_dataset4d(L, real_cameras):
     root = L["dataset4d"]
     frames = None
@@ -295,7 +266,6 @@ VALIDATORS = {
     "production": validate_production,
     "poses": validate_poses,
     "masks": validate_masks,
-    "branch": validate_branch,
     "dataset4d": validate_dataset4d,
     "train4d": validate_train4d,
 }

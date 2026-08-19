@@ -17,7 +17,7 @@ implementations, so build_database() is still tested against real behavior.
 Everything downstream of the deep-learning boundary (average_camera_poses,
 extract_refined_intrinsics, export_points_ply, write_transforms) is exercised
 with duck-typed stand-ins for pycolmap.Reconstruction objects, matching the
-FakeProcess technique already used in test_train_brush.py for a similarly
+FakeProcess technique already used in test_run_unified_pipeline.py for a similarly
 expensive-to-construct real object.
 """
 import json
@@ -591,7 +591,7 @@ def test_build_database_recreates_existing_db_file(tmp_path):
 # export_points_ply -- duck-typed fake Reconstruction (real pycolmap
 # Reconstruction objects with 3D points are expensive to construct; the
 # function's own filtering/PLY-writing logic is what's under test, matching
-# the FakeProcess technique already used in test_train_brush.py)
+# the FakeProcess technique already used in test_run_unified_pipeline.py)
 # --------------------------------------------------------------------------
 
 class FakeTrack:

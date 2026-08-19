@@ -6,7 +6,8 @@
 run_unified_pipeline.py
 
 Unified entry point for the volumetric capture pipeline: sync -> undistort
--> pose solve/refine -> mask -> direct 4K masked training -> train Brush.
+-> pose solve/refine -> mask -> 4D dataset build -> rotor 4DGS training,
+baked to a streamable .sogst asset.
 Orchestrates the other scripts in this directory via subprocess; it does
 not reimplement any of their logic. (A Diffuman4D 48-camera dense-ring
 branch is planned but not wired in yet.)
@@ -40,12 +41,18 @@ alongside sync itself. So the actual flow is:
      cleanup, retry fallback, no dilation) ->
      triangulate_and_project_keypoints.py (triangulate subject point
      cloud against the real cameras only)
-  5. BRANCH: build_colmap_sparse.py (COLMAP sparse + --masks_dir RGBA
-     bake) -> train_brush.py (train, 4096 res; Brush auto-detects the
-     alpha channel baked in by build_colmap_sparse.py, no special flag
-     needed -- brush_app has no --alpha-mode flag, verified against
-     `brush_app --help`). This is the only branch this build supports;
-     the Diffuman4D 48-camera dense-ring branch isn't wired in yet.
+  5. DATASET4D: extract a --train_window frame sequence at the verified
+     sync -> per-frame undistort/masks/keypoints/clean (the same chain
+     the production instant gets) -> assemble_flipbook_frame.py (frame-
+     major layout; the rig is static, so the production instant's flat
+     transforms apply to every frame) -> build_flipbook_4dgs_dataset.py
+     (D-NeRF dataset with per-view intrinsics, mate-aware eval holdouts).
+     CPU-capable end to end.
+  6. TRAIN4D (CUDA only): generate the trainer config from
+     configs/gs4d_pretrain_template.yaml -> train_scratch.py in the
+     vendored deps/OMG4 fork -> bake_sogst.py (lifetime mask-consistency
+     filter on) -> eval_render.py --report_json on the held-out camera.
+     The Diffuman4D 48-camera dense-ring branch is still not wired in.
 
 Usage (see --help for every flag):
     python3 run_unified_pipeline.py \\
@@ -71,7 +78,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "multiframe_sfm.py"
 
-STAGE_KEYS = ["sync", "production", "poses", "masks", "branch"]
+STAGE_KEYS = ["sync", "production", "poses", "masks", "dataset4d", "train4d"]
 
 CONDA_ENV_HLOC = "hloc"
 CONDA_ENV_DIFFUMAN4D = "diffuman4d"
@@ -238,9 +245,6 @@ def build_layout(out_dir: Path):
         "flat_poses2d": out_dir / "poses_2d",
         "poses_pcd_fullres": out_dir / "poses_pcd_fullres",
         "poses_3d_fullres": out_dir / "poses_3d_fullres",
-
-        "train_set": out_dir / "train_set",
-        "brush_output": out_dir / "brush_output",
 
         # 4D training path (stage_dataset4d / stage_train4d)
         "seq_raw": out_dir / "train_seq_raw",
@@ -489,34 +493,6 @@ def stage_masks(args, L, image_ext):
     ], conda_env=args.triangulate_env, label="triangulate_and_project_keypoints.py (triangulate subject point cloud, real cameras)")
 
 
-def stage_branch_direct(args, L):
-    banner("STAGE: BRANCH (direct 4K masked pipeline)")
-
-    run_script("build_colmap_sparse.py", [
-        "--transforms", L["flat_transforms"],
-        "--points_ply", L["poses_pcd_fullres"] / "000000.ply",
-        "--out_dir", L["train_set"],
-        "--image_subdir", "images_flat",
-        "--images_dir", L["flat_images"],
-        "--masks_dir", L["flat_fmasks_clean"],
-    ], conda_env=args.generic_env, label="build_colmap_sparse.py (COLMAP sparse + RGBA mask bake)")
-
-    train_args = [
-        "--data", L["train_set"],
-        "--total_steps", str(args.total_train_iters), "--max_resolution", str(args.brush_max_resolution),
-        "--export_every", str(args.export_every),
-        "--brush_app", args.brush_app, "--export_path", L["brush_output"],
-        "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
-        "--display", args.display,
-        "--with_viewer" if args.with_viewer else "--no_viewer",
-    ]
-    if args.eval_split_every is not None:
-        train_args += ["--eval_split_every", str(args.eval_split_every)]
-    if args.eval_save_to_disk:
-        train_args += ["--eval_save_to_disk"]
-    run_script("train_brush.py", train_args, label="train_brush.py (train Brush, 4K masked)")
-
-
 def stage_dataset4d(args, L, image_ext, sync_json: Path):
     """Build the 4D (D-NeRF-style) training dataset for the rotor trainer.
 
@@ -696,7 +672,6 @@ def stage_train4d(args, L):
 CONFIGURABLE_DEFAULTS = {
     "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
     "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
-    "brush_app", "display",
     "trainer_env", "trainer_repo",
 }
 
@@ -704,7 +679,7 @@ CONFIGURABLE_DEFAULTS = {
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--config", type=Path, default=None,
-                        help="JSON file of per-rig defaults (conda env names, --brush_app, --display, "
+                        help="JSON file of per-rig defaults (conda env names, --trainer_repo, "
                              "SAPIENS_CHECKPOINT_ROOT, HLOC settings -- see configs/example_rig.json). "
                              "Explicit CLI flags always override the config. Per-run flags like --video_dir, "
                              "--calib_dir, --out_dir aren't configurable here -- those change every run.")
@@ -770,12 +745,12 @@ def build_parser():
                              "default is 2048, which is low relative to this rig's ~5312px native media "
                              "-- raised to 4096 by default here to preserve more detail for keypoint "
                              "localization / camera pose accuracy (higher GPU memory + runtime cost "
-                             "during the HLOC stage; has headroom to coexist with a concurrent Brush "
+                             "during the HLOC stage; has headroom to coexist with a concurrent training "
                              "training job on a 24GB GPU, but not with two).")
     parser.add_argument("--hloc_max_keypoints", type=int, default=8192,
                         help="Max keypoints per image for HLOC feature extraction.")
-    parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
-    parser.add_argument("--total_train_iters", type=int, default=30000)
+    parser.add_argument("--total_train_iters", type=int, default=30000,
+                        help="4D trainer iterations (also the checkpoint name: chkpnt<iters>.pth).")
 
     # ---- 4D training path (stage_dataset4d / stage_train4d) ----
     parser.add_argument("--train_window", type=int, default=48,
@@ -816,33 +791,6 @@ def build_parser():
     parser.add_argument("--eval_every", type=int, default=10,
                         help="eval_render.py --every: score every Nth held-out frame.")
     parser.add_argument("--skip_eval", action="store_true")
-    parser.add_argument("--brush_max_resolution", type=int, default=4096,
-                        help="Passed to train_brush.py --max_resolution. The 4096 default is the "
-                             "validated production configuration; lower it only for constrained "
-                             "environments (e.g. the integration tests' CPU-rendering mode uses "
-                             "1024 -- llvmpipe caps GL buffer allocations well below what 4096 "
-                             "needs, and software rendering at 4096 would be impractically slow "
-                             "anyway).")
-    parser.add_argument("--export_every", type=int, default=5000,
-                        help="Brush checkpoint export interval in steps (also always exports once at completion)")
-    parser.add_argument("--eval_split_every", type=int, default=None,
-                        help="Hold out every Nth training image as an eval view instead of "
-                             "training on it, passed through to train_brush.py/brush_app. Off "
-                             "by default -- opt in for quality measurement (e.g. PSNR against "
-                             "the held-out photo), not needed for a normal production run.")
-    parser.add_argument("--eval_save_to_disk", action="store_true",
-                        help="Render held-out eval views to disk during training (brush_app's "
-                             "--eval-save-to-disk). Only meaningful together with "
-                             "--eval_split_every.")
-    parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
-                        help="Open Brush's live viewer during training. On by default -- this is "
-                             "the tested, working configuration; --no_viewer hasn't been "
-                             "separately verified (here or elsewhere, e.g. WSL). See --no_viewer.")
-    parser.add_argument("--no_viewer", dest="with_viewer", action="store_false",
-                        help="Disable Brush's viewer. Use this if you've confirmed headless training "
-                             "works in your environment.")
-    parser.add_argument("--display", default=":2",
-                        help="X DISPLAY brush_app connects to (default ':2').")
     parser.add_argument("--run_name", default=None, help="Label used in output filenames (default: out_dir's name)")
     return parser
 
@@ -985,11 +933,20 @@ def main():
         if hit_stop("masks"):
             return
 
-        if should_run("branch"):
-            stage_branch_direct(args, L)
-            validate_stage("branch")
+        if should_run("dataset4d"):
+            stage_dataset4d(args, L, image_ext, sync_json)
+            validate_stage("dataset4d")
         else:
-            info("Skipping stage 'branch' (--start_from_stage)")
+            info("Skipping stage 'dataset4d' (--start_from_stage)")
+            check_expected(L["dataset4d"], "dataset4d")
+        if hit_stop("dataset4d"):
+            return
+
+        if should_run("train4d"):
+            stage_train4d(args, L)
+            validate_stage("train4d")
+        else:
+            info("Skipping stage 'train4d' (--start_from_stage)")
 
     except StageError as e:
         fail(str(e))
@@ -998,7 +955,7 @@ def main():
         sys.exit(1)
 
     banner("PIPELINE COMPLETE")
-    ok(f"Trained splat(s) exported to {L['brush_output']}")
+    ok(f"Trained 4D splat baked to {L['sogst_out']}")
 
 
 if __name__ == "__main__":

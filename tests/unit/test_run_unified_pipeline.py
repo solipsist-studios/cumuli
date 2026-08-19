@@ -55,7 +55,8 @@ def patch_all_stages(monkeypatch, calls):
                 return args[1]["sync_offsets"]
         return _stage
 
-    for name in ("stage_sync", "stage_production", "stage_poses", "stage_masks", "stage_branch_direct"):
+    for name in ("stage_sync", "stage_production", "stage_poses", "stage_masks",
+                 "stage_dataset4d", "stage_train4d"):
         monkeypatch.setattr(unified, name, make_stage(name))
 
 
@@ -76,7 +77,7 @@ def test_main_validates_every_stage_by_default(rig, monkeypatch):
 
     unified.main()
 
-    assert validate_calls == ["sync", "production", "poses", "masks", "branch"]
+    assert validate_calls == ["sync", "production", "poses", "masks", "dataset4d", "train4d"]
 
 
 def test_main_start_from_stage_does_not_validate_skipped_stages(rig, monkeypatch):
@@ -104,8 +105,8 @@ def test_main_start_from_stage_does_not_validate_skipped_stages(rig, monkeypatch
 
     unified.main()
 
-    assert stage_calls == ["stage_poses", "stage_masks", "stage_branch_direct"]
-    assert validate_calls == ["poses", "masks", "branch"]
+    assert stage_calls == ["stage_poses", "stage_masks", "stage_dataset4d", "stage_train4d"]
+    assert validate_calls == ["poses", "masks", "dataset4d", "train4d"]
 
 
 def test_main_no_validate_skips_validation(rig, monkeypatch):
@@ -301,7 +302,8 @@ def test_build_layout_derives_paths_under_out_dir(tmp_path):
     L = unified.build_layout(tmp_path)
     assert L["sync_offsets"] == tmp_path / "sync_offsets.json"
     assert L["flat_transforms"] == tmp_path / "transforms.json"
-    assert L["brush_output"] == tmp_path / "brush_output"
+    assert L["dataset4d"] == tmp_path / "dataset_4dgs"
+    assert L["sogst_out"] == tmp_path / "splat_4d.sogst"
 
 
 # --------------------------------------------------------------------------
@@ -653,73 +655,6 @@ def test_stage_masks_reuses_all_cached_steps_but_always_triangulates(monkeypatch
 
 
 # --------------------------------------------------------------------------
-# stage_branch_direct -- --with_viewer/--no_viewer flag translation
-# --------------------------------------------------------------------------
-
-def _branch_args(with_viewer, eval_split_every=None, eval_save_to_disk=False):
-    return NS(generic_env="queen", total_train_iters=100, export_every=50,
-              brush_app=Path("/brush"), run_name="myrun", display=":2", with_viewer=with_viewer,
-              eval_split_every=eval_split_every, eval_save_to_disk=eval_save_to_disk,
-              brush_max_resolution=4096)
-
-
-def test_stage_branch_direct_with_viewer_true(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
-        if script_name == "train_brush.py":
-            captured["args"] = [str(a) for a in args]
-    monkeypatch.setattr(unified, "run_script", fake_run_script)
-
-    unified.stage_branch_direct(_branch_args(True), unified.build_layout(tmp_path / "out"))
-    assert "--with_viewer" in captured["args"]
-    assert "--no_viewer" not in captured["args"]
-
-
-def test_stage_branch_direct_with_viewer_false(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
-        if script_name == "train_brush.py":
-            captured["args"] = [str(a) for a in args]
-    monkeypatch.setattr(unified, "run_script", fake_run_script)
-
-    unified.stage_branch_direct(_branch_args(False), unified.build_layout(tmp_path / "out"))
-    assert "--no_viewer" in captured["args"]
-    assert "--with_viewer" not in captured["args"]
-
-
-def test_stage_branch_direct_eval_flags_off_by_default(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
-        if script_name == "train_brush.py":
-            captured["args"] = [str(a) for a in args]
-    monkeypatch.setattr(unified, "run_script", fake_run_script)
-
-    unified.stage_branch_direct(_branch_args(True), unified.build_layout(tmp_path / "out"))
-    assert "--eval_split_every" not in captured["args"]
-    assert "--eval_save_to_disk" not in captured["args"]
-
-
-def test_stage_branch_direct_eval_flags_passed_through(monkeypatch, tmp_path):
-    captured = {}
-
-    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
-        if script_name == "train_brush.py":
-            captured["args"] = [str(a) for a in args]
-    monkeypatch.setattr(unified, "run_script", fake_run_script)
-
-    unified.stage_branch_direct(
-        _branch_args(True, eval_split_every=8, eval_save_to_disk=True),
-        unified.build_layout(tmp_path / "out"),
-    )
-    i = captured["args"].index("--eval_split_every")
-    assert captured["args"][i + 1] == "8"
-    assert "--eval_save_to_disk" in captured["args"]
-
-
-# --------------------------------------------------------------------------
 # build_parser -- required args
 # --------------------------------------------------------------------------
 
@@ -750,14 +685,14 @@ def test_build_parser_rejects_invalid_start_from_stage_choice():
 
 def test_apply_config_defaults_overrides_configurable_defaults(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"generic_env": "custom_env", "display": ":5"}))
+    config_path.write_text(json.dumps({"generic_env": "custom_env", "trainer_env": "omg4b"}))
     parser = unified.build_parser()
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path)])
 
     unified.apply_config_defaults(parser)
     args = parser.parse_args(_BASE_CLI)
     assert args.generic_env == "custom_env"
-    assert args.display == ":5"
+    assert args.trainer_env == "omg4b"
 
 
 def test_apply_config_defaults_explicit_cli_flag_wins_over_config(tmp_path, monkeypatch):
@@ -918,12 +853,12 @@ def test_main_start_from_last_stage_skips_every_earlier_stage(rig, monkeypatch, 
     patch_all_stages(monkeypatch, stage_calls)
     monkeypatch.setattr(unified, "run_script", lambda *a, **k: None)
     rig["out_dir"].mkdir(parents=True)
-    monkeypatch.setattr(sys, "argv", base_argv(rig, start_from_stage="branch"))
+    monkeypatch.setattr(sys, "argv", base_argv(rig, start_from_stage="train4d"))
 
     unified.main()
-    assert stage_calls == ["stage_branch_direct"]
+    assert stage_calls == ["stage_train4d"]
     out = capsys.readouterr().out
-    for key in ("sync", "production", "poses", "masks"):
+    for key in ("sync", "production", "poses", "masks", "dataset4d"):
         assert f"Skipping stage '{key}'" in out
 
 
@@ -962,7 +897,8 @@ def test_main_stage_failure_stops_pipeline_before_later_stages(rig, monkeypatch)
             if name == "stage_sync":
                 return a[1]["sync_offsets"]
         return _stage
-    for name in ("stage_sync", "stage_production", "stage_poses", "stage_masks", "stage_branch_direct"):
+    for name in ("stage_sync", "stage_production", "stage_poses", "stage_masks",
+                 "stage_dataset4d", "stage_train4d"):
         monkeypatch.setattr(unified, name, make_stage(name))
     monkeypatch.setattr(unified, "run_script", lambda *a, **k: None)  # validate_stage_output no-ops
     monkeypatch.setattr(sys, "argv", base_argv(rig))
@@ -980,7 +916,7 @@ def test_main_resume_without_resolved_sync_json_falls_back_to_default_path(rig, 
         def _stage(*a, **k):
             stage_calls.append((name, a))
         return _stage
-    for name in ("stage_production", "stage_poses", "stage_masks", "stage_branch_direct"):
+    for name in ("stage_production", "stage_poses", "stage_masks", "stage_train4d"):
         monkeypatch.setattr(unified, name, make_stage(name))
     monkeypatch.setattr(unified, "run_script", lambda *a, **k: None)
     rig["out_dir"].mkdir(parents=True)
