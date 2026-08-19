@@ -100,10 +100,15 @@ Operational footguns, all hit in practice:
 ### Trainer patches
 
 The `deps/4d-gaussian-splatting` submodule already carries all of
-these. They are documented here for anyone who works from a plain
-upstream clone. All five are required for this recipe.
+these, merged as fork commits (merge `979c64a`). They are documented
+here, with their commit ids, for anyone who works from a plain upstream
+clone. All five are required for this recipe. The fork's `main` also
+carries two smaller fixes beyond this list: `e55a5c7` (file_system
+sharing strategy in train.py, against DataLoader fd exhaustion) and the
+patch-2 landing noted below.
 
 1. **`gaussian_renderer/__init__.py` — FoV sentinel fix (critical).**
+   Fork commit `31d78a4`.
    The Blender-style loader sets `FovX = FovY = -1` when `fl_x/fl_y/
    cx/cy` are present, and the renderer then computes `tan(-0.5)` for
    the EWA Jacobian. The result is inflated splat footprints: a blur
@@ -111,18 +116,24 @@ upstream clone. All five are required for this recipe.
    Patch it to use `tanfov = image_size / (2 * fl)` whenever
    `fl_x > 0`.
 2. **`gaussian_renderer/diff_gaussian_rasterization.py` — cached CUDA
-   extension.** A system CUDA newer than 12 cannot JIT-build the old
-   C++14 extension. The patch importlib-loads a previously built
+   extension.** Fork commit `f9bcc89`, guarded: a fresh clone still
+   JIT-compiles exactly as upstream, and the cache load is the fallback. A system CUDA newer than 12 cannot JIT-build the old
+   C++14 extension (the companion `<cstdint>` build fix for newer GCC is
+   fork commit `981cf0c`). The patch importlib-loads a previously built
    `diff_gaussian_rasterization.so` from the torch extensions cache
    (the spec name must be exactly `diff_gaussian_rasterization`). Do
    not clear that cache directory.
-3. **`utils/data_utils.py` — fast composite path.** A uint8 torch
+3. **`utils/data_utils.py` — fast composite path.** Fork commit
+   `18dacc3` (the old chain is kept as the resize fallback). A uint8
+   torch
    fused `rgb*a + bg*(1-a)` replaces the float64 numpy chain. Roughly
    2× training throughput: the GPU idled at 0–15% before.
-4. **`scene/dataset_readers.py` — `fetchPly`** copies the `time`
+4. **`scene/dataset_readers.py` — `fetchPly`** (fork commit
+   `d38d2a2`) copies the `time`
    field contiguously (`np.ascontiguousarray(...).astype(np.float32)`).
    plyfile returns a strided view that torch rejects.
-5. **`scene/gaussian_model.py` — `GS4D_T_INIT_DIV` env var.** Initial
+5. **`scene/gaussian_model.py` — `GS4D_T_INIT_DIV` env var.** Fork
+   commit `e5d05e4`. Initial
    temporal sigma is `sqrt(duration / div)`. Upstream hardcodes
    `div = 5`, which on a short clip bakes many frames of motion smear
    into the initial sigma. `GS4D_T_INIT_DIV=100` gives a much tighter
