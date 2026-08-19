@@ -8,17 +8,17 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 Precise setup instructions for the four conda environments and system
 tools this pipeline needs, plus known-good versions this has actually
 been tested against. `README.md` and `docs/pipeline.md` mention which
-env each stage needs; this doc is the "how do I actually create them"
-reference. `envs/*.yml` pin the exact known-good combination for each --
-`conda env create -f envs/<name>.yml` is the fastest path; the manual
-steps below explain what's actually in them.
+env each stage needs. This doc is the "how do I actually create them"
+reference. `envs/*.yml` pin the exact known-good combination for each.
+`conda env create -f envs/<name>.yml` is the fastest path, and the
+manual steps below explain what is actually in them.
 
 ## Requirements
 
 - Linux, NVIDIA GPU with recent drivers (tested on Pop!_OS 24.04 /
   Ubuntu Noble, driver 580.x). CPU-only or non-NVIDIA GPUs are not
   supported -- HLOC, Sapiens, and Diffuman4D all require CUDA.
-  Comfortably tested on a single RTX 4090 (24GB VRAM); smaller cards
+  Comfortably tested on a single RTX 4090 (24GB VRAM). Smaller cards
   may need reduced `--hloc_max_keypoints` or Diffuman4D batch settings.
 - No system-wide CUDA toolkit install is required -- each conda env
   below pulls its own CUDA runtime via the `torch`/`torchvision` wheel
@@ -29,7 +29,7 @@ steps below explain what's actually in them.
 ## Conda environments
 
 Three envs are wired into `scripts/run_unified_pipeline.py`, which
-dispatches each stage into the right one automatically -- you don't
+dispatches each stage into the right one automatically. You do not
 need to `conda activate` manually except when running a stage's script
 directly.
 
@@ -113,7 +113,7 @@ laid out like:
 ```
 
 Download the detector and pose checkpoints from Sapiens' released
-weights and place them in that layout; pass the root via
+weights and place them in that layout. Pass the root via
 `--sapiens_checkpoint_root` to the orchestrator (or set
 `SAPIENS_CHECKPOINT_ROOT` directly for standalone predict_keypoints_2d.py runs).
 
@@ -172,15 +172,15 @@ ruamel.yaml 0.19.1, tqdm 4.67.3, open3d 0.19.0.
 
 ## Viewer display for `brush_app --with_viewer`
 
-`--with_viewer` (the default; see `docs/pipeline.md` for why
-`--no_viewer` isn't recommended on some setups) needs `brush_app` to
+`--with_viewer` (the default: see `docs/pipeline.md` for why
+`--no_viewer` is not recommended on some setups) needs `brush_app` to
 connect to a real, composited X or Xwayland display with something
-actually driving it -- a headless/dummy display with no compositor or
+actually driving it. A headless or dummy display with no compositor or
 client attached has been observed to hang the viewer thread rather than
-fail cleanly. If you're running headless (e.g. over SSH with no
+fail cleanly. If you run headless (for example over SSH with no
 physical display), set one up via a streaming stack (Sunshine+gamescope,
 VNC, etc.) or a virtual compositor, and pass its display number via
-`--display` (e.g. `--display :1`).
+`--display` (for example `--display :1`).
 
 ## Vendored script dependencies
 
@@ -188,7 +188,8 @@ VNC, etc.) or a virtual compositor, and pass its display number via
 `refine_poses_with_keypoints.py` (used by the `run_pose_refinement.py`
 wrapper) live directly in `scripts/` -- no external checkout needed.
 Pass `--multiframe_sfm_script` / `--refine_script` only if you want to
-point at a different copy (e.g. while testing local changes to them).
+point at a different copy (for example while testing local changes to
+them).
 
 ## Calibration data
 

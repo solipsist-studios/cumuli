@@ -49,7 +49,7 @@ alongside sync itself. So the actual flow is:
 
 Usage (see --help for every flag):
     python3 run_unified_pipeline.py \\
-        --video_dir /media/ai/datasets/CAPTURE/movies \\
+        --video_dir <capture>/movies \\
         --calib_dir /path/to/calibration_pkls \\
         --out_dir ~/capture_run \\
         --target_time 1500ms \\

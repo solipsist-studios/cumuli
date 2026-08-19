@@ -7,7 +7,7 @@ build_4dgs_dataset.py  –  Assemble a D-NeRF-style dataset for native 4D
 Gaussian Splatting training (fudan-zvg/4d-gaussian-splatting "Blender"
 loader) from this pipeline's per-camera frame layout.
 
-Input (a dataset root laid out like /media/ai/datasets/ariana_16):
+Input (a dataset root laid out as follows):
     images/<camera_label>/<pattern % frame>     RGB frames, static cameras
     fmasks/<camera_label>/<pattern % frame>     subject masks (white = subject)
     transforms_undistorted_intrinsics.json      nerfstudio-style: ONE shared
@@ -30,10 +30,10 @@ project inside the subject mask in at least --hull_min_views cameras.
 Colours are averaged from a few spread cameras (no occlusion reasoning —
 it's an initialisation, densification takes it from there).
 
-Usage (ariana_16):
+Usage:
     python build_4dgs_dataset.py \
-        --dataset_root /media/ai/datasets/ariana_16 \
-        --out /media/ai/datasets/ariana_16_4dgs \
+        --dataset_root <dataset_root> \
+        --out <dataset_root>_4dgs \
         --pattern 'undistorted_Frame{frame:04d}.png' \
         --start 100 --end 187 --fps 24 --downscale 2 \
         --test_cameras Camera_0016

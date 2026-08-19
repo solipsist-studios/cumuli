@@ -57,6 +57,14 @@ jobs:
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
 
+      - name: Install CPU-only torch
+        # scripts/sogst_pack.py clusters SH palettes with torch (vq_vectors,
+        # reached only when packing an shN group). The CPU wheel keeps the
+        # SH-packing tests running here instead of erroring on import;
+        # everything else in the suite is numpy-only. The cpu index avoids
+        # the multi-GB CUDA-bundled default wheel.
+        run: pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cpu
+
       - name: Run unit tests (parallel, JUnit XML)
         run: pytest tests/unit -q -n auto --junitxml=junit.xml
 

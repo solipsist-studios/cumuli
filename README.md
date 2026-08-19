@@ -65,7 +65,6 @@ git submodule update --init --recursive
 - `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
 - `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today; also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
 - `deps/brush` -- gaussian splat trainer
-- `deps/LichtFeld-Studio` -- alternative gaussian splat trainer (`train_lfs.py`); GPL-3.0, invoked as a separate compiled binary
 
 ### Third-party model licenses
 
@@ -99,10 +98,6 @@ audit rights and lets Meta amend the terms unilaterally. Because
 human capture pipeline, anyone deploying it commercially should read
 the agreement and take their own legal advice rather than relying on
 this summary.
-
-`deps/LichtFeld-Studio` is GPL-3.0. It is invoked as a separate
-compiled binary, never linked or vendored, so it imposes no obligation
-on this repository's code.
 
 Everything else wrapped by the pipeline (Brush: Apache-2.0, BiRefNet:
 MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
