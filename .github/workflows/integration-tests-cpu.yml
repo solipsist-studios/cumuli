@@ -144,7 +144,24 @@ jobs:
           echo "VCP_BRUSH_APP=$PWD/brush-cli-bin/brush-cli" >> "$GITHUB_ENV"
 
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        # Normally ~20 s. Observed 2026-08-19: apt stalled for 46+ minutes on
+        # a runner mirror hang, and only a concurrency cancel ended it -- the
+        # job timeout is 350 minutes. Bound the step and retry with short
+        # network timeouts so a stall costs minutes and fails loudly.
+        timeout-minutes: 6
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          for i in 1 2 3; do
+            sudo apt-get update \
+                -o Acquire::Retries=3 \
+                -o Acquire::http::Timeout=30 \
+                -o Acquire::https::Timeout=30 \
+              && sudo apt-get install -y --no-install-recommends ffmpeg \
+              && exit 0
+            echo "apt attempt $i failed; retrying in 15s" >&2
+            sleep 15
+          done
+          exit 1
 
       - name: Install Mesa software rendering (llvmpipe + lavapipe)
         # Real CI failure (2026-07-31): brush_app (via cubecl-wgpu) panicked
