@@ -130,7 +130,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
+
+      - name: Fetch the pipeline submodules (not the 4D trainer forks)
+        # `submodules: true` would also clone deps/4d-gaussian-splatting and
+        # deps/OMG4, which this CPU pipeline run never touches. Init exactly
+        # the submodules the capture pipeline wraps -- the same set the old
+        # blanket fetch delivered before the trainer forks were vendored.
+        run: |
+          git submodule update --init \
+            deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
+            deps/sapiens deps/brush
 
       - name: Download brush-cli artifact
         uses: actions/download-artifact@v4
