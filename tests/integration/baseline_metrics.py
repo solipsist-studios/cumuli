@@ -1,13 +1,13 @@
 """
 tests/integration/baseline_metrics.py
 
-The 3 golden-baseline measurements (pose reprojection error, per-camera
-mask coverage, masked PSNR on the held-out eval camera) used by both
+The golden-baseline measurements (pose reprojection error, per-camera
+mask coverage, and the 4D eval report from eval_render.py) used by both
 test_pipeline_end_to_end.py (regression checks against golden_baseline.json,
-with margin) and scripts/update_integration_baseline.py (the post-merge
-job that re-measures and writes a fresh golden_baseline.json). Pulled out
-of the test file so the two call sites can't silently drift apart -- same
-"import, not a copy" practice already used for
+with margin) and tests/integration/update_golden_baseline.py (the
+post-merge job that re-measures and writes a fresh golden_baseline.json).
+Pulled out of the test file so the two call sites can't silently drift
+apart -- same "import, not a copy" practice already used for
 tests/unit/test_integration_baseline_checks.py.
 
 These functions do no assertion/comparison themselves -- they just read a
@@ -70,49 +70,16 @@ def mask_coverage(L, real_camera: str) -> float:
     return float((mask > 127).mean())
 
 
-def clean_artifact_name(name: str) -> str:
-    """Collapse brush main's doubled eval-render extension ("00.png.png")
-    down to a single ".png" -- cosmetic only, for a human-facing copy (e.g.
-    a CI artifact upload); callers that need the real on-disk filename
-    (as held_out_psnr does) must not use this."""
-    if name.endswith(".png.png"):
-        return name[:-len(".png")]
-    return name
-
-
-def held_out_psnr(L, total_train_iters: int, held_out_real_camera: str) -> tuple[float, Path]:
-    """Masked PSNR between Brush's held-out eval render (excluded from
-    training via --eval_split_every) and the real photo from that same
-    camera. Returns (score, render_path) -- the caller may want
-    render_path to copy the render out as a CI artifact (see
-    clean_artifact_name for a human-facing filename)."""
-    held_out_flat = flat_label_for(L, held_out_real_camera)
-    eval_dir = L["brush_output"] / f"eval_{total_train_iters}"
-    render_path = eval_dir / f"{held_out_flat}.png"
-    if not render_path.is_file():
-        # brush main (source builds, required for CPU-rendering mode) names
-        # eval renders after the full source image filename plus .png --
-        # e.g. "00.png.png" -- where the v0.3.0 release wrote "00.png".
-        # Accept either so both binary generations work.
-        alt = eval_dir / f"{held_out_flat}.png.png"
-        if alt.is_file():
-            render_path = alt
-    if not render_path.is_file():
+def eval4d_metrics(L) -> dict:
+    """Parsed eval_4d.json from stage_train4d's eval_render.py run --
+    {"mean": {"psnr_db", "ssim", "lpips"}, "views": [...], "config": ...}.
+    Raises FileNotFoundError with a pointer at the likely causes when the
+    report is missing."""
+    import json
+    report_path = L["eval4d_report"]
+    if not report_path.is_file():
         raise FileNotFoundError(
-            f"expected brush_app's --eval-save-to-disk render at {render_path} -- "
-            f"found instead: {sorted(eval_dir.glob('*')) if eval_dir.is_dir() else '(eval dir missing)'}"
-        )
-
-    with Image.open(render_path) as im:
-        render = np.asarray(im.convert("RGB"))
-
-    gt_path = L["train_set"] / "images_rgba" / f"{held_out_flat}.png"
-    with Image.open(gt_path) as im:
-        gt_im = im.resize(render.shape[1::-1], Image.LANCZOS)
-        gt_arr = np.asarray(gt_im)
-
-    gt_rgb = gt_arr[..., :3]
-    mask = gt_arr[..., 3] > 127  # the baked alpha channel IS the cleaned mask
-
-    score = masked_psnr(render, gt_rgb, mask)
-    return score, render_path
+            f"expected eval_render.py's report at {report_path} -- the train4d "
+            f"stage writes it only when --eval_camera was given and --skip_eval "
+            f"was not")
+    return json.loads(report_path.read_text())

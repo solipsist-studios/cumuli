@@ -11,7 +11,7 @@ measure()/write_golden_baseline()/append_history() round-trip real values
 correctly.
 
 Deliberately in tests/unit/, not tests/integration/: pure logic against
-synthetic tmp_path data, no GPU/conda-envs/brush_app needed -- same
+synthetic tmp_path data, no GPU/conda-envs/trainer needed -- same
 reasoning as test_integration_baseline_checks.py. Imports directly from
 tests/integration/update_golden_baseline.py so this can never drift out
 of sync with the real code.
@@ -33,38 +33,45 @@ import update_golden_baseline as ugb  # noqa: E402
 
 @pytest.fixture(autouse=True)
 def _artifacts_dir_in_tmp(monkeypatch, tmp_path):
-    """check_structurally_sound() reaches test_branch_stage_exported_a_
-    nonempty_splat(), which copies the .ply into the integration module's
-    ARTIFACTS_DIR as a side effect -- point that at tmp so these tests
-    never write into the real (gitignored) tests/integration/artifacts/
-    nor depend on it existing (it doesn't, on a fresh checkout)."""
+    """check_structurally_sound() reaches test_train4d_produced_sogst(),
+    which copies the .sogst into the integration module's ARTIFACTS_DIR
+    as a side effect -- point that at tmp so these tests never write into
+    the real (gitignored) tests/integration/artifacts/ nor depend on it
+    existing (it doesn't, on a fresh checkout)."""
     monkeypatch.setattr(t, "ARTIFACTS_DIR", tmp_path / "artifacts")
 
 
 REAL_CAMERAS = ["0001", "0002", "0003", "0005", "0006", "0007", "0008", "0009", "0010", "0011", "0012"]
-HELD_OUT_REAL_CAMERA = "0001"
-HELD_OUT_FLAT = "00"
-TOTAL_TRAIN_ITERS = 1000
 
 
-def _write_minimal_ply(path, n_vertices=1):
+def _write_minimal_ply(path, n_vertices=1, with_time=True):
+    time_prop = "property float time\n" if with_time else ""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = "0 0 0 0\n" if with_time else "0 0 0\n"
     path.write_text(
         "ply\nformat ascii 1.0\n"
         f"element vertex {n_vertices}\n"
         "property float x\nproperty float y\nproperty float z\n"
-        "end_header\n" + "0 0 0\n" * n_vertices
+        + time_prop + "end_header\n" + row * n_vertices
     )
 
 
+def _write_minimal_sogst(path):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("meta.json", json.dumps({"format": "sogst", "version": 1, "count": 3}))
+
+
 def _build_good_run(out_dir, with_metrics_data=False):
-    """A minimal but complete synthetic run satisfying all 5 structural
-    checks in check_structurally_sound(). Pass with_metrics_data=True to
-    also populate what measure() needs (masks, camera_label_map, eval
-    render + ground truth) -- kept optional since the structural-gate
-    tests don't need it."""
+    """A minimal but complete synthetic run satisfying every structural
+    check in check_structurally_sound(). Pass with_metrics_data=True to
+    also populate what measure() needs (masks, camera_label_map, the
+    eval_4d.json report) -- kept optional since the structural-gate tests
+    don't need it."""
     L = unified.build_layout(out_dir)
 
     offsets = {f"{cam}.mp4": {"frame_offset": 0} for cam in REAL_CAMERAS}
+    L["sync_offsets"].parent.mkdir(parents=True, exist_ok=True)
     L["sync_offsets"].write_text(json.dumps({"offsets": offsets}))
     L["sync_grid"].write_bytes(b"fake jpg")
 
@@ -77,8 +84,23 @@ def _build_good_run(out_dir, with_metrics_data=False):
         {"frames": [{"camera_label": f"Camera_{cam}"} for cam in REAL_CAMERAS]}
     ))
 
-    L["brush_output"].mkdir(parents=True)
-    _write_minimal_ply(L["brush_output"] / "splat_1000.ply", n_vertices=1)
+    # dataset4d: transforms pair with per-view intrinsics + a referenced
+    # RGBA image + a time-aware points3d.ply.
+    L["dataset4d"].mkdir(parents=True)
+    intr = {"fl_x": 100.0, "fl_y": 100.0, "cx": 8.0, "cy": 8.0, "time": 0.0}
+    frame = {"file_path": "realcams/cam00/frame_00000.png",
+             "transform_matrix": [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]], **intr}
+    (L["dataset4d"] / "transforms_train.json").write_text(json.dumps({"frames": [frame]}))
+    (L["dataset4d"] / "transforms_test.json").write_text(json.dumps({"frames": [frame]}))
+    img_path = L["dataset4d"] / "realcams" / "cam00" / "frame_00000.png"
+    img_path.parent.mkdir(parents=True)
+    Image.fromarray(np.zeros((16, 16, 4), dtype=np.uint8), mode="RGBA").save(img_path)
+    _write_minimal_ply(L["dataset4d"] / "points3d.ply", n_vertices=1, with_time=True)
+
+    # train4d: a checkpoint and a valid .sogst archive.
+    L["train4d_model"].mkdir(parents=True)
+    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"x")
+    _write_minimal_sogst(L["sogst_out"])
 
     log = "Median residual: 30.00px -> 5.00px\n"
     run = {"out_dir": out_dir, "L": L, "returncode": 0, "log": log}
@@ -93,17 +115,8 @@ def _build_good_run(out_dir, with_metrics_data=False):
             mask[:2, :5] = 255  # 10/100 = 0.10 coverage, same for every camera
             Image.fromarray(mask).save(L["flat_fmasks_clean"] / f"{flat}.png")
 
-        rgba_dir = L["train_set"] / "images_rgba"
-        rgba_dir.mkdir(parents=True)
-        gt = np.zeros((16, 16, 4), dtype=np.uint8)
-        gt[4:12, 4:12] = [128, 128, 128, 255]
-        Image.fromarray(gt, mode="RGBA").save(rgba_dir / f"{HELD_OUT_FLAT}.png")
-
-        eval_dir = L["brush_output"] / f"eval_{TOTAL_TRAIN_ITERS}"
-        eval_dir.mkdir(parents=True)
-        render = np.zeros((16, 16, 3), dtype=np.uint8)
-        render[4:12, 4:12] = [128, 128, 128]  # exact match -> infinite PSNR, clamped below
-        Image.fromarray(render, mode="RGB").save(eval_dir / f"{HELD_OUT_FLAT}.png")
+        L["eval4d_report"].write_text(json.dumps(
+            {"mean": {"psnr_db": 27.5, "ssim": 0.91, "lpips": 0.08}, "views": []}))
 
     return run
 
@@ -129,22 +142,23 @@ def test_check_structurally_sound_catches_missing_camera_in_poses(tmp_path):
         ugb.check_structurally_sound(run)
 
 
-def test_check_structurally_sound_catches_missing_ply(tmp_path):
+def test_check_structurally_sound_catches_missing_sogst(tmp_path):
     run = _build_good_run(tmp_path)
-    for p in run["L"]["brush_output"].glob("*.ply"):
-        p.unlink()
-    with pytest.raises(AssertionError, match="no .ply exported"):
+    run["L"]["sogst_out"].unlink()
+    with pytest.raises(AssertionError, match="ZIP"):
         ugb.check_structurally_sound(run)
 
 
-def test_measure_extracts_all_three_metrics_from_a_good_run(tmp_path):
+def test_measure_extracts_all_metrics_from_a_good_run(tmp_path):
     run = _build_good_run(tmp_path, with_metrics_data=True)
     metrics = ugb.measure(run)
 
     assert metrics["median_reprojection_error_px"] == 5.0
     assert metrics["mask_coverage"].keys() == set(REAL_CAMERAS)
     assert all(frac == pytest.approx(0.10) for frac in metrics["mask_coverage"].values())
-    assert metrics["psnr_db"] > 60  # exact render/gt match in the masked region -> very high PSNR
+    assert metrics["eval4d_psnr_db"] == 27.5
+    assert metrics["eval4d_ssim"] == 0.91
+    assert metrics["eval4d_lpips"] == 0.08
 
 
 def test_measure_raises_when_reprojection_line_missing(tmp_path):
@@ -162,22 +176,24 @@ def test_write_golden_baseline_preserves_docs_and_updates_only_metrics(tmp_path,
         "reproducibility_check": "also hand-written, must survive",
         "median_reprojection_error_px": 1.0,
         "mask_coverage": {"old": 0.5},
-        "psnr_db": 1.0,
-        "psnr_notes": "must survive too",
+        "eval4d_notes": "must survive too",
     }
     golden_path.write_text(json.dumps(original))
     monkeypatch.setattr(ugb, "GOLDEN_PATH", golden_path)
 
-    metrics = {"median_reprojection_error_px": 5.57, "mask_coverage": {"0001": 0.0157}, "psnr_db": 22.26}
+    metrics = {"median_reprojection_error_px": 5.57, "mask_coverage": {"0001": 0.0157},
+               "eval4d_psnr_db": 27.5, "eval4d_ssim": 0.91, "eval4d_lpips": 0.08}
     ugb.write_golden_baseline(metrics, "abc123")
 
     written = json.loads(golden_path.read_text())
     assert written["_comment"] == original["_comment"]
     assert written["reproducibility_check"] == original["reproducibility_check"]
-    assert written["psnr_notes"] == original["psnr_notes"]
+    assert written["eval4d_notes"] == original["eval4d_notes"]
     assert written["median_reprojection_error_px"] == 5.57
     assert written["mask_coverage"] == {"0001": 0.0157}
-    assert written["psnr_db"] == 22.26
+    assert written["eval4d_psnr_db"] == 27.5
+    assert written["eval4d_holdout"]["eval_camera"] == t.EVAL_CAMERA
+    assert written["eval4d_config"]["total_train_iters"] == t.TOTAL_TRAIN_ITERS
     assert written["source_commit"] == "abc123"
     assert written["run_date"] != "2020-01-01"
 
@@ -186,7 +202,8 @@ def test_append_history_creates_file_then_appends_without_touching_prior_lines(t
     history_path = tmp_path / "baseline_history.jsonl"
     monkeypatch.setattr(ugb, "HISTORY_PATH", history_path)
 
-    metrics_1 = {"median_reprojection_error_px": 5.57, "mask_coverage": {"0001": 0.01, "0002": 0.03}, "psnr_db": 22.26}
+    metrics_1 = {"median_reprojection_error_px": 5.57, "mask_coverage": {"0001": 0.01, "0002": 0.03},
+                 "eval4d_psnr_db": 27.5, "eval4d_ssim": 0.91, "eval4d_lpips": 0.08}
     ugb.append_history(metrics_1, "commit1")
     assert history_path.is_file()
     lines = history_path.read_text().splitlines()
@@ -195,7 +212,8 @@ def test_append_history_creates_file_then_appends_without_touching_prior_lines(t
     assert entry_1["commit"] == "commit1"
     assert entry_1["mask_coverage_avg"] == pytest.approx(0.02)
 
-    metrics_2 = {"median_reprojection_error_px": 5.60, "mask_coverage": {"0001": 0.02}, "psnr_db": 22.90}
+    metrics_2 = {"median_reprojection_error_px": 5.60, "mask_coverage": {"0001": 0.02},
+                 "eval4d_psnr_db": 27.9, "eval4d_ssim": 0.92, "eval4d_lpips": 0.07}
     ugb.append_history(metrics_2, "commit2")
     lines = history_path.read_text().splitlines()
     assert len(lines) == 2

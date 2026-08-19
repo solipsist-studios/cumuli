@@ -14,7 +14,7 @@ name: Update integration baseline
 # workflow's only job is capturing fresh ground truth; the baseline is
 # always the single most recent result, never an average across runs).
 #
-# Needs the same real GPU/conda-envs/brush_app/checkpoints as
+# Needs the same real GPU/conda-envs/deps-OMG4/checkpoints as
 # integration-tests.yml, hence the same `self-hosted, gpu` runner label.
 
 on:

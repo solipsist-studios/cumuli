@@ -1,9 +1,10 @@
 name: Integration tests (GPU, manual)
 
 # Real, unmocked pipeline run against the committed take01_11cam fixture --
-# see tests/integration/. This needs a real GPU, the hloc/diffuman4d/sapiens2
-# conda envs, a compiled brush_app, and Sapiens checkpoints -- none of which
-# exist on a GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below.
+# see tests/integration/. This needs a real CUDA GPU (the train4d stage),
+# the hloc/diffuman4d/sapiens2/queen/omg4 conda envs, the deps/OMG4 trainer
+# submodule, and Sapiens checkpoints -- none of which exist on a
+# GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below.
 #
 # Manual-dispatch only (workflow_dispatch), not `on: pull_request` -- no
 # self-hosted GPU runner carrying that label has ever been registered, so an
@@ -48,7 +49,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
+
+      - name: Fetch the pipeline submodules plus the trainer
+        # The capture-pipeline submodules, plus deps/OMG4 (train4d's
+        # trainer entry point lives there). deps/4d-gaussian-splatting is
+        # NOT needed: the stage drives the OMG4 clone.
+        run: |
+          git submodule update --init \
+            deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
+            deps/sapiens deps/OMG4
 
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt
@@ -70,14 +80,13 @@ jobs:
           name: junit-integration-xml
           path: junit-integration.xml
 
-      - name: Upload run artifacts (pipeline log, trained splat, eval renders, PSNR report)
+      - name: Upload run artifacts (pipeline log, baked .sogst, eval report)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-run-artifacts
           path: |
             tests/integration/artifacts/pipeline_run.log
-            tests/integration/artifacts/*.ply
-            tests/integration/artifacts/eval_renders/
-            tests/integration/artifacts/psnr_report.json
+            tests/integration/artifacts/*.sogst
+            tests/integration/artifacts/eval_4d.json
           if-no-files-found: ignore
