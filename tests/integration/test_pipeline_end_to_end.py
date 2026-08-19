@@ -3,7 +3,7 @@ tests/integration/test_pipeline_end_to_end.py
 
 Real, unmocked pipeline test: runs the full 5-stage volumetric capture
 pipeline (sync -> production -> poses -> masks -> branch) against the
-committed heidi_11cam fixture (tests/integration/fixtures/heidi_11cam/,
+committed take01_11cam fixture (tests/integration/fixtures/take01_11cam/,
 all 11 real cameras -- an earlier 5-camera prototype was retired after
 comparison testing showed 11 cameras is both more robust (clean HLOC
 registration every time; a 5-camera subset failed to register one camera
@@ -246,7 +246,7 @@ CPU_SAPIENS_MODEL_SIZE = "0.4b"  # NOT the 1b production default -- real CI fail
 # assuming a fixed sort order).
 HELD_OUT_REAL_CAMERA = "0001"
 
-with open(Path(__file__).resolve().parent / "fixtures" / "heidi_11cam" / "golden_baseline.json") as f:
+with open(Path(__file__).resolve().parent / "fixtures" / "take01_11cam" / "golden_baseline.json") as f:
     GOLDEN = json.load(f)
 
 # Margins below are derived from a real 7-run variance study (identical

@@ -1,6 +1,6 @@
 name: Integration tests (GPU, manual)
 
-# Real, unmocked pipeline run against the committed heidi_11cam fixture --
+# Real, unmocked pipeline run against the committed take01_11cam fixture --
 # see tests/integration/. This needs a real GPU, the hloc/diffuman4d/sapiens2
 # conda envs, a compiled brush_app, and Sapiens checkpoints -- none of which
 # exist on a GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below.

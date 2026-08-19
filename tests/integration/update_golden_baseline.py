@@ -3,7 +3,7 @@
 tests/integration/update_golden_baseline.py
 
 Post-merge companion to test_pipeline_end_to_end.py: re-runs the real
-pipeline against the same heidi_11cam fixture and settings, then
+pipeline against the same take01_11cam fixture and settings, then
 overwrites golden_baseline.json with this run's fresh numbers and appends
 one line to baseline_history.jsonl -- the append-only record of every
 merged result over time. Meant to run from
@@ -51,7 +51,7 @@ import run_unified_pipeline as unified  # noqa: E402
 import test_pipeline_end_to_end as t  # noqa: E402
 from baseline_metrics import held_out_psnr, mask_coverage, parse_reprojection_error  # noqa: E402
 
-FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "heidi_11cam"
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "take01_11cam"
 GOLDEN_PATH = FIXTURE_DIR / "golden_baseline.json"
 HISTORY_PATH = FIXTURE_DIR / "baseline_history.jsonl"
 

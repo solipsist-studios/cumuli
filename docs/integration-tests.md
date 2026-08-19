@@ -21,7 +21,7 @@ processed, then:
   run fails before these tests even get their own chance to look).
 - **Regression checks against a golden baseline** -- pose refinement's
   median reprojection error and per-camera mask coverage, compared with
-  margin against `tests/integration/fixtures/heidi_11cam/golden_baseline.json`.
+  margin against `tests/integration/fixtures/take01_11cam/golden_baseline.json`.
   That file records numbers from real runs of this fixture that a human
   reviewed and confirmed looked right. This is *not* a universal quality
   bar -- different rigs/subjects have no comparable absolute number -- it
@@ -272,8 +272,8 @@ can't fix that. See the "Why seed-pinning doesn't fix this" paragraph in
 
 ## The fixture
 
-`tests/integration/fixtures/heidi_11cam/`: all 11 real cameras, full-length
-clips (~3s), from the validated `heidi_260521` capture. An earlier 5-camera
+`tests/integration/fixtures/take01_11cam/`: all 11 real cameras, full-length
+clips (~3s), from the validated `take01` capture (the same capture `docs/pipeline.md` uses as its worked example). An earlier 5-camera
 subset was tried first (smaller/faster) but retired after real testing
 showed it was measurably worse on two fronts: HLOC's final reconstruction
 failed to register one camera on a first attempt (not enough background
