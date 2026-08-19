@@ -148,10 +148,19 @@ jobs:
         # a runner mirror hang, and only a concurrency cancel ended it -- the
         # job timeout is 350 minutes. Bound the step and retry with short
         # network timeouts so a stall costs minutes and fails loudly.
-        timeout-minutes: 6
+        timeout-minutes: 8
         run: |
           export DEBIAN_FRONTEND=noninteractive
           for i in 1 2 3; do
+            if [ "$i" = "2" ]; then
+              # The runners' azure.archive.ubuntu.com mirror stalls
+              # occasionally (observed 2026-08-19, ~1h). Fall back to
+              # Ubuntu's canonical mirror before the second attempt.
+              echo "switching to archive.ubuntu.com" >&2
+              sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+                /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
+                /etc/apt/sources.list.d/*.list 2>/dev/null || true
+            fi
             sudo apt-get update \
                 -o Acquire::Retries=3 \
                 -o Acquire::http::Timeout=30 \
