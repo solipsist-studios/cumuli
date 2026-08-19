@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+-->
+
 # Rig configs
 
 `run_unified_pipeline.py --config <file>.json` loads per-rig defaults for the

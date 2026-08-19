@@ -1,3 +1,8 @@
+<!--
+SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+-->
+
 # Volumetric capture pipeline
 
 End-to-end flow from raw multi-camera GoPro footage to a trained Brush

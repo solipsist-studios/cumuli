@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+# Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
+
+name: Feature request
+description: Suggest a change or addition to the pipeline
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please open an issue like this before writing code for anything
+        non-trivial — see [CONTRIBUTING.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/CONTRIBUTING.md).
+        Stages in this pipeline are more coupled than they look, and a short
+        conversation up front usually saves a rewritten pull request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: |
+        Describe the capture or result you are trying to get, not the
+        solution you have in mind. What goes wrong today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+      description: If you have an implementation in mind, sketch it here.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Which part of the pipeline would this touch?
+      options:
+        - "Sync and frame extraction"
+        - "Undistortion and calibration"
+        - "Pose estimation (HLOC / SfM)"
+        - "Masks"
+        - "Keypoints and pose refinement"
+        - "Training (Brush / LichtFeld-Studio)"
+        - "Orchestration (run_unified_pipeline.py, render_frame_sequence.py)"
+        - "Export and post-processing"
+        - "Docs, install, or environments"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried?
+      description: |
+        Existing flags, workarounds, or other tools. If an existing flag
+        nearly does this, say which one and how it falls short.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Would you be willing to implement this?
+      options:
+        - label: I would be willing to work on this myself
+          required: false
+        - label: I have a Linux machine with an NVIDIA GPU and multi-camera footage to test on
+          required: false
