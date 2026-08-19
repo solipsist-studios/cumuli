@@ -132,54 +132,6 @@ jobs:
         with:
           submodules: true
 
-      - name: Work around broken offline_undistort.py in camera-calibration submodule
-        # TEMPORARY. Real CI failure (2026-07-29): deps/camera-calibration's
-        # pinned commit (dd0f3eb9) has a genuine IndentationError -- a
-        # duplicated, incomplete `if` line with a comment sandwiched
-        # before the real, complete condition, no indented body of its
-        # own. A fix exists but couldn't be pushed to
-        # solipsist-studios/camera-calibration directly (no write access
-        # from this account) -- patching the checked-out file here instead
-        # of waiting on that. Remove this step once the submodule pointer
-        # in .gitmodules/the git index is updated to a commit with the
-        # real fix upstream. Fails loudly (not a silent no-op) if the
-        # exact broken text isn't found, so this can't mask a *different*
-        # problem if upstream changes first.
-        run: |
-          python3 -c "
-          import sys
-          path = 'deps/camera-calibration/offline_undistort.py'
-          broken = '        if output_target and Path(output_target).suffix:\n        # Build output path preserving directory structure\n        if output_target and Path(output_target).suffix and len(rel_path) > 0 and source_base is None:\n'
-          fixed = '        if output_target and Path(output_target).suffix and len(rel_path) > 0 and source_base is None:\n'
-          text = open(path).read()
-          if broken not in text:
-              sys.exit(f'Expected broken text not found in {path} -- has upstream already fixed this? Remove this workaround step.')
-          open(path, 'w').write(text.replace(broken, fixed, 1))
-          print(f'Patched {path}')
-          "
-
-      - name: Work around missing CPU fallback in Diffuman4D submodule
-        # TEMPORARY, same situation as the camera-calibration workaround
-        # above. Real CI failure (2026-07-29): deps/Diffuman4D's pinned
-        # commit (eaa46c9f) has no CPU fallback in remove_background.py --
-        # on a GPU-less runner, torch.cuda.device_count() is 0, so
-        # gpu_ids/devices ends up empty and num_workers (num_workers *
-        # len(devices)) becomes 0, crashing multiprocessing.Pool with
-        # "Number of processes must be at least 1". A real fix (adds a
-        # ["cpu"] fallback + skips CUDA-only fp16) exists but couldn't be
-        # pushed to solipsist-studios/Diffuman4D directly (no write access
-        # from this account) -- applying it as a patch file here instead.
-        # patches/*.patch is checked in to this repo, not the submodule.
-        # Remove this step once the submodule pointer is updated to a
-        # commit with the real fix upstream. --check first so this fails
-        # loudly (not a silent no-op) if the patch no longer applies
-        # cleanly, rather than masking a different problem.
-        run: |
-          cd deps/Diffuman4D
-          git apply --check ../../patches/diffuman4d-remove_background-cpu-fallback.patch
-          git apply ../../patches/diffuman4d-remove_background-cpu-fallback.patch
-          echo "Patched scripts/preprocess/remove_background.py"
-
       - name: Download brush-cli artifact
         uses: actions/download-artifact@v4
         with:
