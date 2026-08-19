@@ -9,6 +9,6 @@ contact_links:
   - name: Commercial licensing
     url: mailto:jeff@solipsist.studio
     about: This project is free for noncommercial use. Email us about commercial licensing.
-  - name: Bug in a wrapped tool (COLMAP, HLOC, Brush, Sapiens, BiRefNet, Diffuman4D)
+  - name: Bug in a wrapped tool (COLMAP, HLOC, the 4D trainer, Sapiens, BiRefNet, Diffuman4D)
     url: https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/README.md#submodules
     about: Those are separate projects — please report the issue to them directly.

@@ -247,7 +247,8 @@ ergonomics.
 
 **Out of scope:**
 
-- Bugs in the wrapped tools -- COLMAP, HLOC, Brush, LichtFeld-Studio,
+- Bugs in the wrapped tools -- COLMAP, HLOC, the 4D trainer stack
+  (deps/4d-gaussian-splatting, deps/OMG4),
   Sapiens, BiRefNet, Diffuman4D. Report those upstream. We will bump the
   submodule or pin once fixed.
 - Debugging your local GPU, CUDA, or conda installation. We are happy to

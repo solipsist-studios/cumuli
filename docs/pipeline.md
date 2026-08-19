@@ -5,18 +5,20 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 # Volumetric capture pipeline
 
-End-to-end flow from raw multi-camera GoPro footage to a trained Brush
-gaussian splat, for a single frame/timestamp. All example paths below use
-a `take01_1500ms` example dataset (frame extracted at 1.5s into the clip)
--- substitute your own working directory.
+End-to-end flow from raw multi-camera GoPro footage to a trained 4D
+gaussian splat, baked as a streamable `.sogst` asset. Calibration (sync,
+poses, masks) happens at one target timestamp. Training then consumes a
+frame window extracted around it. All example paths below use a
+`take01_1500ms` example dataset (calibrated at 1.5s into the clip) --
+substitute your own working directory.
 
 Follow the sections below in order: that is the pipeline order. Each
 script's own `--help` / docstring has the full flag reference. This doc
 is the narrative walkthrough, and it names the conda envs each stage
 needs.
 
-Only the direct branch (4K masked training on the real cameras) is part
-of this build. The Diffuman4D 48-camera dense-ring branch is a planned
+Only the direct branch (training on the real cameras) is part of this
+build. The Diffuman4D 48-camera dense-ring branch is a planned
 addition (hallucinating extra ring views via Diffuman4D, then training
 on real + synthetic views together) but it is not wired into any script
 or this walkthrough yet. It will get its own doc sections once it has
@@ -29,9 +31,10 @@ been run and validated end-to-end.
 - Raw GoPro `.mp4` clips, one per camera, all recording the same take.
 - Conda envs: `hloc` (HLOC + pycolmap), `diffuman4d` (BiRefNet background
   removal deps), `sapiens2` (Sapiens keypoint prediction, needs
-  `SAPIENS_CHECKPOINT_ROOT` set), `queen` (generic scripts + triangulation,
-  see `docs/environment.md`). Brush training runs the compiled
-  `brush_app` binary directly, no conda env needed for that step.
+  `SAPIENS_CHECKPOINT_ROOT` set), `queen` (generic scripts + triangulation),
+  and `omg4` (the 4D trainer, bake, and eval -- see `docs/environment.md`
+  and `envs/omg4.yml`). Training needs a CUDA GPU. Every stage before it
+  runs on CPU.
 
 ## Recommended: run everything with the unified orchestrator
 
@@ -57,12 +60,16 @@ python3 scripts/run_unified_pipeline.py \
 Key flags:
 
 - **`--config`** -- JSON file of per-rig defaults (conda env names,
-  `--brush_app`, `--display`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
+  `--trainer_repo`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
   you do not have to repeat them on every run. Explicit CLI flags always
   override the config. See `configs/README.md`.
 - **`--start_from_stage` / `--stop_after_stage`** (`sync`, `production`,
-  `poses`, `masks`, `branch`) -- resume partway through, or stop early to
-  inspect intermediate output before committing GPU time to training.
+  `poses`, `masks`, `dataset4d`, `train4d`) -- resume partway through, or
+  stop early to inspect intermediate output before committing GPU time to
+  training. On a machine with no CUDA GPU, run with
+  `--stop_after_stage dataset4d` and train elsewhere: every stage through
+  the dataset build is CPU-capable, and `train4d` refuses to start
+  without a GPU rather than fail deep inside training.
   Resuming assumes the earlier stages' outputs already exist under
   `--out_dir`.
 - **Sync: verify once, reuse, and do not re-trust automatically every run.**
@@ -89,24 +96,6 @@ Key flags:
      yourself and pass `--start_from_stage production`. This is the
      normal way to iterate without re-running (and re-trusting) sync
      search each time.
-- **`--with_viewer`** (default: on) / **`--no_viewer`** -- `--with_viewer`
-  is the tested, working configuration on this machine. `--no_viewer`
-  hasn't been separately verified here or anywhere else (including
-  WSL): in testing on this machine it reliably hung (a busy-spin
-  thread, not a blocked syscall) across every display setup tried -- no
-  display at all, a dummy Xorg instance, a real composited display with
-  no client connected, and a real composited display with an active
-  client all reproduced it identically -- but that result is specific
-  to this one machine's driver/library setup and may not generalize.
-  `--wgpu_backend=vulkan` (forces wgpu's backend instead of
-  auto-probing) is available as an experimental option but did not
-  resolve the hang in testing here. Only pass `--no_viewer` if you've
-  separately confirmed headless training completes in your own
-  environment.
-- **`--display`** (default `:2`) -- the X display `brush_app` connects
-  to for `--with_viewer`. The default is machine-specific.
-  Override it for your own setup. It needs a real, composited display:
-  a detached or dummy Xorg instance is not sufficient.
 - **`--hloc_resize_max`** (default 4096) / **`--hloc_max_keypoints`**
   (default 8192) -- HLOC feature-extraction settings, passed through to
   `multiframe_sfm.py`. The 4096 default is deliberately higher than that
@@ -303,7 +292,7 @@ Masking/alignment quality on real captures is still an open problem
 being actively worked (see project notes) -- treat this as the current
 best approach, not a solved one.
 
-## Triangulate, build the training set, and train Brush
+## Triangulate the subject point cloud
 
 `transforms.json` here already carries the refined poses (pose
 refinement ran before flattening, above), so nothing further needs to
@@ -317,30 +306,53 @@ python3 scripts/triangulate_and_project_keypoints.py \
     --out_pcd_dir ~/take01_1500ms/poses_pcd_fullres
 ```
 
-Then bake the cleaned masks into image alpha. **Do not** pass masks as
-a separate folder next to same-named/same-extension images: Brush has
-been observed to silently ignore that and train the full unmasked
-scene.
-Training itself needs no special flag: `brush_app` has no `--alpha-mode`
-option (verified against `brush_app --help`) -- it auto-detects the
-alpha channel and applies its own `--match-alpha-weight` loss:
+## Build the 4D dataset and train (dataset4d / train4d)
+
+The last two stages run through the orchestrator rather than one script
+each: `dataset4d` loops the per-instant chain over the whole training
+window, and `train4d` drives the vendored trainer. Resume from the
+calibrated run directory:
 
 ```bash
-python3 scripts/build_colmap_sparse.py \
-    --transforms ~/take01_1500ms/transforms.json \
-    --points_ply ~/take01_1500ms/poses_pcd_fullres/000000.ply \
-    --out_dir ~/take01_1500ms/train_set \
-    --images_dir ~/take01_1500ms/images_flat \
-    --masks_dir ~/take01_1500ms/fmasks_clean
-
-python3 scripts/train_brush.py \
-    --data ~/take01_1500ms/train_set \
-    --brush_app ~/brush-app-x86_64-unknown-linux-gnu/brush_app \
-    --export_path ~/brush_output \
-    --export_name take01_1500ms_{iter}.ply
-# opens Brush's live viewer by default (see "Recommended" section above for why)
-# pass --no_viewer only if you have confirmed headless training works in your environment
+python3 scripts/run_unified_pipeline.py \
+    --video_dir <capture>/movies \
+    --calib_dir /path/to/calibration_pkls \
+    --out_dir ~/take01_1500ms \
+    --target_time 1500ms \
+    --start_from_stage dataset4d \
+    --train_window 48 --train_fps 30 \
+    --eval_camera 05 --holdout_cameras 06
 ```
+
+What the flags mean:
+
+- **`--train_window` / `--train_fps`** -- the training clip is
+  `(window - 1) / fps` seconds of frames extracted at the verified sync.
+  Each frame gets the full undistort/mask/keypoint/clean chain, so the
+  dataset build is CPU-heavy but CPU-only.
+- **`--eval_camera` / `--holdout_cameras`** -- the eval camera is held
+  out and scored. Its stereo mates go in `--holdout_cameras`: they leave
+  training WITHOUT being scored. Rigs built from near-duplicate camera
+  pairs leak: holding out one camera whose mate keeps training measured
+  ~5.7 dB of pure leakage on an 11-camera rig. That number is leak, not
+  quality. Check your rig's pair structure before choosing the split.
+- **`train4d` is CUDA-gated.** It generates the trainer config from
+  `configs/gs4d_pretrain_template.yaml` (override with
+  `--trainer_config`), trains `train_scratch.py` in `deps/OMG4` under
+  the `omg4` env, bakes with `bake_sogst.py`, and scores the held-out
+  camera with `eval_render.py`.
+
+The masks are baked into the dataset's RGBA alpha during the dataset
+build, so alpha supervision is part of training by construction. The
+bake also applies a lifetime mask-consistency filter: splats that
+project outside the subject mask in most views across their active life
+are dropped as silhouette-escaping junk.
+
+Outputs land in the run directory: `dataset_4dgs/` (the D-NeRF training
+dataset), `splat_4d.sogst` (the baked asset), and `eval_4d.json` (the
+held-out PSNR/SSIM/LPIPS report). Treat absolute PSNR on masked
+captures as a relative gate only: most of the frame is background that
+renders perfectly, so the number is dominated by it.
 
 ## Post-process: mask-consistency splat filtering
 
