@@ -1,0 +1,438 @@
+name: Integration tests (CPU-only)
+
+# Runs the same real, unmocked tests/integration/ suite as
+# integration-tests.yml, but entirely on GitHub's free hosted runners --
+# no GPU anywhere, including Brush training. Triggers on EVERY pull
+# request (unlike integration-tests.yml's path filter), by explicit
+# request: this is meant to be the always-on safety net that doesn't
+# depend on a self-hosted GPU runner ever being registered.
+#
+# Getting Brush running CPU-only required real, hard-won fixes (found
+# 2026-07-28, see tests/integration/conftest.py's module docstring for
+# the full story):
+#   - WGPU_BACKEND=gl alone does NOT avoid the GPU on a machine with an
+#     NVIDIA driver -- glvnd still hands OpenGL to the NVIDIA implementation.
+#     LIBGL_ALWAYS_SOFTWARE=1 + pointing __EGL_VENDOR_LIBRARY_FILENAMES at
+#     Mesa's own ICD is what actually forces Mesa's llvmpipe software
+#     rasterizer (see test_pipeline_end_to_end.py's pipeline_run fixture).
+#     GitHub-hosted runners have no NVIDIA driver at all, so this matters
+#     less here than it did on a real GPU dev box, but it's what makes the
+#     local reproduction of this workflow behave identically.
+#   - The official brush_app v0.3.0 release binary deadlocks on llvmpipe
+#     (a burn-fusion internal spinlock race, not a real GPU requirement --
+#     confirmed via instruction-pointer sampling, see project memory).
+#     That code path no longer exists in brush's main branch. This
+#     workflow therefore builds brush-cli from source (build-cpu-brush
+#     job below) rather than downloading the release binary.
+#
+# Provisioning cost (conda envs + Sapiens checkpoints + brush build) is
+# real -- see each step's cache below. First run after this workflow (or
+# after a cache-busting change) pays the full cost once; every PR after
+# that restores from cache. If GitHub's free-tier runner disk (~14GB
+# usable) turns out too tight in practice once this actually runs, the
+# fix is a larger hosted runner (see runs-on below) or a self-hosted
+# CPU-only runner -- not something provable without a real run in Actions.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned, not `main` -- see build-cpu-brush below for why. Bump
+  # deliberately (re-validate CPU training still works, e.g. via the
+  # eval render, before moving this forward), not automatically.
+  BRUSH_COMMIT: 3b80985709e2ec04fd6c8622a40e36473647a8e0
+  # Static version tag for the Sapiens checkpoint cache -- bump only if
+  # the checkpoint files/repos below actually change (they're a fixed
+  # released model, so in practice this shouldn't need to move). Bumped
+  # to v2 (2026-07-31) when the downloaded checkpoint switched from
+  # sapiens2-pose-1b to sapiens2-pose-0.4b (see the download step below)
+  # -- a v1 cache would restore the old 1b file under a path this
+  # workflow no longer looks for, silently forcing a slow fallback
+  # re-download instead of catching the mismatch.
+  SAPIENS_CACHE_VERSION: v2
+
+jobs:
+  build-cpu-brush:
+    # Building from source is required, not a style choice -- see the
+    # module comment above. Pinned to a specific commit (rather than
+    # always tracking brush's main branch) so an upstream regression
+    # can't silently break every PR's CI with zero relation to the PR's
+    # own change; bump BRUSH_COMMIT deliberately, in its own PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Restore cached brush-cli binary
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: brush-cli-bin/brush-cli
+          key: brush-cli-${{ env.BRUSH_COMMIT }}
+
+      - name: Install Rust toolchain
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Clone brush at pinned commit
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/ArthurBrussee/brush brush-src
+          git -C brush-src checkout "$BRUSH_COMMIT"
+
+      - name: Build brush-cli (release)
+        if: steps.cache.outputs.cache-hit != 'true'
+        working-directory: brush-src
+        run: cargo build --release -p brush-cli
+
+      - name: Stage binary for cache + downstream job
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p brush-cli-bin
+          cp brush-src/target/release/brush-cli brush-cli-bin/brush-cli
+
+      - name: Upload brush-cli artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: brush-cli-bin
+          path: brush-cli-bin/brush-cli
+          retention-days: 7
+
+  integration-tests-cpu:
+    needs: build-cpu-brush
+    runs-on: ubuntu-latest
+    # Well above tests/integration/test_pipeline_end_to_end.py's own
+    # PIPELINE_TIMEOUT_S_CPU (4h) so that cleaner, more diagnosable
+    # failure fires first -- plus real headroom for setup (conda env
+    # creation + checkpoint download on a cache miss) and because a
+    # GitHub-hosted runner has fewer/slower cores than the 32-core
+    # machine PIPELINE_TIMEOUT_S_CPU was calibrated against, so the same
+    # pipeline run will likely take longer here. 350 (not more) because
+    # GitHub Actions hard-caps a single job's timeout-minutes at 360
+    # regardless of plan -- this is as much headroom above 4h as the
+    # platform allows.
+    timeout-minutes: 350
+    env:
+      # A runner running this workflow is supposed to have everything the
+      # suite needs (once this job's setup steps finish) -- fail loudly on
+      # a misconfigured runner instead of the local-machine behavior
+      # (clean skip), which here would show up as a green check with zero
+      # tests run. See tests/integration/conftest.py's pipeline_prereqs.
+      VCP_REQUIRE_PIPELINE_PREREQS: "1"
+      VCP_ALLOW_CPU_RENDERING: "1"
+      SAPIENS_CHECKPOINT_ROOT: ${{ github.workspace }}/.cache/sapiens_ckpt
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Download brush-cli artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: brush-cli-bin
+          path: brush-cli-bin
+
+      - name: Make brush-cli executable
+        run: |
+          chmod +x brush-cli-bin/brush-cli
+          echo "VCP_BRUSH_APP=$PWD/brush-cli-bin/brush-cli" >> "$GITHUB_ENV"
+
+      - name: Install ffmpeg
+        # Normally ~20 s. Observed 2026-08-19: apt stalled for 46+ minutes on
+        # a runner mirror hang, and only a concurrency cancel ended it -- the
+        # job timeout is 350 minutes. Bound the step and retry with short
+        # network timeouts so a stall costs minutes and fails loudly.
+        timeout-minutes: 8
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          for i in 1 2 3; do
+            if [ "$i" = "2" ]; then
+              # The runners' azure.archive.ubuntu.com mirror stalls
+              # occasionally (observed 2026-08-19, ~1h). Fall back to
+              # Ubuntu's canonical mirror before the second attempt.
+              echo "switching to archive.ubuntu.com" >&2
+              sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' \
+                /etc/apt/sources.list /etc/apt/sources.list.d/*.sources \
+                /etc/apt/sources.list.d/*.list 2>/dev/null || true
+            fi
+            sudo apt-get update \
+                -o Acquire::Retries=3 \
+                -o Acquire::http::Timeout=30 \
+                -o Acquire::https::Timeout=30 \
+              && sudo apt-get install -y --no-install-recommends ffmpeg \
+              && exit 0
+            echo "apt attempt $i failed; retrying in 15s" >&2
+            sleep 15
+          done
+          exit 1
+
+      - name: Install Mesa software rendering (llvmpipe + lavapipe)
+        # Real CI failure (2026-07-31): brush_app (via cubecl-wgpu) panicked
+        # with "No possible adapter available for backend... active_backends:
+        # Backends(0x0)" -- this workflow never installed ANY graphics
+        # package, only ffmpeg. WGPU_BACKEND=gl/LIBGL_ALWAYS_SOFTWARE=1 (set
+        # in test_pipeline_end_to_end.py's pipeline_run fixture) correctly
+        # SELECT which backend to try, but there's no actual rasterizer
+        # implementation present on a bare runner for either backend to
+        # find -- consistent with the panic's "requested Vulkan, falling
+        # back" wording (cubecl-wgpu tries something before falling back
+        # further, and nothing at all is available either way). Installs
+        # both llvmpipe (libgl1-mesa-dri, software OpenGL/EGL -- what the
+        # test's own env vars target) and lavapipe (mesa-vulkan-drivers,
+        # software Vulkan) so whichever backend cubecl-wgpu actually ends up
+        # requesting has a real software implementation to find.
+        run: sudo apt-get install -y libgl1-mesa-dri mesa-vulkan-drivers
+
+      - name: Free up disk space
+        # ~14GB usable on a free-tier runner is tight against 4 conda envs
+        # + Sapiens checkpoints (~2GB -- the 0.4b pose model, not the
+        # unused 1b's ~6GB, see the download step below) + this repo's
+        # submodules + a real pipeline run's ~720MB output -- reclaim
+        # space from large preinstalled toolchains this workflow never
+        # uses.
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          docker image prune -af || true
+
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          miniforge-version: latest
+          auto-activate-base: false
+
+      - name: Record conda's actual install base
+        # Where conda-incubator/setup-miniconda installs to isn't
+        # guaranteed stable across its versions/options -- ask conda
+        # itself rather than hardcoding a path the cache step below could
+        # silently miss (defeating caching) or, worse, restore to a path
+        # conda doesn't look in (breaking every `conda run -n X` call).
+        shell: bash -l {0}
+        run: echo "CONDA_BASE=$(conda info --base)" >> "$GITHUB_ENV"
+
+      - name: Restore cached conda envs
+        id: conda-cache
+        uses: actions/cache@v4
+        with:
+          # /tmp/hloc-src must be cached WITH the envs: hloc is installed
+          # editable (see the create step for why), so site-packages holds
+          # only a pointer at /tmp/hloc-src and the code lives there. The
+          # first-ever cache-hit run (2026-08-19) restored envs without it
+          # and died on `import hloc` mid-pipeline.
+          path: |
+            ${{ env.CONDA_BASE }}/envs
+            /tmp/hloc-src
+          # Hashes every envs/*.yml (hloc, diffuman4d, sapiens2, queen) --
+          # any pin change in any of them busts all four, which is the
+          # safe default (cheap to over-invalidate, expensive to silently
+          # run stale deps). The -v2 suffix retires the pre-2026-08-19
+          # entries that lack /tmp/hloc-src.
+          key: conda-envs-v2-${{ runner.os }}-${{ hashFiles('envs/*.yml') }}
+
+      - name: Verify restored envs actually import (cache-hit only)
+        # A restored cache that passes actions/cache's own checks can still
+        # be unusable (the /tmp/hloc-src case above). Probe the one import
+        # per env the pipeline cannot run without, and fail HERE with a
+        # named cause instead of 25 minutes later inside the pipeline. If
+        # this fires, delete the conda-envs cache entry (gh api -X DELETE
+        # /repos/{repo}/actions/caches?key=...) and re-run.
+        if: steps.conda-cache.outputs.cache-hit == 'true'
+        shell: bash -l {0}
+        run: |
+          conda run -n hloc python -c "import hloc"
+          conda run -n diffuman4d python -c "import torch"
+          conda run -n sapiens2 python -c "import torch"
+          conda run -n queen python -c "import numpy"
+
+      - name: Create conda envs, one at a time, CPU-only from the start (cache miss only)
+        # Real CI failure (2026-07-29): creating all 4 envs first (each
+        # pulling the default CUDA-bundled torch wheel, several GB apiece)
+        # before ever fixing/cleaning any of them stacked all four envs'
+        # worth of unused CUDA bloat simultaneously -- ran the disk out
+        # mid-creation. Structural fix, not another cleanup pass: create,
+        # immediately force CPU-only torch, immediately clean caches, one
+        # env at a time, so peak disk usage is spread out instead of
+        # stacked. PIP_NO_CACHE_DIR also stops pip from keeping its own
+        # downloaded-wheel cache around as a second copy of what's already
+        # unpacked into site-packages.
+        if: steps.conda-cache.outputs.cache-hit != 'true'
+        shell: bash -l {0}
+        env:
+          PIP_NO_CACHE_DIR: "1"
+        run: |
+          conda env create -f envs/hloc.yml
+          # Real CI failure (2026-07-30, this PR's first genuine cache-miss
+          # conda-env build to ever reach real HLOC feature extraction --
+          # every earlier CI attempt failed upstream of this point, so this
+          # gap was never exercised until now): envs/hloc.yml's `pip install
+          # git+https://...@<commit>` line installs hloc's own code, but
+          # `pip install git+URL` never fetches git submodules -- and hloc's
+          # SuperPoint extractor (hloc/extractors/superpoint.py) imports
+          # from third_party/SuperGluePretrainedNetwork, one of several
+          # submodules of the Hierarchical-Localization repo, so that plain
+          # pip install produces a package that crashes the instant SuperPoint
+          # feature extraction runs: "ModuleNotFoundError: No module named
+          # 'SuperGluePretrainedNetwork'". This exact gap is why the working
+          # local dev env's hloc install is editable from a real clone
+          # instead (see envs/hloc.yml's own comment) -- reproducing that
+          # here: clone the SAME pinned commit git+ already installed above
+          # WITH submodules, then reinstall editable (--no-deps: the plain
+          # install above already resolved every real dependency correctly,
+          # this is only replacing hloc's own code with a submodule-complete
+          # copy, not re-resolving anything).
+          git clone --recurse-submodules https://github.com/cvg/Hierarchical-Localization.git /tmp/hloc-src
+          (cd /tmp/hloc-src && git checkout c13273bd0ecc2917a35910fd843712a1c6243193 && git submodule update --init --recursive)
+          conda run -n hloc pip install --no-deps -e /tmp/hloc-src
+          conda run -n hloc pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.12.0 torchvision==0.27.0
+          conda clean -afy
+
+          conda env create -f envs/diffuman4d.yml
+          conda run -n diffuman4d pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.7.1 torchvision==0.22.1
+          # --no-deps: remove_background.py (generate_masks.py/clean_masks.py's
+          # real work) needs easyvolcap.utils.console_utils/.parallel_utils --
+          # same treatment as queen's easyvolcap install below, see its
+          # comment for why --no-deps and why this is safe.
+          conda run -n diffuman4d pip install --no-deps \
+            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
+          conda clean -afy
+
+          conda env create -f envs/sapiens2.yml
+          conda run -n sapiens2 pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.12.0 torchvision==0.27.0
+          conda clean -afy
+
+          conda env create -f envs/queen.yml
+          conda run -n queen pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch==2.12.0
+          # --no-deps: skips easyvolcap's own heavy declared dependencies
+          # (torch+torchaudio+torchvision+cuda-python+tensorboard+trimesh+
+          # open3d+...) -- the real code actually touched here
+          # (easyvolcap.utils.console_utils/.parallel_utils/.base_utils)
+          # only needs the lightweight packages envs/queen.yml already
+          # lists, traced import-by-import, recursively, by hand. See that
+          # file's own comments for the full story.
+          conda run -n queen pip install --no-deps \
+            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
+          conda clean -afy
+
+      - name: Restore cached Sapiens checkpoints
+        id: sapiens-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.SAPIENS_CHECKPOINT_ROOT }}
+          key: sapiens-checkpoints-${{ env.SAPIENS_CACHE_VERSION }}
+
+      - name: Download Sapiens checkpoints (cache miss only)
+        # Same public repos predict_keypoints.py itself auto-downloads
+        # from when SAPIENS_CHECKPOINT_ROOT is missing a file (see
+        # deps/Diffuman4D/scripts/preprocess/predict_keypoints.py) --
+        # fetched here as an explicit pre-flight step instead of relying
+        # on that lazy path, because conftest.py's pipeline_prereqs
+        # check requires the checkpoint directory to already exist
+        # BEFORE pytest starts a single test (see _check_sapiens_checkpoints).
+        # Downloads the 0.4b pose checkpoint, NOT 1b -- real CI failure
+        # (2026-07-31): this step used to pre-fetch the unused 1b
+        # checkpoint (~4GB) while CPU mode (see CPU_SAPIENS_MODEL_SIZE in
+        # test_pipeline_end_to_end.py) actually needs 0.4b, which then
+        # fell back to predict_keypoints.py's own lazy auto-download --
+        # through the slower/wasteful global HF cache path this same
+        # step's own local_dir= approach exists specifically to avoid
+        # (see the comment below) -- and ran the already-tight disk
+        # budget out mid-download. Set HF_TOKEN (repo secret) if these
+        # repos ever require accepting a gated-model license on
+        # Hugging Face.
+        if: steps.sapiens-cache.outputs.cache-hit != 'true'
+        shell: bash -l {0}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          conda run -n sapiens2 pip install huggingface_hub
+          conda run -n sapiens2 python -c "
+          from huggingface_hub import snapshot_download, hf_hub_download
+          import os
+          root = os.environ['SAPIENS_CHECKPOINT_ROOT']
+          snapshot_download(repo_id='facebook/detr-resnet-101-dc5', local_dir=f'{root}/detector')
+          hf_hub_download(repo_id='facebook/sapiens2-pose-0.4b', filename='sapiens2_0.4b_pose.safetensors', local_dir=f'{root}/pose')
+          "
+          # Real CI failure (2026-07-29): the pose file used to go through
+          # hf_hub_download's global cache (~/.cache/huggingface/hub) and
+          # then get shutil.copyfile'd into place -- storing this ~6GB
+          # checkpoint TWICE at once on an already-tight free-tier disk
+          # budget, which ran it out of space mid-copy. local_dir= above
+          # (matching how the detector snapshot already worked) downloads
+          # straight to the destination instead. Clean up the cache dir
+          # regardless, as a second line of defense against library-version
+          # differences in exactly how local_dir is implemented.
+          rm -rf ~/.cache/huggingface
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run integration tests (CPU-only, real pipeline, JUnit XML)
+        shell: bash -l {0}
+        # The [resmon] background loop streams memory/disk/top-process into
+        # the live log every 20s. Real CI failure (2026-07-29, twice): the
+        # runner VM died with a bare "shutdown signal" / exit 143 and zero
+        # pytest output -- root cause turned out to be BiRefNet CPU inference
+        # peaking at 21.6GB RSS (measured locally), assumed at the time to be
+        # against a 16GB VM. [resmon] itself later proved that assumption
+        # wrong (2026-07-30, run 30581141971): the real ceiling is only
+        # ~7.75GB, discovered when Sapiens keypoint prediction (6.5-7.6GB
+        # peak, unrelated to the original BiRefNet fix) swap-thrashed for
+        # ~40min and then the whole VM went unresponsive and was killed
+        # externally -- confirmed straight from these [resmon] lines, not
+        # guessed. If a future stage OOMs the VM, the last [resmon] lines
+        # will show memory climbing toward ~7.75GB right before death,
+        # instead of leaving another unexplained 143.
+        run: |
+          (
+            while true; do
+              echo "[resmon] $(date -u +%H:%M:%S)" \
+                "mem=$(free -m | awk 'NR==2{print $3"/"$2"MB"}')" \
+                "swap=$(free -m | awk 'NR==3{print $3"/"$2"MB"}')" \
+                "disk_avail=$(df -BM --output=avail / | tail -1 | tr -d ' ')" \
+                "top=$(ps -eo rss,comm --sort=-rss --no-headers | head -1 | awk '{printf "%s:%dMB", $2, $1/1024}')"
+              sleep 20
+            done
+          ) &
+          RESMON_PID=$!
+          trap 'kill "$RESMON_PID" 2>/dev/null || true' EXIT
+          pytest tests/integration -q --junitxml=junit-integration-cpu.xml
+
+      - name: Publish test results as inline PR annotations
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: junit-integration-cpu.xml
+          check_name: Integration test results (CPU-only)
+
+      - name: Upload JUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-integration-cpu-xml
+          path: junit-integration-cpu.xml
+
+      - name: Upload run artifacts (pipeline log, trained splat, eval renders, PSNR report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-run-artifacts-cpu
+          path: |
+            tests/integration/artifacts/pipeline_run.log
+            tests/integration/artifacts/*.ply
+            tests/integration/artifacts/eval_renders/
+            tests/integration/artifacts/psnr_report.json
+          if-no-files-found: ignore

@@ -1,0 +1,21 @@
+{
+  "_comment": "Regression baseline for the take01_11cam fixture ONLY -- not a universal quality bar (different camera rigs/subjects have no comparable absolute number, see tests/integration/test_pipeline_end_to_end.py and docs/integration-tests.md). Captured from TWO real runs of run_unified_pipeline.py against this fixture (11 cameras: 0001/0002/0003/0005/0006/0007/0008/0009/0010/0011/0012, target_time=1500ms, --total_train_iters 1000), reviewed by the fixture's own subject/owner before being locked in. Every value here is a floor/ceiling with margin in the test, not an exact-match target -- update deliberately if a real, intentional pipeline improvement shifts these numbers, same as updating a snapshot test.",
+  "run_date": "2026-07-23",
+  "reproducibility_check": "Expanded to a real 7-run variance study before setting the test file's margin constants from evidence rather than the original 2-run guess: 7 identical runs of this fixture at --total_train_iters 1000 gave reprojection error mean 5.581px / stdev 0.025px / range 0.06px (min 5.54, max 5.60), masked PSNR mean 22.167dB / stdev 0.170dB / range 0.49dB (min 21.90, max 22.39), and mask coverage bit-identical to 4 decimal places across all 7 runs and all 11 cameras (zero variance -- BiRefNet + clean_masks.py involve no stochastic step). Confirms the earlier 2-run finding (5.54/5.60px, 22.36/22.16dB) was representative, not a lucky pair. A supplementary 5-run batch at --total_train_iters 250 (faster but less converged) showed PSNR run-to-run variance roughly doubles at that lower iteration count (0.91dB range on 4 completed runs vs 0.49dB at 1000 iters) -- informational only, this fixture stays at 1000 iters. Reprojection error and mask coverage are effectively deterministic and not a strong regression signal on their own; PSNR is the metric genuinely capable of catching a real regression, and is the primary one this suite relies on for that (see test_pipeline_end_to_end.py's margin comments).",
+  "median_reprojection_error_px": 5.57,
+  "mask_coverage": {
+    "0001": 0.0157,
+    "0002": 0.0129,
+    "0003": 0.0161,
+    "0005": 0.0098,
+    "0006": 0.0113,
+    "0007": 0.0156,
+    "0008": 0.0212,
+    "0009": 0.0152,
+    "0010": 0.0161,
+    "0011": 0.0224,
+    "0012": 0.0229
+  },
+  "psnr_db": 22.26,
+  "psnr_notes": "Masked (subject-only) PSNR on the held-out eval camera (0001, flat label 00) at --total_train_iters 1000, averaged over 2 runs (22.36dB, 22.16dB). This is still a PROXY signal from a training config (one camera held out) that real production never uses -- see test_pipeline_end_to_end.py's module docstring -- but with 11 cameras the held-out fraction (1/11) is a much smaller departure from production (which uses every camera) than the 5-camera prototype's 1/5, and empirically far more reproducible (0.2dB swing vs 4.56dB)."
+}

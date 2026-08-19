@@ -1,0 +1,83 @@
+name: Integration tests (GPU, manual)
+
+# Real, unmocked pipeline run against the committed take01_11cam fixture --
+# see tests/integration/. This needs a real GPU, the hloc/diffuman4d/sapiens2
+# conda envs, a compiled brush_app, and Sapiens checkpoints -- none of which
+# exist on a GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below.
+#
+# Manual-dispatch only (workflow_dispatch), not `on: pull_request` -- no
+# self-hosted GPU runner carrying that label has ever been registered, so an
+# automatic trigger would just queue forever on every matching PR with no
+# runner to ever pick it up: a permanently-pending check cluttering every
+# PR's status for no benefit. Real GPU validation happens locally today
+# (`pytest tests/integration -q`, see docs/integration-tests.md) -- that
+# path doesn't go through this workflow file at all and is unaffected by
+# this trigger choice either way.
+#
+# Registering an actual self-hosted runner is a deliberate separate
+# decision, not done as part of adding this workflow: once this repo is
+# public, a self-hosted runner executes whatever code a triggering PR
+# checks out, so it needs its own sign-off (and likely a required-reviewer
+# gate for fork PRs). If that ever happens, this can be switched back to an
+# automatic `pull_request` trigger (with the path filter this used to have,
+# to avoid queuing on every PR regardless of relevance) and/or dispatched
+# on demand via the Actions tab in the meantime.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  checks: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-tests:
+    runs-on: [self-hosted, gpu]
+    timeout-minutes: 60
+    env:
+      # A runner carrying the gpu label is supposed to have everything
+      # this suite needs -- fail loudly if it doesn't, instead of the
+      # local-machine behavior (skip cleanly), which here would show up
+      # as a green check with zero tests run. See
+      # tests/integration/conftest.py's pipeline_prereqs.
+      VCP_REQUIRE_PIPELINE_PREREQS: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install dev dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run integration tests (real pipeline, JUnit XML)
+        run: pytest tests/integration -q --junitxml=junit-integration.xml
+
+      - name: Publish test results as inline PR annotations
+        if: always()
+        uses: mikepenz/action-junit-report@v5
+        with:
+          report_paths: junit-integration.xml
+          check_name: Integration test results
+
+      - name: Upload JUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-integration-xml
+          path: junit-integration.xml
+
+      - name: Upload run artifacts (pipeline log, trained splat, eval renders, PSNR report)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-run-artifacts
+          path: |
+            tests/integration/artifacts/pipeline_run.log
+            tests/integration/artifacts/*.ply
+            tests/integration/artifacts/eval_renders/
+            tests/integration/artifacts/psnr_report.json
+          if-no-files-found: ignore

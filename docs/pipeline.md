@@ -29,7 +29,8 @@ been run and validated end-to-end.
 - Raw GoPro `.mp4` clips, one per camera, all recording the same take.
 - Conda envs: `hloc` (HLOC + pycolmap), `diffuman4d` (BiRefNet background
   removal deps), `sapiens2` (Sapiens keypoint prediction, needs
-  `SAPIENS_CHECKPOINT_ROOT` set). Brush training runs the compiled
+  `SAPIENS_CHECKPOINT_ROOT` set), `queen` (generic scripts + triangulation,
+  see `docs/environment.md`). Brush training runs the compiled
   `brush_app` binary directly, no conda env needed for that step.
 
 ## Recommended: run everything with the unified orchestrator

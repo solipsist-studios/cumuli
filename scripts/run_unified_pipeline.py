@@ -231,6 +231,22 @@ def build_layout(out_dir: Path):
 
 
 # ------------------------------------------------------- candidate window prep
+def _instant_dirs(base_dirs: tuple[Path, ...], window: int, k: int) -> tuple[Path, ...]:
+    """The k-th candidate instant's set of per-purpose dirs, matching
+    whichever output layout extract_synced_frames.py actually produces for
+    this window size: window==1 writes flat (directly into each base dir,
+    no subdir at all -- see that script's own --window==1 special case),
+    any window>1 writes per-instant f0/../f{N-1}/ subdirs. Real bug found
+    running this locally (2026-07-30): --sync_window 1 through this
+    orchestrator always assumed the subdir layout unconditionally, so it
+    looked for an f0/ dir extract_synced_frames.py never created, and
+    crashed immediately -- window==1 is genuinely a different code path in
+    that script, not just "fewer frames"."""
+    if window == 1:
+        return base_dirs
+    return tuple(d / f"f{k}" for d in base_dirs)
+
+
 def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: str,
                               raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir,
                               tag: str, start_time_s: float | None = None):
@@ -248,8 +264,9 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
 
     poses2d_dirs = []
     for k in range(window):
-        f_raw, f_undist, f_pkl = raw_dir / f"f{k}", undist_dir / f"f{k}", pkl_dir / f"f{k}"
-        f_fmask, f_kp2d, f_poses2d = fmasks_dir / f"f{k}", kp2d_dir / f"f{k}", poses2d_dir / f"f{k}"
+        f_raw, f_undist, f_pkl, f_fmask, f_kp2d, f_poses2d = _instant_dirs(
+            (raw_dir, undist_dir, pkl_dir, fmasks_dir, kp2d_dir, poses2d_dir), window, k
+        )
 
         if f_poses2d.is_dir() and any(f_poses2d.rglob("*.json")):
             info(f"f{k} ({tag}) already fully processed on disk -- reusing "
@@ -293,6 +310,8 @@ def keypoint_args(args, images_dir, out_kp2d_dir, fmasks_dir):
     a = ["--images_dir", images_dir, "--out_kp2d_dir", out_kp2d_dir, "--fmasks_dir", fmasks_dir]
     if args.sapiens_checkpoint_root:
         a += ["--sapiens_checkpoint_root", args.sapiens_checkpoint_root]
+    if args.sapiens_model_size != "1b":
+        a += ["--sapiens_model_size", args.sapiens_model_size]
     return a
 
 
@@ -355,7 +374,8 @@ def stage_production(args, L, image_ext, sync_json: Path):
 def stage_poses(args, L, image_ext, sync_json: Path):
     banner("STAGE: POSES (background estimation & keypoint refine)")
 
-    poses2d_dirs = [L["cand_corr_poses2d"] / f"f{k}" for k in range(args.sync_window)]
+    poses2d_dirs = [_instant_dirs((L["cand_corr_poses2d"],), args.sync_window, k)[0]
+                     for k in range(args.sync_window)]
     if all(d.is_dir() and any(d.rglob("*.json")) for d in poses2d_dirs):
         info("Corrected-sync candidate window already complete on disk -- reusing it "
              "(delete sync_candidates_corrected*/ under --out_dir to force a redo).")
@@ -455,15 +475,20 @@ def stage_branch_direct(args, L):
         "--masks_dir", L["flat_fmasks_clean"],
     ], conda_env=args.generic_env, label="build_colmap_sparse.py (COLMAP sparse + RGBA mask bake)")
 
-    run_script("train_brush.py", [
+    train_args = [
         "--data", L["train_set"],
-        "--total_steps", str(args.total_train_iters), "--max_resolution", "4096",
+        "--total_steps", str(args.total_train_iters), "--max_resolution", str(args.brush_max_resolution),
         "--export_every", str(args.export_every),
         "--brush_app", args.brush_app, "--export_path", L["brush_output"],
         "--export_name", f"{args.run_name}_4k_{{iter}}.ply",
         "--display", args.display,
         "--with_viewer" if args.with_viewer else "--no_viewer",
-    ], label="train_brush.py (train Brush, 4K masked)")
+    ]
+    if args.eval_split_every is not None:
+        train_args += ["--eval_split_every", str(args.eval_split_every)]
+    if args.eval_save_to_disk:
+        train_args += ["--eval_save_to_disk"]
+    run_script("train_brush.py", train_args, label="train_brush.py (train Brush, 4K masked)")
 
 
 # ------------------------------------------------------------------------ CLI
@@ -520,6 +545,10 @@ def build_parser():
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
                              "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
+    parser.add_argument("--sapiens_model_size", default="1b", choices=["0.4b", "0.8b", "1b", "5b"],
+                        help="Sapiens2 pose checkpoint size (default 1b, production quality baseline). "
+                             "Smaller sizes use dramatically less RAM at some accuracy cost -- see "
+                             "predict_keypoints_2d.py's own --sapiens_model_size help.")
     parser.add_argument("--triangulate_env", default="queen",
                         help="Conda env for triangulate_and_project_keypoints.py (needs easyvolcap/fire/open3d; "
                              "'queen' historically had these)")
@@ -545,8 +574,24 @@ def build_parser():
                         help="Max keypoints per image for HLOC feature extraction.")
     parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
     parser.add_argument("--total_train_iters", type=int, default=30000)
+    parser.add_argument("--brush_max_resolution", type=int, default=4096,
+                        help="Passed to train_brush.py --max_resolution. The 4096 default is the "
+                             "validated production configuration; lower it only for constrained "
+                             "environments (e.g. the integration tests' CPU-rendering mode uses "
+                             "1024 -- llvmpipe caps GL buffer allocations well below what 4096 "
+                             "needs, and software rendering at 4096 would be impractically slow "
+                             "anyway).")
     parser.add_argument("--export_every", type=int, default=5000,
                         help="Brush checkpoint export interval in steps (also always exports once at completion)")
+    parser.add_argument("--eval_split_every", type=int, default=None,
+                        help="Hold out every Nth training image as an eval view instead of "
+                             "training on it, passed through to train_brush.py/brush_app. Off "
+                             "by default -- opt in for quality measurement (e.g. PSNR against "
+                             "the held-out photo), not needed for a normal production run.")
+    parser.add_argument("--eval_save_to_disk", action="store_true",
+                        help="Render held-out eval views to disk during training (brush_app's "
+                             "--eval-save-to-disk). Only meaningful together with "
+                             "--eval_split_every.")
     parser.add_argument("--with_viewer", dest="with_viewer", action="store_true", default=True,
                         help="Open Brush's live viewer during training. On by default -- this is "
                              "the tested, working configuration; --no_viewer hasn't been "

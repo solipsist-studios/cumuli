@@ -17,9 +17,15 @@ imports it at module load time.
 conda env: sapiens2
 
 Requires SAPIENS_CHECKPOINT_ROOT env var set to a directory containing
-pose/sapiens2_1b_pose.safetensors (+ detector/detr-resnet-101-dc5, else
-it's auto-downloaded). See --sapiens_checkpoint_root to override without
-exporting the env var.
+pose/sapiens2_<size>_pose.safetensors (+ detector/detr-resnet-101-dc5,
+else it's auto-downloaded). <size> is "1b" by default (production
+quality baseline); see --sapiens_model_size to use a smaller checkpoint
+(0.4b/0.8b/5b also available) -- this repo's own CPU integration test
+uses 0.4b, since the 1b checkpoint alone needs more RAM than a real
+GitHub Actions runner has (see tests/integration/test_pipeline_end_to_end.py's
+CPU_SAPIENS_MODEL_SIZE for the measured numbers). See
+--sapiens_checkpoint_root to override the root dir without exporting
+the env var.
 
 Usage:
     conda run -n sapiens2 python3 predict_keypoints_2d.py \\
@@ -99,6 +105,20 @@ def run_goliath308(args, ckpt_root):
         str(args.images_dir), str(args.out_kp2d_dir),
         "--fmasks_dir", str(args.fmasks_dir),
     ]
+    if args.sapiens_model_size != "1b":
+        # predict_keypoints.py's own defaults (both "1b") are hardcoded into
+        # its function signature, but every parameter is exposed via
+        # fire.Fire -- these two overrides just point at a same-named
+        # smaller checkpoint + its matching config, both already vendored
+        # in the sapiens2 package (facebook/sapiens2-pose-<size> is also
+        # already a recognized auto-download repo id, see
+        # _default_pose_repo_candidates in predict_keypoints.py).
+        size = args.sapiens_model_size
+        cmd += [
+            "--sapiens_ckpt_path", f"{ckpt_root}/pose/sapiens2_{size}_pose.safetensors",
+            "--config_path",
+            f"configs/keypoints308/shutterstock_goliath_3po/sapiens2_{size}_keypoints308_shutterstock_goliath_3po-1024x768.py",
+        ]
     print("Running:", " ".join(cmd), f"  [SAPIENS_CHECKPOINT_ROOT={ckpt_root}]" if ckpt_root else "")
     result = subprocess.run(cmd, cwd=str(DIFFUMAN4D_ROOT / "scripts" / "preprocess"), env=env)
     if result.returncode != 0:
@@ -118,6 +138,14 @@ def main():
     parser.add_argument("--fmasks_dir", required=True, type=Path)
     parser.add_argument("--sapiens_checkpoint_root", default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for this call")
+    parser.add_argument("--sapiens_model_size", default="1b",
+                        choices=["0.4b", "0.8b", "1b", "5b"],
+                        help="Sapiens2 pose checkpoint size (default 1b, matching "
+                             "predict_keypoints.py's own default -- production quality "
+                             "baseline). Smaller sizes use dramatically less RAM at some "
+                             "accuracy cost; auto-downloads via the matching "
+                             "facebook/sapiens2-pose-<size> repo if not already cached "
+                             "under --sapiens_checkpoint_root.")
     args = parser.parse_args()
 
     ckpt_root = args.sapiens_checkpoint_root or os.environ.get("SAPIENS_CHECKPOINT_ROOT")

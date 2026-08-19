@@ -5,7 +5,7 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 # Environment setup
 
-Precise setup instructions for the three conda environments and system
+Precise setup instructions for the four conda environments and system
 tools this pipeline needs, plus known-good versions this has actually
 been tested against. `README.md` and `docs/pipeline.md` mention which
 env each stage needs. This doc is the "how do I actually create them"
@@ -46,12 +46,17 @@ conda create -n hloc python=3.10 -y
 conda activate hloc
 pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
 pip install -r deps/camera-calibration/requirements.txt  # if not already covered
-pip install pycolmap hloc  # or: pip install -e deps/Hierarchical-Localization if vendored
+pip install pycolmap
+pip install git+https://github.com/cvg/Hierarchical-Localization.git@c13273bd0ecc2917a35910fd843712a1c6243193  # hloc -- NOT on plain PyPI, see envs/hloc.yml
 ```
 
 Known-good combination (verified 2026-07-13): Python 3.10.20, torch
-2.12.0+cu130, torchvision 0.27.0+cu130, pycolmap 4.0.4, hloc 1.5, numpy
-2.2.6, scipy 1.15.3, Pillow 12.2.0.
+2.12.0+cu130, torchvision 0.27.0+cu130, pycolmap 4.0.4, hloc 1.5 (commit
+c13273b above -- this exact source was missing from both this doc and
+envs/hloc.yml until 2026-07-29, when a fresh CI checkout failed trying to
+`pip install hloc==1.5` from plain PyPI, which doesn't have it; recovered
+from pip's own direct_url.json on the working dev env), numpy 2.2.6,
+scipy 1.15.3, Pillow 12.2.0.
 
 ### `diffuman4d` -- masks, Diffuman4D inference, nerfstudio conversion (generate_masks.py, the not-yet-built Diffuman4D-branch scripts, and clean_masks.py's `--retry`)
 
@@ -89,11 +94,15 @@ conda create -n sapiens2 python=3.12 -y
 conda activate sapiens2
 pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
 pip install transformers
+pip install git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4  # predict_keypoints_2d.py imports sapiens.pose
 ```
 
 Known-good combination: Python 3.12.13, torch 2.12.0+cu130, torchvision
 0.27.0+cu130, transformers 5.12.1, numpy 2.4.6, scipy 1.17.1, Pillow
-12.2.0.
+12.2.0, sapiens 2.0.0 (commit 7e5bae8 above -- this package was missing
+from both this doc and envs/sapiens2.yml until 2026-07-28; recovered
+from pip's own direct_url.json on the working dev env, since neither
+file had recorded it).
 
 Requires the `SAPIENS_CHECKPOINT_ROOT` env var pointed at a directory
 laid out like:
@@ -108,15 +117,45 @@ weights and place them in that layout. Pass the root via
 `--sapiens_checkpoint_root` to the orchestrator (or set
 `SAPIENS_CHECKPOINT_ROOT` directly for standalone predict_keypoints_2d.py runs).
 
-### Everything else
+### `queen` -- generic scripts + triangulation (`--generic_env`/`--triangulate_env`)
 
-Most other scripts (compute_sync_offsets.py, extract_synced_frames.py,
-make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
-split_keypoints_per_camera.py, triangulate_and_project_keypoints.py,
-train_brush.py, build_colmap_sparse.py, refine_poses_with_keypoints.py)
-have no special conda env requirement beyond numpy/scipy/Pillow/plyfile
--- run them from any env with those installed (`base`/`hloc`/etc. all
-work).
+```bash
+conda env create -f envs/queen.yml
+conda run -n queen pip install --no-deps git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
+```
+
+This is `run_unified_pipeline.py`'s default target for `--generic_env`
+(make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
+build_colmap_sparse.py, run_pose_refinement.py, compute_sync_offsets.py)
+and `--triangulate_env` (triangulate_and_project_keypoints.py, which
+wraps Diffuman4D's triangulate_skeleton.py). The orchestrator never runs
+these bare with its own launching Python -- always through this named
+env -- so it has to actually exist, unlike a genuinely env-agnostic
+script. Missing from every committed env spec entirely until 2026-07-29
+(found when a fresh CI checkout failed with "Not a conda environment:
+.../envs/queen").
+
+Deliberately narrower than the real local `queen` env this was recovered
+from (which is much larger -- also used for unrelated local
+experimentation): this lists only what's actually imported by the real
+code path, traced by hand, import by import, recursively, through to
+easyvolcap's own internal utility modules. `open3d` IS needed -- a
+function-local `import open3d as o3d` inside Diffuman4D's
+triangulate_skeleton.py (`write_kp3d_pcd()`, which runs whenever
+`--out_pcd_dir` is set, which this pipeline always does) was missed by an
+earlier top-level-only trace and caused a real CI failure
+(`ModuleNotFoundError: No module named 'open3d'`, 2026-07-31, the first
+fresh CI build of this env to reach that code path) before being added
+back -- see `envs/queen.yml`'s own header comment for the full story.
+
+Known-good combination (verified 2026-07-29, open3d added 2026-07-31):
+Python 3.11.15, numpy 2.4.4, scipy 1.17.1, Pillow 12.2.0, plyfile 1.1.3,
+opencv-python 4.13.0.92, fire 0.7.1, torch 2.12.0 (CPU-safe -- the one
+real usage, Diffuman4D's camera_parser.py, is plain tensor math, no
+`.cuda()`/device placement), easyvolcap 0.0.0 (commit 4cb3c00 above,
+`--no-deps` -- skips its own heavy declared dependencies, none of which
+the real code path here touches), pdbr 0.9.7, rich 15.0.0, ujson 5.13.0,
+ruamel.yaml 0.19.1, tqdm 4.67.3, open3d 0.19.0.
 
 ## System-level tools (no conda env)
 

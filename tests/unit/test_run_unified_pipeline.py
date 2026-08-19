@@ -321,15 +321,31 @@ def test_undistort_args_with_target_pkl_dir():
 
 
 def test_keypoint_args_without_checkpoint_root():
-    args = NS(sapiens_checkpoint_root=None)
+    args = NS(sapiens_checkpoint_root=None, sapiens_model_size="1b")
     a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
     assert "--sapiens_checkpoint_root" not in a
 
 
 def test_keypoint_args_with_checkpoint_root():
-    args = NS(sapiens_checkpoint_root=Path("/ckpt"))
+    args = NS(sapiens_checkpoint_root=Path("/ckpt"), sapiens_model_size="1b")
     a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
     assert a[-2:] == ["--sapiens_checkpoint_root", Path("/ckpt")]
+
+
+def test_keypoint_args_omits_model_size_at_default_1b():
+    args = NS(sapiens_checkpoint_root=None, sapiens_model_size="1b")
+    a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
+    assert "--sapiens_model_size" not in a
+
+
+def test_keypoint_args_forwards_non_default_model_size():
+    # Real CI failure (2026-07-30): the actual GitHub runner has only
+    # ~7.75GB RAM, and the 1b checkpoint alone peaks at 6.5-7.6GB --
+    # --sapiens_model_size lets CPU mode use a smaller checkpoint instead
+    # (0.4b measured at 4.1GB peak on the same real fixture).
+    args = NS(sapiens_checkpoint_root=None, sapiens_model_size="0.4b")
+    a = unified.keypoint_args(args, Path("/img"), Path("/kp2d"), Path("/fmask"))
+    assert a[-2:] == ["--sapiens_model_size", "0.4b"]
 
 
 # --------------------------------------------------------------------------
@@ -364,7 +380,7 @@ def test_run_hloc_builds_correct_argv_and_conda_env(monkeypatch, tmp_path):
 def _window_args(tmp_path, pp3_dir=None):
     return NS(video_dir=tmp_path / "videos", pp3_dir=pp3_dir, target_time_s=1.5,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
-              calib_dir=Path("/calib"), target_pkl_dir=None)
+              sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None)
 
 
 def test_prepare_candidate_window_runs_full_per_frame_pipeline_in_order(monkeypatch, tmp_path):
@@ -395,10 +411,12 @@ def test_prepare_candidate_window_reuses_already_processed_frame(monkeypatch, tm
         calls.append(script_name)
     monkeypatch.setattr(unified, "run_script", fake_run_script)
 
+    # window=1 uses the flat layout (no f0/ subdir) -- matches
+    # extract_synced_frames.py's own --window==1 special case, see
+    # _instant_dirs's docstring for the real bug this guards against.
     poses2d_dir = tmp_path / "poses2d"
-    f0 = poses2d_dir / "f0"
-    f0.mkdir(parents=True)
-    (f0 / "Camera_0000.json").write_text("{}")
+    poses2d_dir.mkdir(parents=True)
+    (poses2d_dir / "Camera_0000.json").write_text("{}")
 
     dirs = unified.prepare_candidate_window(
         _window_args(tmp_path), {}, tmp_path / "sync.json", 1, ".jpg",
@@ -408,7 +426,24 @@ def test_prepare_candidate_window_reuses_already_processed_frame(monkeypatch, tm
     # extract_synced_frames.py always runs; the per-frame pipeline is
     # skipped entirely for the already-processed frame
     assert calls == ["extract_synced_frames.py"]
-    assert dirs == [f0]
+    assert dirs == [poses2d_dir]
+
+
+def test_prepare_candidate_window_window_1_uses_flat_layout_not_f0_subdir(monkeypatch, tmp_path):
+    """Real bug found running this locally (2026-07-30): --sync_window 1
+    always assumed the f0/../f{N-1}/ subdir layout that extract_synced_frames.py
+    only produces for window>1 -- window==1 writes flat instead, so the
+    orchestrator looked for a dir that was never created and crashed."""
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        pass
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+
+    dirs = unified.prepare_candidate_window(
+        _window_args(tmp_path), {}, tmp_path / "sync.json", 1, ".jpg",
+        tmp_path / "raw", tmp_path / "undist", tmp_path / "pkl",
+        tmp_path / "fmasks", tmp_path / "kp2d", tmp_path / "poses2d", tag="test",
+    )
+    assert dirs == [tmp_path / "poses2d"]
 
 
 def test_prepare_candidate_window_forwards_pp3_dir(monkeypatch, tmp_path):
@@ -513,7 +548,7 @@ def test_stage_production_forwards_pp3_dir_and_calls_undistort(monkeypatch, tmp_
 def _poses_args(sync_window=2):
     return NS(video_dir=Path("/videos"), pp3_dir=None, target_time_s=1.5, sync_window=sync_window,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
-              calib_dir=Path("/calib"), target_pkl_dir=None,
+              sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None,
               multiframe_sfm_script=Path("/mfs.py"), hloc_feature_type="superpoint",
               hloc_resize_max=4096, hloc_max_keypoints=8192)
 
@@ -575,7 +610,7 @@ def test_stage_poses_reuses_cached_hloc_output(monkeypatch, tmp_path):
 
 def _masks_args():
     return NS(generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
-              triangulate_env="queen")
+              sapiens_model_size="1b", triangulate_env="queen")
 
 
 def test_stage_masks_runs_everything_when_nothing_cached(monkeypatch, tmp_path):
@@ -621,9 +656,11 @@ def test_stage_masks_reuses_all_cached_steps_but_always_triangulates(monkeypatch
 # stage_branch_direct -- --with_viewer/--no_viewer flag translation
 # --------------------------------------------------------------------------
 
-def _branch_args(with_viewer):
+def _branch_args(with_viewer, eval_split_every=None, eval_save_to_disk=False):
     return NS(generic_env="queen", total_train_iters=100, export_every=50,
-              brush_app=Path("/brush"), run_name="myrun", display=":2", with_viewer=with_viewer)
+              brush_app=Path("/brush"), run_name="myrun", display=":2", with_viewer=with_viewer,
+              eval_split_every=eval_split_every, eval_save_to_disk=eval_save_to_disk,
+              brush_max_resolution=4096)
 
 
 def test_stage_branch_direct_with_viewer_true(monkeypatch, tmp_path):
@@ -650,6 +687,36 @@ def test_stage_branch_direct_with_viewer_false(monkeypatch, tmp_path):
     unified.stage_branch_direct(_branch_args(False), unified.build_layout(tmp_path / "out"))
     assert "--no_viewer" in captured["args"]
     assert "--with_viewer" not in captured["args"]
+
+
+def test_stage_branch_direct_eval_flags_off_by_default(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        if script_name == "train_brush.py":
+            captured["args"] = [str(a) for a in args]
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+
+    unified.stage_branch_direct(_branch_args(True), unified.build_layout(tmp_path / "out"))
+    assert "--eval_split_every" not in captured["args"]
+    assert "--eval_save_to_disk" not in captured["args"]
+
+
+def test_stage_branch_direct_eval_flags_passed_through(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        if script_name == "train_brush.py":
+            captured["args"] = [str(a) for a in args]
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+
+    unified.stage_branch_direct(
+        _branch_args(True, eval_split_every=8, eval_save_to_disk=True),
+        unified.build_layout(tmp_path / "out"),
+    )
+    i = captured["args"].index("--eval_split_every")
+    assert captured["args"][i + 1] == "8"
+    assert "--eval_save_to_disk" in captured["args"]
 
 
 # --------------------------------------------------------------------------

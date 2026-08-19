@@ -15,7 +15,10 @@ See [docs/pipeline.md](docs/pipeline.md) for the full walkthrough with
 example commands, stage by stage, and the unified orchestrator that runs
 all of it in one command (see Quick start below). See
 [docs/environment.md](docs/environment.md) for exact conda env setup
-commands and known-good package versions.
+commands and known-good package versions. See
+[docs/integration-tests.md](docs/integration-tests.md) for how the real,
+unmocked end-to-end pipeline test works, including the CPU-only variant
+that runs automatically on every PR.
 
 ## Layout
 
@@ -30,7 +33,11 @@ configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
            configs/README.md
 envs/      environment.yml per conda env (hloc, diffuman4d, sapiens2),
            pinning the known-good versions from docs/environment.md
-docs/      pipeline.md walkthrough, environment.md conda setup
+tests/     unit/ (one file per script, mocked) and integration/ (real,
+           unmocked end-to-end pipeline run against a committed fixture
+           -- see docs/integration-tests.md)
+docs/      pipeline.md walkthrough, environment.md conda setup,
+           integration-tests.md test suite
 ```
 
 `clean_masks.py`, `build_colmap_sparse.py`, and

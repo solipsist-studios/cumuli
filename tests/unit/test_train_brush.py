@@ -70,6 +70,21 @@ def fixed_time(monkeypatch, t):
     monkeypatch.setattr(tb.time, "time", lambda: t)
 
 
+@pytest.fixture(autouse=True)
+def stub_help_probe(monkeypatch):
+    """train_brush.py now runs `brush_app --help` once before building its
+    command, to detect which CLI dialect the target binary speaks (see
+    scripts/train_brush.py). Every test in this file targets the v0.3.0-era
+    dialect (--total-steps, --opac-loss-weight) that FakeProcess/fake_popen
+    below simulate -- stub subprocess.run itself (not just Popen) so that
+    probe doesn't need its own mock in every individual test, and so it
+    can't get routed through a test's fake_popen (which raises TypeError on
+    the extra text=/timeout= kwargs subprocess.run's real Popen call uses)."""
+    class FakeHelpProbe:
+        stdout = "--total-steps ... --opac-loss-weight ..."
+    monkeypatch.setattr(tb.subprocess, "run", lambda *a, **k: FakeHelpProbe())
+
+
 # --------------------------------------------------------------------------
 # main() -- argument validation, cmd/env construction (subprocess.Popen
 # mocked throughout; brush_app itself is never runnable in this environment)
@@ -196,6 +211,45 @@ def test_main_match_alpha_weight_added_when_given(tmp_path, monkeypatch):
         tb.main()
     cmd = calls[0]
     assert cmd[cmd.index("--match-alpha-weight") + 1] == "0.25"
+
+
+def test_main_eval_flags_omitted_by_default(tmp_path, monkeypatch):
+    brush_app = tmp_path / "brush_app"
+    brush_app.write_text("")
+    no_sleep(monkeypatch)
+    calls = []
+    proc = FakeProcess(poll_results=[0])
+    def fake_popen(cmd, env=None):
+        calls.append(cmd)
+        return proc
+    monkeypatch.setattr(tb.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sys, "argv", base_argv(tmp_path / "data", brush_app, tmp_path / "export", []))
+    with pytest.raises(SystemExit):
+        tb.main()
+    cmd = calls[0]
+    assert "--eval-split-every" not in cmd
+    assert "--eval-save-to-disk" not in cmd
+
+
+def test_main_eval_split_every_and_save_to_disk_added_when_given(tmp_path, monkeypatch):
+    brush_app = tmp_path / "brush_app"
+    brush_app.write_text("")
+    no_sleep(monkeypatch)
+    calls = []
+    proc = FakeProcess(poll_results=[0])
+    def fake_popen(cmd, env=None):
+        calls.append(cmd)
+        return proc
+    monkeypatch.setattr(tb.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(sys, "argv", base_argv(
+        tmp_path / "data", brush_app, tmp_path / "export",
+        ["--eval_split_every", "8", "--eval_save_to_disk"],
+    ))
+    with pytest.raises(SystemExit):
+        tb.main()
+    cmd = calls[0]
+    assert cmd[cmd.index("--eval-split-every") + 1] == "8"
+    assert "--eval-save-to-disk" in cmd
 
 
 def test_main_explicit_total_steps_overrides_default(tmp_path, monkeypatch):

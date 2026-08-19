@@ -74,6 +74,16 @@ def main():
                          help="Weight of L1 loss on alpha for RGBA (masked) datasets. "
                               "Brush auto-detects the alpha channel; this just tunes how "
                               "strongly it's matched (Brush's own default: 0.1).")
+    parser.add_argument("--eval_split_every", type=int, default=None,
+                         help="Hold out every Nth image as an eval view instead of training "
+                              "on it (passed straight through to brush_app's own "
+                              "--eval-split-every). Off by default -- opt in for quality "
+                              "measurement (e.g. PSNR against the held-out photo), not needed "
+                              "for a normal training run.")
+    parser.add_argument("--eval_save_to_disk", action="store_true",
+                         help="Render held-out eval views to --export_path during training "
+                              "(brush_app's --eval-save-to-disk). Only meaningful together "
+                              "with --eval_split_every.")
     parser.add_argument("--display", default=":2",
                          help="X DISPLAY brush_app connects to (default ':2').")
     args = parser.parse_args()
@@ -90,35 +100,70 @@ def main():
 
     args.export_path.mkdir(parents=True, exist_ok=True)
 
+    # Two generations of brush binary are in real use here: the v0.3.0
+    # release (the GPU production path) and source builds of brush main
+    # (required for CPU-only/llvmpipe training -- the release binary's
+    # burn-fusion deadlocks there, see docs/integration-tests.md). Main
+    # renamed --total-steps to --total-train-iters and removed
+    # --opac-loss-weight, so probe the binary's own --help once and speak
+    # whichever dialect it actually understands.
+    try:
+        help_text = subprocess.run([str(args.brush_app), "--help"],
+                                    capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(f"Error: could not probe {args.brush_app} --help: {e}")
+        sys.exit(1)
+    total_steps_flag = "--total-train-iters" if "--total-train-iters" in help_text else "--total-steps"
+
     cmd = [
         str(args.brush_app),
         str(args.data),
-        "--total-steps", str(args.total_steps),
+        total_steps_flag, str(args.total_steps),
         "--growth-grad-threshold", str(args.growth_grad_threshold),
         "--growth-select-fraction", str(args.growth_select_fraction),
         "--refine-every", str(args.refine_every),
         "--growth-stop-iter", str(args.growth_stop_iter),
         "--mean-noise-weight", str(args.mean_noise_weight),
         "--max-resolution", str(args.max_resolution),
-        "--opac-loss-weight", str(args.opac_loss_weight),
         "--lr-coeffs-sh-scale", str(args.lr_coeffs_sh_scale),
         "--export-every", str(args.export_every),
         "--export-path", str(args.export_path),
         "--export-name", args.export_name,
     ]
+    if "--opac-loss-weight" in help_text:
+        cmd += ["--opac-loss-weight", str(args.opac_loss_weight)]
+    elif args.opac_loss_weight not in (0, 0.0):
+        # The flag is gone from brush main (replaced by an --opac-decay
+        # mechanism with different semantics) -- silently dropping a
+        # non-default value would train something other than what the
+        # caller asked for.
+        print(f"Error: --opac_loss_weight {args.opac_loss_weight} requested but "
+              f"{args.brush_app} has no --opac-loss-weight flag (removed upstream)")
+        sys.exit(1)
     if args.with_viewer:
         cmd.insert(2, "--with-viewer")
     if args.match_alpha_weight is not None:
         cmd += ["--match-alpha-weight", str(args.match_alpha_weight)]
+    if args.eval_split_every is not None:
+        cmd += ["--eval-split-every", str(args.eval_split_every)]
+    if args.eval_save_to_disk:
+        cmd += ["--eval-save-to-disk"]
 
     env = dict(os.environ)
     if args.with_viewer:
         if args.display is not None:
             env["DISPLAY"] = args.display
         # else: inherit whatever DISPLAY this shell already has.
-    env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
-    env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
-    env["CUDA_VISIBLE_DEVICES"] = "0"
+    if "WGPU_BACKEND" not in env:
+        # Force the real NVIDIA GPU explicitly -- the normal (GPU) path.
+        # Skipped when the caller has already requested a specific wgpu
+        # backend (e.g. WGPU_BACKEND=gl for CPU-only/software-rendered
+        # training, see tests/integration/conftest.py's
+        # VCP_ALLOW_CPU_RENDERING), since these would otherwise silently
+        # override that choice and force the real GPU back on regardless.
+        env["__NV_PRIME_RENDER_OFFLOAD"] = "1"
+        env["__GLX_VENDOR_LIBRARY_NAME"] = "nvidia"
+        env["CUDA_VISIBLE_DEVICES"] = "0"
     env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 
     # --with-viewer never exits on its own after training completes -- the window

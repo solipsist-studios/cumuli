@@ -57,6 +57,7 @@ def test_main_creates_out_fmasks_dir(tmp_path, monkeypatch):
 def test_main_cmd_and_cwd_construction_default_image_ext(tmp_path, monkeypatch):
     monkeypatch.setattr(gm, "SCRIPT", tmp_path / "remove_background.py")
     gm.SCRIPT.write_text("")
+    monkeypatch.setattr(gm, "default_batch_size", lambda: 4)
 
     calls = []
     def fake_run(cmd, cwd=None):
@@ -72,8 +73,43 @@ def test_main_cmd_and_cwd_construction_default_image_ext(tmp_path, monkeypatch):
 
     assert len(calls) == 1
     cmd, cwd = calls[0]
-    assert cmd == [sys.executable, str(gm.SCRIPT), str(images_dir), str(out_fmasks_dir), "--image_ext", ".png"]
+    assert cmd == [sys.executable, str(gm.SCRIPT), str(images_dir), str(out_fmasks_dir),
+                   "--image_ext", ".png", "--batch_size", "4"]
     assert cwd == str(gm.DIFFUMAN4D_ROOT)
+
+
+def test_main_explicit_batch_size_skips_default_resolution(tmp_path, monkeypatch):
+    monkeypatch.setattr(gm, "SCRIPT", tmp_path / "remove_background.py")
+    gm.SCRIPT.write_text("")
+
+    def boom():
+        raise AssertionError("default_batch_size must not be called when --batch_size is explicit")
+    monkeypatch.setattr(gm, "default_batch_size", boom)
+
+    calls = []
+    def fake_run(cmd, cwd=None):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+    monkeypatch.setattr(gm.subprocess, "run", fake_run)
+
+    monkeypatch.setattr(sys, "argv", base_argv(
+        tmp_path / "images", tmp_path / "out", ["--batch_size", "2"],
+    ))
+    with pytest.raises(SystemExit):
+        gm.main()
+    assert calls[0][calls[0].index("--batch_size") + 1] == "2"
+
+
+def test_default_batch_size_is_1_without_gpu(monkeypatch):
+    # Whether or not torch is importable in this test env, a no-GPU result
+    # must resolve to the CPU-safe batch size of 1 -- 8 would OOM a 16GB
+    # runner VM (the 2026-07-29 exit-143 CI deaths).
+    try:
+        import torch
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    except ImportError:
+        pass
+    assert gm.default_batch_size() == 1
 
 
 def test_main_explicit_image_ext_overrides_default(tmp_path, monkeypatch):

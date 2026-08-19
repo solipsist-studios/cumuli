@@ -7,3 +7,4 @@ target/
 .ruff_cache/
 mutants/
 .hypothesis/
+tests/integration/artifacts/
