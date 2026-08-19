@@ -49,15 +49,20 @@ import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 import tempfile
+
+# The vendored trainer fork (init with: git submodule update --init deps/OMG4)
+DEPS_OMG4 = Path(__file__).resolve().parent.parent / 'deps' / 'OMG4'
 
 from spm_compress import run, sh_count_for
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--omg4-repo', required=True,
-                    help='path to the MinShirley/OMG4 clone (with the spm_native patch)')
+    ap.add_argument('--omg4-repo', default=str(DEPS_OMG4),
+                    help='path to an OMG4 clone with the SPM-native patches '
+                         '(default: the deps/OMG4 submodule)')
     ap.add_argument('--config', required=True,
                     help='scene yaml with the SPM OptimizationParams block (repo-relative or absolute)')
     ap.add_argument('--checkpoint', required=True,

@@ -26,9 +26,13 @@ Two conda environments are needed:
 - a bake environment: Python 3.11, torch 2.9. It runs the bake and pack
   steps (`bake_sogst.py`, `sogst_pack.py`).
 
-Trainer repo: fudan-zvg/4d-gaussian-splatting ("rotor" 4DGS), **with
-the patches listed under "Trainer patches" below. The patches are
-required.**
+Trainer repo: the solipsist-studios fork of fudan-zvg/4d-gaussian-splatting
+("rotor" 4DGS), vendored in this repository as the
+`deps/4d-gaussian-splatting` submodule
+(`git submodule update --init deps/4d-gaussian-splatting`). The fork's
+`main` already carries the patches listed under "Trainer patches" below.
+Anyone who works from a plain upstream clone instead must apply them by
+hand. The patches are required.
 
 ## 1. Build the D-NeRF-style dataset
 
@@ -95,8 +99,9 @@ Operational footguns, all hit in practice:
 
 ### Trainer patches
 
-Apply these to a clean clone of fudan-zvg/4d-gaussian-splatting. All
-five are required for this recipe.
+The `deps/4d-gaussian-splatting` submodule already carries all of
+these. They are documented here for anyone who works from a plain
+upstream clone. All five are required for this recipe.
 
 1. **`gaussian_renderer/__init__.py` — FoV sentinel fix (critical).**
    The Blender-style loader sets `FovX = FovY = -1` when `fl_x/fl_y/
@@ -135,7 +140,8 @@ in, same formats out, no viewer changes. Fewer splats also cut decode
 time, mobile render load, and the bandwidth needed for gap-free
 first-pass streaming (see `meta.streams` gating).
 
-Needs: a local OMG4 clone, the bake environment, the training dataset
+Needs: an OMG4 clone (the `deps/OMG4` submodule works:
+`git submodule update --init deps/OMG4`), the bake environment, the training dataset
 (for fine-tuning), and a scene yaml with the SPM `OptimizationParams`
 block. Copy an existing custom config and adjust `source_path` /
 `model_path` / `time_duration`. Key knobs: `tau_GS` (sampling
@@ -191,8 +197,8 @@ larger appearance codebook.
 
 `spm_native.py` keeps the count reduction and drops the round-trip. It
 drives the same sampling → gradient-pruning → merging schedule via
-`train.py --spm_native_out` (a patched OMG4 clone, see the
-availability note below). At the point the stock trainer would call
+`train.py --spm_native_out` (a patched OMG4 clone; the `deps/OMG4`
+submodule carries the patches). At the point the stock trainer would call
 `construct_net()`, it instead fine-tunes the surviving **explicit-SH**
 Gaussians for `--extra-iter` iterations and saves a rotor-style
 checkpoint. The export then takes `bake_sogst.py`'s checkpoint path,
@@ -212,9 +218,9 @@ interchangeable between the two. Copy `{view,t}_grad.npy` into the
 other model dir to A/B the two paths without recomputing them.
 
 > **Availability note.** The `--spm_native_out` flag and the SPM-native
-> schedule live on a patched OMG4 branch that has not been published
-> yet. Until it is, `spm_native.py` requires that local patch set.
-> `spm_compress.py` works against a stock OMG4 clone.
+> schedule live on the solipsist-studios OMG4 fork, vendored here as the
+> `deps/OMG4` submodule. `spm_compress.py` also works against a stock
+> upstream clone; `spm_native.py` needs the fork.
 
 ## 3. Export + pack
 

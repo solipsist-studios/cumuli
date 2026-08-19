@@ -64,7 +64,9 @@ git submodule update --init --recursive
 - `deps/BiRefNet` -- background removal model (invoked via Diffuman4D's own wrapper script)
 - `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
 - `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today; also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
-- `deps/brush` -- gaussian splat trainer
+- `deps/brush` -- gaussian splat trainer (static / per-frame)
+- `deps/4d-gaussian-splatting` -- 4D "rotor" gaussian splat trainer for the native `.sogst` path (solipsist-studios fork; carries required patches, see docs/omg4_native_training.md)
+- `deps/OMG4` -- SPM compression + SPM-native fine-tuning for the 4D path (solipsist-studios fork with the `--spm_native_out` patches)
 
 ### Third-party model licenses
 
@@ -98,6 +100,15 @@ audit rights and lets Meta amend the terms unilaterally. Because
 human capture pipeline, anyone deploying it commercially should read
 the agreement and take their own legal advice rather than relying on
 this summary.
+
+`deps/4d-gaussian-splatting` is MIT at the repository level, with the
+Inria Gaussian-Splatting license (non-commercial research) covering its
+3DGS-derived parts -- both license files ship in the submodule.
+`deps/OMG4` carries **no license file**; it is consumed as a GitHub fork
+of an academic repository, and several of its files carry the Inria
+non-commercial notice. Treat both trainers as research-use components
+and take advice before any commercial deployment of the 4D training
+path.
 
 Everything else wrapped by the pipeline (Brush: Apache-2.0, BiRefNet:
 MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,

@@ -13,3 +13,9 @@
 [submodule "deps/camera-calibration"]
 	path = deps/camera-calibration
 	url = https://github.com/solipsist-studios/camera-calibration
+[submodule "deps/4d-gaussian-splatting"]
+	path = deps/4d-gaussian-splatting
+	url = https://github.com/solipsist-studios/4d-gaussian-splatting.git
+[submodule "deps/OMG4"]
+	path = deps/OMG4
+	url = https://github.com/solipsist-studios/OMG4.git
