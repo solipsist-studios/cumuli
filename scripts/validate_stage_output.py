@@ -28,6 +28,7 @@ Usage:
 import argparse
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -181,6 +182,84 @@ def validate_branch(L, real_cameras):
         raise ValidationError(f"{newest} declares zero splats (truncated/failed export?)")
 
 
+def validate_dataset4d(L, real_cameras):
+    root = L["dataset4d"]
+    frames = None
+    for name in ("transforms_train.json", "transforms_test.json"):
+        path = root / name
+        if not path.is_file():
+            raise ValidationError(f"{path} was not produced")
+        try:
+            data = json.loads(path.read_text())
+        except ValueError as e:
+            raise ValidationError(f"{path} is not valid JSON: {e}")
+        if name == "transforms_train.json":
+            frames = data.get("frames", [])
+
+    if not frames:
+        raise ValidationError(f"{root / 'transforms_train.json'} has zero frames")
+
+    # Per-view intrinsics are the contract. build_flipbook_4dgs_dataset.py
+    # writes fl/c/w/h/time on every frame entry, and there is deliberately
+    # no global intrinsics block (the cameras differ).
+    for key in ("file_path", "time", "fl_x", "fl_y", "cx", "cy"):
+        missing = [i for i, fr in enumerate(frames) if key not in fr]
+        if missing:
+            raise ValidationError(
+                f"transforms_train.json: {len(missing)} frames lack {key!r} "
+                f"(first at index {missing[0]})")
+
+    # file_path is extensionless. The image must exist and must be RGBA:
+    # the mask is baked into alpha, and an RGB image means the bake step
+    # silently failed while every file still exists.
+    probe = root / (frames[0]["file_path"] + ".png")
+    if not probe.is_file():
+        raise ValidationError(f"{probe} referenced by transforms_train.json is missing")
+    with Image.open(probe) as im:
+        if im.mode != "RGBA":
+            raise ValidationError(f"{probe} is mode {im.mode}, expected RGBA (mask in alpha)")
+
+    ply = root / "points3d.ply"
+    if not ply.is_file():
+        raise ValidationError(f"{ply} was not produced")
+    if ply_vertex_count(ply) < 1:
+        raise ValidationError(f"{ply} declares zero points (failed visual-hull init?)")
+    if not ply_header_has_property(ply, "time"):
+        raise ValidationError(
+            f"{ply} header lacks a per-point 'time' property -- the 4D trainer "
+            f"buckets its init points by time and cannot use a static cloud")
+
+
+def validate_train4d(L, real_cameras):
+    model_dir = L["train4d_model"]
+    ckpts = sorted(model_dir.glob("chkpnt*.pth")) if model_dir.is_dir() else []
+    if not ckpts:
+        raise ValidationError(f"no chkpnt*.pth under {model_dir}")
+
+    # A crashed trainer can leave a small partial file behind. A real rotor
+    # checkpoint is tens of MB at minimum, so 1 MB is a safe floor.
+    newest = max(ckpts, key=lambda p: p.stat().st_mtime)
+    if newest.stat().st_size < 1_000_000:
+        raise ValidationError(
+            f"{newest} is {newest.stat().st_size} bytes -- truncated checkpoint?")
+
+    out = L["sogst_out"]
+    if not out.is_file():
+        raise ValidationError(f"{out} was not produced")
+    # stdlib-only probe so this module stays importable in the torch-free
+    # generic env: a .sogst is a ZIP whose first entry is meta.json.
+    try:
+        with zipfile.ZipFile(out) as zf:
+            meta = json.loads(zf.read("meta.json"))
+    except (zipfile.BadZipFile, KeyError, ValueError) as e:
+        raise ValidationError(f"{out} is not a readable .sogst archive: {e}")
+    if meta.get("format") != "sogst":
+        raise ValidationError(
+            f"{out} meta.format is {meta.get('format')!r}, expected 'sogst'")
+    if int(meta.get("count", 0)) < 1:
+        raise ValidationError(f"{out} declares zero splats")
+
+
 def ply_vertex_count(path):
     """Vertex count from a .ply header (ascii or binary body), or -1 if the
     header is missing/unparseable."""
@@ -195,12 +274,30 @@ def ply_vertex_count(path):
     return -1
 
 
+
+
+def ply_header_has_property(path, name):
+    """True when the .ply header declares a property with this name. Header
+    is read the same way as ply_vertex_count (first 4096 bytes)."""
+    with path.open("rb") as f:
+        header = f.read(4096).decode("ascii", errors="replace")
+    if not header.startswith("ply"):
+        return False
+    for line in header.splitlines():
+        parts = line.split()
+        if parts[:1] == ["property"] and parts[-1:] == [name]:
+            return True
+    return False
+
+
 VALIDATORS = {
     "sync": validate_sync,
     "production": validate_production,
     "poses": validate_poses,
     "masks": validate_masks,
     "branch": validate_branch,
+    "dataset4d": validate_dataset4d,
+    "train4d": validate_train4d,
 }
 
 

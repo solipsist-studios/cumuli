@@ -42,6 +42,23 @@ from sogst_pack import decode_webp  # noqa: E402
 from sogst_io import SOGST_FIELDS  # noqa: E402
 
 
+def build_report(views, config):
+    """Assemble the --report_json payload from per-view metric rows.
+
+    `views` is a list of {"name", "time", "psnr_db", "ssim", "lpips"} dicts
+    in evaluation order. Kept free of torch/gsplat imports so the schema is
+    unit-testable in a CPU-only environment."""
+    if views:
+        mean = {
+            "psnr_db": float(sum(v["psnr_db"] for v in views) / len(views)),
+            "ssim": float(sum(v["ssim"] for v in views) / len(views)),
+            "lpips": float(sum(v["lpips"] for v in views) / len(views)),
+        }
+    else:
+        mean = {"psnr_db": None, "ssim": None, "lpips": None}
+    return {"mean": mean, "views": list(views), "config": dict(config)}
+
+
 # ---------------------------------------------------------------------------
 # .sogst archive -> field arrays (mirrors the engine decoder:
 # sogst_pack.verify_sogst covers the same math for scalar attributes, and this
@@ -210,6 +227,8 @@ def main():
                     help='multiply camera times by this to reach model time units '
                          '(default: auto from model duration / max camera time)')
     ap.add_argument('--dump-dir', default=None, help='optionally write rendered PNGs here')
+    ap.add_argument('--report_json', default=None,
+                    help='write mean + per-view PSNR/SSIM/LPIPS as JSON here')
     args = ap.parse_args()
 
     import torch
@@ -263,6 +282,7 @@ def main():
         os.makedirs(args.dump_dir, exist_ok=True)
 
     psnrs, ssims, lpipss = [], [], []
+    view_rows = []
     for cam in cams:
         t = header['time_min'] + cam['time'] * tscale
         dt = t - t_center
@@ -299,6 +319,8 @@ def main():
         psnrs.append(psnr)
         ssims.append(ssim)
         lpipss.append(lp)
+        view_rows.append({'name': cam['name'], 'time': float(cam['time']),
+                          'psnr_db': psnr, 'ssim': ssim, 'lpips': lp})
         print(f'  {cam["name"]}  t={cam["time"]:.3f}  PSNR {psnr:6.3f}  SSIM {ssim:.4f}  LPIPS {lp:.4f}')
 
         if args.dump_dir:
@@ -308,6 +330,14 @@ def main():
     if psnrs:
         print(f'MEAN over {len(psnrs)} views:  PSNR {np.mean(psnrs):.3f}  '
               f'SSIM {np.mean(ssims):.4f}  LPIPS {np.mean(lpipss):.4f}')
+
+    if args.report_json:
+        report = build_report(view_rows, {
+            'model': args.model, 'transforms': args.transforms,
+            'gt_dir': args.gt_dir, 'every': args.every,
+            'downscale': args.downscale})
+        with open(args.report_json, 'w') as f:
+            json.dump(report, f, indent=2)
 
 
 if __name__ == '__main__':

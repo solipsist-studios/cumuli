@@ -495,3 +495,168 @@ def test_main_exits_0_and_prints_ok_on_success(tmp_path, monkeypatch, capsys):
     vso.main()  # should not raise / not exit
 
     assert "OK" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# validate_dataset4d / validate_train4d
+# --------------------------------------------------------------------------
+
+def layout4d(tmp_path):
+    """Layout dict for the 4D validators. setdefault keeps this correct both
+    before and after build_layout() itself grows these keys."""
+    L = dict(unified.build_layout(tmp_path))
+    L.setdefault("dataset4d", tmp_path / "dataset_4dgs")
+    L.setdefault("train4d_model", tmp_path / "train4d_output")
+    L.setdefault("sogst_out", tmp_path / "splat_4d.sogst")
+    return L
+
+
+def frame_entry(label, i, with_intrinsics=True):
+    entry = {
+        "file_path": f"realcams/cam{label}/frame_{i + 1:05d}",
+        "camera_label": label,
+        "time": i / 30.0,
+        "w": 8, "h": 8,
+        "transform_matrix": IDENTITY,
+    }
+    if with_intrinsics:
+        entry.update({"fl_x": 4.0, "fl_y": 4.0, "cx": 4.0, "cy": 4.0})
+    return entry
+
+
+def write_time_ply(path, n_vertices, with_time=True):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    props = "property float x\nproperty float y\nproperty float z\n"
+    if with_time:
+        props += "property float time\n"
+    header = (f"ply\nformat binary_little_endian 1.0\n"
+              f"element vertex {n_vertices}\n{props}end_header\n")
+    width = 4 if with_time else 3
+    path.write_bytes(header.encode("ascii") + b"\x00" * (4 * width * n_vertices))
+
+
+def write_dataset4d(root, image_mode="RGBA", with_intrinsics=True,
+                    with_time=True, n_frames=2):
+    frames = [frame_entry("00", i, with_intrinsics) for i in range(n_frames)]
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "transforms_train.json").write_text(
+        json.dumps({"camera_model": "OPENCV", "frames": frames}))
+    (root / "transforms_test.json").write_text(
+        json.dumps({"camera_model": "OPENCV", "frames": frames[:1]}))
+    img = root / (frames[0]["file_path"] + ".png")
+    img.parent.mkdir(parents=True, exist_ok=True)
+    Image.new(image_mode, (8, 8)).save(img)
+    write_time_ply(root / "points3d.ply", n_vertices=10, with_time=with_time)
+    return frames
+
+
+def test_validate_dataset4d_passes_when_complete(tmp_path):
+    L = layout4d(tmp_path)
+    write_dataset4d(L["dataset4d"])
+
+    vso.validate_dataset4d(L, REAL_CAMERAS)  # should not raise
+
+
+def test_validate_dataset4d_fails_on_missing_transforms(tmp_path):
+    L = layout4d(tmp_path)
+    L["dataset4d"].mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(vso.ValidationError, match="was not produced"):
+        vso.validate_dataset4d(L, REAL_CAMERAS)
+
+
+def test_validate_dataset4d_fails_on_invalid_json(tmp_path):
+    L = layout4d(tmp_path)
+    write_dataset4d(L["dataset4d"])
+    (L["dataset4d"] / "transforms_train.json").write_text("{not json")
+
+    with pytest.raises(vso.ValidationError, match="not valid JSON"):
+        vso.validate_dataset4d(L, REAL_CAMERAS)
+
+
+def test_validate_dataset4d_fails_without_per_view_intrinsics(tmp_path):
+    L = layout4d(tmp_path)
+    write_dataset4d(L["dataset4d"], with_intrinsics=False)
+
+    with pytest.raises(vso.ValidationError, match="lack 'fl_x'"):
+        vso.validate_dataset4d(L, REAL_CAMERAS)
+
+
+def test_validate_dataset4d_fails_on_non_rgba_image(tmp_path):
+    L = layout4d(tmp_path)
+    write_dataset4d(L["dataset4d"], image_mode="RGB")
+
+    with pytest.raises(vso.ValidationError, match="expected RGBA"):
+        vso.validate_dataset4d(L, REAL_CAMERAS)
+
+
+def test_validate_dataset4d_fails_without_time_property(tmp_path):
+    L = layout4d(tmp_path)
+    write_dataset4d(L["dataset4d"], with_time=False)
+
+    with pytest.raises(vso.ValidationError, match="'time' property"):
+        vso.validate_dataset4d(L, REAL_CAMERAS)
+
+
+def _write_sogst_zip(path, count=5, fmt="sogst"):
+    import zipfile
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("meta.json", json.dumps({"version": 1, "format": fmt, "count": count}))
+
+
+def test_validate_train4d_passes_when_complete(tmp_path):
+    L = layout4d(tmp_path)
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_sogst_zip(L["sogst_out"])
+
+    vso.validate_train4d(L, REAL_CAMERAS)  # should not raise
+
+
+def test_validate_train4d_fails_without_checkpoint(tmp_path):
+    L = layout4d(tmp_path)
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    _write_sogst_zip(L["sogst_out"])
+
+    with pytest.raises(vso.ValidationError, match="no chkpnt"):
+        vso.validate_train4d(L, REAL_CAMERAS)
+
+
+def test_validate_train4d_fails_on_undersized_checkpoint(tmp_path):
+    L = layout4d(tmp_path)
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 1024)
+    _write_sogst_zip(L["sogst_out"])
+
+    with pytest.raises(vso.ValidationError, match="truncated checkpoint"):
+        vso.validate_train4d(L, REAL_CAMERAS)
+
+
+def test_validate_train4d_fails_on_invalid_zip(tmp_path):
+    L = layout4d(tmp_path)
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    L["sogst_out"].write_bytes(b"not a zip")
+
+    with pytest.raises(vso.ValidationError, match="not a readable .sogst"):
+        vso.validate_train4d(L, REAL_CAMERAS)
+
+
+def test_validate_train4d_fails_on_zero_splats(tmp_path):
+    L = layout4d(tmp_path)
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_sogst_zip(L["sogst_out"], count=0)
+
+    with pytest.raises(vso.ValidationError, match="zero splats"):
+        vso.validate_train4d(L, REAL_CAMERAS)
+
+
+def test_validate_train4d_fails_on_wrong_format(tmp_path):
+    L = layout4d(tmp_path)
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_sogst_zip(L["sogst_out"], fmt="sog")
+
+    with pytest.raises(vso.ValidationError, match="expected 'sogst'"):
+        vso.validate_train4d(L, REAL_CAMERAS)
