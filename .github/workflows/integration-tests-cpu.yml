@@ -130,7 +130,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          submodules: false
+
+      - name: Fetch the pipeline submodules (not the 4D trainer forks)
+        # `submodules: true` would also clone deps/4d-gaussian-splatting and
+        # deps/OMG4, which this CPU pipeline run never touches. Init exactly
+        # the submodules the capture pipeline wraps -- the same set the old
+        # blanket fetch delivered before the trainer forks were vendored.
+        run: |
+          git submodule update --init \
+            deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
+            deps/sapiens deps/brush
 
       - name: Download brush-cli artifact
         uses: actions/download-artifact@v4
@@ -143,11 +153,35 @@ jobs:
           chmod +x brush-cli-bin/brush-cli
           echo "VCP_BRUSH_APP=$PWD/brush-cli-bin/brush-cli" >> "$GITHUB_ENV"
 
+      - name: Restore cached ffmpeg debs
+        # The apt mirror stalled for hours on 2026-08-19 (two failed runs;
+        # even the canonical-mirror fallback below timed out). Cache the debs
+        # after one successful install so later runs install fully offline.
+        # First-party Ubuntu debs, no new hosts. ImageOS/ImageVersion are
+        # preset on hosted runners; an image bump busts the cache so the deb
+        # set always matches the image's dependency baseline.
+        id: ffmpeg-debs
+        uses: actions/cache@v4
+        with:
+          path: ~/apt-ffmpeg-debs
+          key: apt-ffmpeg-${{ env.ImageOS }}-${{ env.ImageVersion }}
+
+      - name: Install ffmpeg (offline, cache hit)
+        if: steps.ffmpeg-debs.outputs.cache-hit == 'true'
+        timeout-minutes: 4
+        run: |
+          sudo dpkg -i ~/apt-ffmpeg-debs/*.deb \
+            || sudo apt-get install -f -y --no-download
+          ffmpeg -version | head -1
+
       - name: Install ffmpeg
+        if: steps.ffmpeg-debs.outputs.cache-hit != 'true'
         # Normally ~20 s. Observed 2026-08-19: apt stalled for 46+ minutes on
         # a runner mirror hang, and only a concurrency cancel ended it -- the
         # job timeout is 350 minutes. Bound the step and retry with short
-        # network timeouts so a stall costs minutes and fails loudly.
+        # network timeouts so a stall costs minutes and fails loudly. On
+        # success the debs are staged for the cache step above (staging dir
+        # because actions/cache cannot read the root-owned apt archive).
         timeout-minutes: 8
         run: |
           export DEBIAN_FRONTEND=noninteractive
@@ -165,7 +199,11 @@ jobs:
                 -o Acquire::Retries=3 \
                 -o Acquire::http::Timeout=30 \
                 -o Acquire::https::Timeout=30 \
-              && sudo apt-get install -y --no-install-recommends ffmpeg \
+              && sudo apt-get install -y --no-install-recommends \
+                   -o APT::Keep-Downloaded-Packages=true ffmpeg \
+              && mkdir -p ~/apt-ffmpeg-debs \
+              && sudo cp /var/cache/apt/archives/*.deb ~/apt-ffmpeg-debs/ \
+              && sudo chown -R "$USER" ~/apt-ffmpeg-debs \
               && exit 0
             echo "apt attempt $i failed; retrying in 15s" >&2
             sleep 15

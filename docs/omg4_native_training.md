@@ -26,9 +26,13 @@ Two conda environments are needed:
 - a bake environment: Python 3.11, torch 2.9. It runs the bake and pack
   steps (`bake_sogst.py`, `sogst_pack.py`).
 
-Trainer repo: fudan-zvg/4d-gaussian-splatting ("rotor" 4DGS), **with
-the patches listed under "Trainer patches" below. The patches are
-required.**
+Trainer repo: the solipsist-studios fork of fudan-zvg/4d-gaussian-splatting
+("rotor" 4DGS), vendored in this repository as the
+`deps/4d-gaussian-splatting` submodule
+(`git submodule update --init deps/4d-gaussian-splatting`). The fork's
+`main` already carries the patches listed under "Trainer patches" below.
+Anyone who works from a plain upstream clone instead must apply them by
+hand. The patches are required.
 
 ## 1. Build the D-NeRF-style dataset
 
@@ -95,10 +99,16 @@ Operational footguns, all hit in practice:
 
 ### Trainer patches
 
-Apply these to a clean clone of fudan-zvg/4d-gaussian-splatting. All
-five are required for this recipe.
+The `deps/4d-gaussian-splatting` submodule already carries all of
+these, merged as fork commits (merge `979c64a`). They are documented
+here, with their commit ids, for anyone who works from a plain upstream
+clone. All five are required for this recipe. The fork's `main` also
+carries two smaller fixes beyond this list: `e55a5c7` (file_system
+sharing strategy in train.py, against DataLoader fd exhaustion) and the
+patch-2 landing noted below.
 
 1. **`gaussian_renderer/__init__.py` — FoV sentinel fix (critical).**
+   Fork commit `31d78a4`.
    The Blender-style loader sets `FovX = FovY = -1` when `fl_x/fl_y/
    cx/cy` are present, and the renderer then computes `tan(-0.5)` for
    the EWA Jacobian. The result is inflated splat footprints: a blur
@@ -106,18 +116,24 @@ five are required for this recipe.
    Patch it to use `tanfov = image_size / (2 * fl)` whenever
    `fl_x > 0`.
 2. **`gaussian_renderer/diff_gaussian_rasterization.py` — cached CUDA
-   extension.** A system CUDA newer than 12 cannot JIT-build the old
-   C++14 extension. The patch importlib-loads a previously built
+   extension.** Fork commit `f9bcc89`, guarded: a fresh clone still
+   JIT-compiles exactly as upstream, and the cache load is the fallback. A system CUDA newer than 12 cannot JIT-build the old
+   C++14 extension (the companion `<cstdint>` build fix for newer GCC is
+   fork commit `981cf0c`). The patch importlib-loads a previously built
    `diff_gaussian_rasterization.so` from the torch extensions cache
    (the spec name must be exactly `diff_gaussian_rasterization`). Do
    not clear that cache directory.
-3. **`utils/data_utils.py` — fast composite path.** A uint8 torch
+3. **`utils/data_utils.py` — fast composite path.** Fork commit
+   `18dacc3` (the old chain is kept as the resize fallback). A uint8
+   torch
    fused `rgb*a + bg*(1-a)` replaces the float64 numpy chain. Roughly
    2× training throughput: the GPU idled at 0–15% before.
-4. **`scene/dataset_readers.py` — `fetchPly`** copies the `time`
+4. **`scene/dataset_readers.py` — `fetchPly`** (fork commit
+   `d38d2a2`) copies the `time`
    field contiguously (`np.ascontiguousarray(...).astype(np.float32)`).
    plyfile returns a strided view that torch rejects.
-5. **`scene/gaussian_model.py` — `GS4D_T_INIT_DIV` env var.** Initial
+5. **`scene/gaussian_model.py` — `GS4D_T_INIT_DIV` env var.** Fork
+   commit `e5d05e4`. Initial
    temporal sigma is `sqrt(duration / div)`. Upstream hardcodes
    `div = 5`, which on a short clip bakes many frames of motion smear
    into the initial sigma. `GS4D_T_INIT_DIV=100` gives a much tighter
@@ -135,7 +151,8 @@ in, same formats out, no viewer changes. Fewer splats also cut decode
 time, mobile render load, and the bandwidth needed for gap-free
 first-pass streaming (see `meta.streams` gating).
 
-Needs: a local OMG4 clone, the bake environment, the training dataset
+Needs: an OMG4 clone (the `deps/OMG4` submodule works:
+`git submodule update --init deps/OMG4`), the bake environment, the training dataset
 (for fine-tuning), and a scene yaml with the SPM `OptimizationParams`
 block. Copy an existing custom config and adjust `source_path` /
 `model_path` / `time_duration`. Key knobs: `tau_GS` (sampling
@@ -191,8 +208,8 @@ larger appearance codebook.
 
 `spm_native.py` keeps the count reduction and drops the round-trip. It
 drives the same sampling → gradient-pruning → merging schedule via
-`train.py --spm_native_out` (a patched OMG4 clone, see the
-availability note below). At the point the stock trainer would call
+`train.py --spm_native_out` (a patched OMG4 clone; the `deps/OMG4`
+submodule carries the patches). At the point the stock trainer would call
 `construct_net()`, it instead fine-tunes the surviving **explicit-SH**
 Gaussians for `--extra-iter` iterations and saves a rotor-style
 checkpoint. The export then takes `bake_sogst.py`'s checkpoint path,
@@ -212,9 +229,9 @@ interchangeable between the two. Copy `{view,t}_grad.npy` into the
 other model dir to A/B the two paths without recomputing them.
 
 > **Availability note.** The `--spm_native_out` flag and the SPM-native
-> schedule live on a patched OMG4 branch that has not been published
-> yet. Until it is, `spm_native.py` requires that local patch set.
-> `spm_compress.py` works against a stock OMG4 clone.
+> schedule live on the solipsist-studios OMG4 fork, vendored here as the
+> `deps/OMG4` submodule. `spm_compress.py` also works against a stock
+> upstream clone; `spm_native.py` needs the fork.
 
 ## 3. Export + pack
 
