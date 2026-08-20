@@ -559,10 +559,20 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
             "--out_dir", frame_dir / "fmasks_clean", "--images_dir", frame_images, "--retry",
         ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"clean_masks.py (train frame {k})")
 
+    # The hull carve requires each candidate point inside the mask in at
+    # least --hull_min_views views. The builder's default of 9 suits a
+    # full rig; on a smaller rig (or the CI subset) it exceeds the camera
+    # count and the hull is empty by construction. Clamp to the rig size.
+    try:
+        n_cams = len(json.loads(L["flat_transforms"].read_text()).get("frames", []))
+    except (OSError, ValueError):
+        n_cams = 0
+    hull_min_views = min(args.hull_min_views, n_cams) if n_cams else args.hull_min_views
     build_args = [
         "--flipbook_root", L["flipbook_src"], "--out", L["dataset4d"],
         "--fps", str(args.train_fps), "--downscale", str(args.dataset_downscale),
         "--jobs", str(args.dataset_jobs),
+        "--hull_min_views", str(hull_min_views),
     ]
     # The eval camera's stereo mates must leave training entirely: a held-out
     # camera whose near-duplicate mate keeps training measures leakage, not
@@ -762,6 +772,9 @@ def build_parser():
     parser.add_argument("--dataset_downscale", type=int, default=1,
                         help="build_flipbook_4dgs_dataset.py --downscale for the 4D dataset.")
     parser.add_argument("--dataset_jobs", type=int, default=8)
+    parser.add_argument("--hull_min_views", type=int, default=9,
+                        help="Minimum mask-consistent views for a visual-hull init point. "
+                             "Clamped to the rig's camera count at run time.")
     parser.add_argument("--eval_camera", default=None,
                         help="2-digit camera label held out for eval_render.py scoring. "
                              "Omit to train on every camera and skip eval.")

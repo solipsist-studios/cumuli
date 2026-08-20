@@ -943,7 +943,13 @@ def _dataset4d_args(tmp_path, window=2, eval_camera=None, holdouts=()):
               holdout_cameras=list(holdouts), generic_env="queen",
               sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", calib_dir=tmp_path / "calib",
-              target_pkl_dir=None)
+              target_pkl_dir=None, hull_min_views=9)
+
+
+def _write_flat_transforms(L, n_cams=3):
+    L["flat_transforms"].parent.mkdir(parents=True, exist_ok=True)
+    L["flat_transforms"].write_text(json.dumps(
+        {"frames": [{"camera_label": f"{i:02d}"} for i in range(n_cams)]}))
 
 
 def _capture_runs(monkeypatch):
@@ -959,6 +965,7 @@ def _capture_runs(monkeypatch):
 def test_stage_dataset4d_runs_per_frame_chain_then_builder(monkeypatch, tmp_path):
     calls = _capture_runs(monkeypatch)
     L = unified.build_layout(tmp_path / "out")
+    _write_flat_transforms(L)
     unified.stage_dataset4d(_dataset4d_args(tmp_path, window=2), L, ".png",
                             tmp_path / "sync.json")
 
@@ -979,6 +986,7 @@ def test_stage_dataset4d_runs_per_frame_chain_then_builder(monkeypatch, tmp_path
 def test_stage_dataset4d_skips_processed_frames(monkeypatch, tmp_path):
     calls = _capture_runs(monkeypatch)
     L = unified.build_layout(tmp_path / "out")
+    _write_flat_transforms(L)
     done = L["flipbook_src"] / "frame_0000" / "fmasks_clean"
     done.mkdir(parents=True)
     (done / "00.png").write_bytes(b"")
@@ -993,6 +1001,7 @@ def test_stage_dataset4d_skips_processed_frames(monkeypatch, tmp_path):
 def test_stage_dataset4d_forwards_eval_and_mate_holdouts(monkeypatch, tmp_path):
     calls = _capture_runs(monkeypatch)
     L = unified.build_layout(tmp_path / "out")
+    _write_flat_transforms(L)
     unified.stage_dataset4d(
         _dataset4d_args(tmp_path, window=1, eval_camera="05", holdouts=["05", "06"]),
         L, ".png", tmp_path / "sync.json")
@@ -1009,11 +1018,36 @@ def test_stage_dataset4d_forwards_eval_and_mate_holdouts(monkeypatch, tmp_path):
 def test_stage_dataset4d_omits_eval_flags_without_eval_camera(monkeypatch, tmp_path):
     calls = _capture_runs(monkeypatch)
     L = unified.build_layout(tmp_path / "out")
+    _write_flat_transforms(L)
     unified.stage_dataset4d(_dataset4d_args(tmp_path, window=1), L, ".png",
                             tmp_path / "sync.json")
     build = next(c for c in calls if Path(c["script"]).name == "build_flipbook_4dgs_dataset.py")
     assert "--test_cameras" not in build["args"]
     assert "--holdout_cameras" not in build["args"]
+
+
+def test_stage_dataset4d_clamps_hull_min_views_to_rig_size(monkeypatch, tmp_path):
+    calls = _capture_runs(monkeypatch)
+    L = unified.build_layout(tmp_path / "out")
+    _write_flat_transforms(L, n_cams=3)
+    unified.stage_dataset4d(_dataset4d_args(tmp_path, window=1), L, ".png",
+                            tmp_path / "sync.json")
+    build = next(c for c in calls if Path(c["script"]).name == "build_flipbook_4dgs_dataset.py")
+    a = build["args"]
+    # The builder default of 9 exceeds a 3-camera rig: the hull would be
+    # empty by construction (caught live in CPU CI, 2026-08-20).
+    assert a[a.index("--hull_min_views") + 1] == "3"
+
+
+def test_stage_dataset4d_keeps_hull_min_views_on_a_full_rig(monkeypatch, tmp_path):
+    calls = _capture_runs(monkeypatch)
+    L = unified.build_layout(tmp_path / "out")
+    _write_flat_transforms(L, n_cams=11)
+    unified.stage_dataset4d(_dataset4d_args(tmp_path, window=1), L, ".png",
+                            tmp_path / "sync.json")
+    build = next(c for c in calls if Path(c["script"]).name == "build_flipbook_4dgs_dataset.py")
+    a = build["args"]
+    assert a[a.index("--hull_min_views") + 1] == "9"
 
 
 def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
