@@ -231,11 +231,16 @@ def validate_train4d(L, real_cameras):
         raise ValidationError(f"{out} declares zero splats")
 
 
+# A .ply header comfortably fits in this prefix; reading only this much keeps
+# the validators cheap on multi-hundred-megabyte splat exports.
+PLY_HEADER_READ_BYTES = 4096
+
+
 def ply_vertex_count(path):
     """Vertex count from a .ply header (ascii or binary body), or -1 if the
     header is missing/unparseable."""
     with path.open("rb") as f:
-        header = f.read(4096).decode("ascii", errors="replace")
+        header = f.read(PLY_HEADER_READ_BYTES).decode("ascii", errors="replace")
     if not header.startswith("ply"):
         return -1
     for line in header.splitlines():
@@ -249,9 +254,9 @@ def ply_vertex_count(path):
 
 def ply_header_has_property(path, name):
     """True when the .ply header declares a property with this name. Header
-    is read the same way as ply_vertex_count (first 4096 bytes)."""
+    is read the same way as ply_vertex_count."""
     with path.open("rb") as f:
-        header = f.read(4096).decode("ascii", errors="replace")
+        header = f.read(PLY_HEADER_READ_BYTES).decode("ascii", errors="replace")
     if not header.startswith("ply"):
         return False
     for line in header.splitlines():
