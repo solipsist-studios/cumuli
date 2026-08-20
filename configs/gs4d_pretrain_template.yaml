@@ -5,7 +5,7 @@
 # placeholders are filled by run_unified_pipeline.py via str.format_map; the
 # orchestrator is stdlib-only, so this stays a text template rather than a
 # parsed YAML document. The value shapes mirror the production pretrain
-# configs (OMG4 configs/custom, heidi_pretrain lineage): num_pts 100k and
+# configs (OMG4 configs/custom): num_pts 100k and
 # batch_size 2 are the measured production defaults, not the upstream
 # paper's. lambda_aniso and lambda_depth stay at their off defaults: the
 # anisotropy regulariser measurably costs quality (-1.7 dB on a subject
