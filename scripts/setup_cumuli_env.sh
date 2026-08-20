@@ -19,7 +19,12 @@
 #   MAX_JOBS              parallel build jobs (default: nproc)
 set -euo pipefail
 
+# CONDA may arrive as the conda EXECUTABLE or (per setup-miniconda's
+# convention, which exports the install base) as a DIRECTORY. Accept
+# both, then fall back to PATH and the default install location.
 CONDA=${CONDA:-"$HOME/miniconda3/condabin/conda"}
+if [ -d "$CONDA" ]; then CONDA="$CONDA/condabin/conda"; fi
+if [ ! -x "$CONDA" ]; then CONDA="$(command -v conda || echo "$HOME/miniconda3/condabin/conda")"; fi
 ENV_NAME=${ENV_NAME:-cumuli}
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CPU_ONLY=0
