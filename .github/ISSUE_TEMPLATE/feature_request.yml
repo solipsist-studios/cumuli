@@ -41,7 +41,7 @@ body:
         - "Pose estimation (HLOC / SfM)"
         - "Masks"
         - "Keypoints and pose refinement"
-        - "Training (Brush / LichtFeld-Studio)"
+        - "Training (4D rotor trainer, dataset4d/train4d stages)"
         - "Orchestration (run_unified_pipeline.py, render_frame_sequence.py)"
         - "Export and post-processing"
         - "Docs, install, or environments"

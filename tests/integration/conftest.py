@@ -1,29 +1,24 @@
 """
 tests/integration/conftest.py
 
-Real, unmocked pipeline tests need a real GPU + conda envs + brush_app +
-Sapiens checkpoints -- none of which exist on a plain GitHub-hosted CI
-runner. Rather than skip the whole suite via CI-side conditionals, every
-test here goes through `pipeline_prereqs` (autouse), which probes for what
-it actually needs and skips with a specific reason when something's
+Real, unmocked pipeline tests need real conda envs, Sapiens checkpoints,
+and (for the training stage) a CUDA GPU plus the deps/OMG4 trainer
+submodule -- none of which exist on a plain GitHub-hosted CI runner.
+Rather than skip the whole suite via CI-side conditionals, every test
+here goes through `pipeline_prereqs` (autouse), which probes for what it
+actually needs and skips with a specific reason when something is
 missing. Same test file, same behavior, on any machine: it does the real
-thing where the environment supports it, and skips cleanly everywhere else.
+thing where the environment supports it, and skips cleanly everywhere
+else.
 
-VCP_ALLOW_CPU_RENDERING=1 opts into training without a real GPU at all,
-via Mesa's llvmpipe software rasterizer -- see pipeline_run's env
-construction in test_pipeline_end_to_end.py for the full recipe and the
-hard-won findings behind it (2026-07-28): WGPU_BACKEND=gl alone does NOT
-avoid the GPU (an earlier claim here that it had been verified to was
-wrong -- that run had silently used the NVIDIA OpenGL driver), and the
-v0.3.0 release brush binary cannot run on llvmpipe at all (burn-fusion
-spinlock deadlock, a nondeterministic race, plus two hard startup
-panics). CPU mode therefore requires a brush binary built from source
-newer than 2026-07 (VCP_BRUSH_APP) -- verified end-to-end on genuine
-llvmpipe with that build. Off by default -- opt-in only, existing
-GPU-required behavior is unchanged unless this is explicitly set.
+VCP_CPU_PIPELINE=1 selects the CPU-capable pipeline subset: the run stops
+after the dataset4d stage (--stop_after_stage dataset4d), so no GPU, no
+trainer env, and no trainer submodule are required. GPU mode (the toggle
+unset) runs the full pipeline through train4d, which additionally needs
+the `omg4` conda env and an initialised deps/OMG4 submodule
+(train_scratch.py is the trainer entry point).
 """
 
-import ctypes.util
 import json
 import os
 import shutil
@@ -35,8 +30,10 @@ import pytest
 import run_unified_pipeline as unified
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "take01_11cam"
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 REQUIRED_CONDA_ENVS = ("hloc", "diffuman4d", "sapiens2", "queen")
+GPU_CONDA_ENVS = ("omg4",)
 
 
 def _check_ffmpeg():
@@ -45,22 +42,15 @@ def _check_ffmpeg():
     return None
 
 
-def _check_gpu(allow_cpu_rendering):
-    if allow_cpu_rendering:
-        # Real GPU not required in this mode -- brush_app trains via Mesa's
-        # software OpenGL rasterizer instead (see module docstring). This is
-        # only a lightweight sanity check that OpenGL is present at all
-        # (same "check it exists, not that it works" philosophy as
-        # _check_brush_app below) -- the real verification is the pipeline
-        # run itself.
-        if ctypes.util.find_library("GL") is None:
-            return ("VCP_ALLOW_CPU_RENDERING=1 but no OpenGL library found on this machine "
-                    "(needed for Mesa's software rasterizer) -- install mesa-utils/libgl1-mesa-dri")
+def _check_gpu(cpu_pipeline):
+    if cpu_pipeline:
+        # The CPU subset stops before the training stage, so no GPU (and
+        # no rasterizer of any kind) is needed at all.
         return None
     if shutil.which("nvidia-smi") is None:
         return ("nvidia-smi not found on PATH -- no NVIDIA GPU tooling present "
-                "(or set VCP_ALLOW_CPU_RENDERING=1 to train via software rendering instead -- "
-                "see docs/integration-tests.md)")
+                "(or set VCP_CPU_PIPELINE=1 to run the CPU-capable subset through "
+                "the dataset4d stage instead -- see docs/integration-tests.md)")
     try:
         result = subprocess.run(["nvidia-smi", "-L"], capture_output=True, text=True, timeout=15)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -70,7 +60,7 @@ def _check_gpu(allow_cpu_rendering):
     return None
 
 
-def _check_conda_envs():
+def _check_conda_envs(cpu_pipeline):
     try:
         conda_bin = unified.resolve_conda()
     except unified.StageError as e:
@@ -87,15 +77,22 @@ def _check_conda_envs():
     except (json.JSONDecodeError, KeyError) as e:
         return f"could not parse '{conda_bin} env list --json' output: {e}"
     env_names = {Path(p).name for p in env_paths}
-    missing = [name for name in REQUIRED_CONDA_ENVS if name not in env_names]
+    required = REQUIRED_CONDA_ENVS if cpu_pipeline else REQUIRED_CONDA_ENVS + GPU_CONDA_ENVS
+    missing = [name for name in required if name not in env_names]
     if missing:
         return f"missing conda env(s): {missing} (found: {sorted(env_names)})"
     return None
 
 
-def _check_brush_app(brush_app):
-    if not Path(brush_app).is_file():
-        return f"brush_app not found at {brush_app} (set VCP_BRUSH_APP to point at a different binary)"
+def _check_trainer_repo(cpu_pipeline):
+    if cpu_pipeline:
+        # The CPU subset never reaches train4d, so the trainer submodule
+        # is not needed.
+        return None
+    train_script = REPO_ROOT / "deps" / "OMG4" / "train_scratch.py"
+    if not train_script.is_file():
+        return (f"trainer entry point not found at {train_script} -- initialise the "
+                f"submodule (git submodule update --init deps/OMG4)")
     return None
 
 
@@ -119,22 +116,10 @@ def _check_fixture():
 
 
 @pytest.fixture(scope="session")
-def allow_cpu_rendering():
-    """VCP_ALLOW_CPU_RENDERING=1 opts into training without a real GPU --
-    see module docstring."""
-    return os.environ.get("VCP_ALLOW_CPU_RENDERING") == "1"
-
-
-@pytest.fixture(scope="session")
-def brush_app():
-    """brush_app binary path: VCP_BRUSH_APP if set (as docs/integration-tests.md
-    documents), else the orchestrator's own default -- resolved once here so
-    the prereq check and the real pipeline command can't disagree about
-    which binary they mean."""
-    override = os.environ.get("VCP_BRUSH_APP")
-    if override:
-        return override
-    return str(unified.build_parser().get_default("brush_app"))
+def cpu_pipeline():
+    """VCP_CPU_PIPELINE=1 selects the CPU-capable pipeline subset (stop
+    after dataset4d) -- see module docstring."""
+    return os.environ.get("VCP_CPU_PIPELINE") == "1"
 
 
 @pytest.fixture(scope="session")
@@ -153,14 +138,14 @@ def sapiens_checkpoint_root():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def pipeline_prereqs(sapiens_checkpoint_root, brush_app, allow_cpu_rendering):
+def pipeline_prereqs(sapiens_checkpoint_root, cpu_pipeline):
     """Skips the whole tests/integration session (not a failure) if this
     machine can't actually run the real pipeline. See module docstring."""
     reasons = list(filter(None, [
         _check_ffmpeg(),
-        _check_gpu(allow_cpu_rendering),
-        _check_conda_envs(),
-        _check_brush_app(brush_app),
+        _check_gpu(cpu_pipeline),
+        _check_conda_envs(cpu_pipeline),
+        _check_trainer_repo(cpu_pipeline),
         _check_sapiens_checkpoints(sapiens_checkpoint_root),
         _check_fixture(),
     ]))

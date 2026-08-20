@@ -122,8 +122,12 @@ def test_archive_is_byte_reproducible(tmp_path, scene):
     The TypeScript encoder is not. Its ZIP writer stamps DOS timestamps from
     the wall clock, so re-encoding the same input changes 484 bytes across
     121 entries while every payload stays identical. That makes a hash a false
-    negative as a same-input check there. This side has no such excuse, and a
-    regression would silently break any tooling that dedupes by hash."""
+    negative as a same-input check there. This writer had the same defect in
+    disguise: zipfile's str-name writestr() stamps the wall clock at DOS
+    2-second granularity, so this test only passed when both packs landed in
+    one 2-second tick, and flaked on a loaded runner (caught live in CI,
+    2026-08-20). The writer now stamps the fixed ZIP epoch, and a regression
+    would silently break any tooling that dedupes by hash."""
     a = tmp_path / "a.sogst"
     b = tmp_path / "b.sogst"
     _pack(a, scene, shn_count=0)

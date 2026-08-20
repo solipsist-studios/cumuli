@@ -8,8 +8,8 @@ filter_splat_by_masks.py
 Multi-view mask-consistency filter for a trained splat: projects every
 Gaussian's center into every camera and drops Gaussians that land OUTSIDE
 the subject mask in most of the cameras that can see them. Runs after
-train_brush.py (or any trainer that emits a standard 3DGS .ply), using the
-same cleaned masks the training consumed.
+any trainer that emits a standard 3DGS .ply, using the same cleaned
+masks the training consumed.
 
 Why this exists: masked training does not prevent floaters. Real runs
 accumulate substantial non-subject junk that alpha supervision never

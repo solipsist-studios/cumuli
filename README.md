@@ -7,7 +7,8 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 Multi-camera capture -> gaussian splat pipeline: sync GoPro footage,
 estimate camera poses (HLOC), predict human keypoints (Sapiens), and
-train a splat (Brush) on the real cameras. A Diffuman4D dense-ring
+train a 4D gaussian splat on the real cameras, baked to a streamable
+`.sogst` asset. A Diffuman4D dense-ring
 branch (hallucinating a full 48-camera view ring) is planned but not
 part of this build yet.
 
@@ -29,7 +30,7 @@ scripts/   pipeline scripts, plus run_unified_pipeline.py (the
            have posed cameras
 deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
-           (conda env names, --brush_app, --display, etc.) -- see
+           (conda env names, --trainer_repo, --trainer_env, etc.) -- see
            configs/README.md
 envs/      environment.yml per conda env (hloc, diffuman4d, sapiens2),
            pinning the known-good versions from docs/environment.md
@@ -44,9 +45,9 @@ docs/      pipeline.md walkthrough, environment.md conda setup,
 `refine_poses_with_keypoints.py` are part of the core walkthrough, not
 optional extras -- calibration validation (built into
 `undistort_frames.py`), mask cleanup (`clean_masks.py`), RGBA-baked
-masked training (`clean_masks.py`, `build_colmap_sparse.py`
-`--masks_dir`; Brush auto-detects the alpha channel, no training flag
-needed), and keypoint pose refinement (`refine_poses_with_keypoints.py`,
+masked training (`clean_masks.py`; the masks are baked into the
+training dataset's RGBA alpha, so alpha supervision is part of training
+by construction), and keypoint pose refinement (`refine_poses_with_keypoints.py`,
 reliable -- real runs have taken subject-space median reprojection error
 from ~30px to ~5px) are all needed to get a good result, not just a
 first splat. Color correction (`extract_synced_frames.py`'s
@@ -64,7 +65,6 @@ git submodule update --init --recursive
 - `deps/BiRefNet` -- background removal model (invoked via Diffuman4D's own wrapper script)
 - `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
 - `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today; also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
-- `deps/brush` -- gaussian splat trainer (static / per-frame)
 - `deps/4d-gaussian-splatting` -- 4D "rotor" gaussian splat trainer for the native `.sogst` path (solipsist-studios fork; carries required patches, see docs/omg4_native_training.md)
 - `deps/OMG4` -- SPM compression + SPM-native fine-tuning for the 4D path (solipsist-studios fork with the `--spm_native_out` patches)
 
@@ -110,7 +110,7 @@ non-commercial notice. Treat both trainers as research-use components
 and take advice before any commercial deployment of the 4D training
 path.
 
-Everything else wrapped by the pipeline (Brush: Apache-2.0, BiRefNet:
+Everything else wrapped by the pipeline (BiRefNet:
 MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
 HLOC: Apache-2.0, LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP:
 BSD-3) is permissively licensed.
@@ -145,8 +145,8 @@ python3 scripts/run_unified_pipeline.py \
     --target_time <e.g. 2500ms>
 ```
 
-`--config` loads per-rig defaults (conda env names, `--brush_app`,
-`--display`, `SAPIENS_CHECKPOINT_ROOT`) from a JSON file so you don't have
+`--config` loads per-rig defaults (conda env names, `--trainer_repo`,
+`SAPIENS_CHECKPOINT_ROOT`) from a JSON file so you do not have
 to repeat them on every run -- copy [configs/example_rig.json](configs/example_rig.json)
 and fill in your own paths. See [configs/README.md](configs/README.md).
 Everything it sets can still be overridden on the command line.

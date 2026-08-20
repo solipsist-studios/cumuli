@@ -12,31 +12,28 @@ x/y/z only -- e.g. poses_pcd_fullres/<tem_label>.ply from
 triangulate_and_project_keypoints.py run against the ORIGINAL,
 un-cropped cameras/keypoints).
 
-Coordinate conversion matches Brush's own COLMAP loader exactly (see
-deps/brush/crates/brush-dataset/src/formats/mod.rs, opengl_c2w_to_pose):
-c2w's Y and Z axis columns are negated to go from nerfstudio/OpenGL to
-COLMAP's convention (+X right, +Y down, +Z forward), then inverted to get
-the world-to-camera rotation/translation COLMAP's images.txt expects.
+Coordinate conversion follows the standard nerfstudio/OpenGL-to-COLMAP
+rule that 3DGS trainers' COLMAP loaders implement: c2w's Y and Z axis
+columns are negated to go from nerfstudio/OpenGL to COLMAP's convention
+(+X right, +Y down, +Z forward), then inverted to get the world-to-camera
+rotation/translation COLMAP's images.txt expects.
 
-Per Brush's colmap-reader (crates/colmap-reader/src/lib.rs), points3D.txt
-lines only require id/xyz/rgb/error -- the track (image_id, point2d_idx
-pairs) can be empty, so we don't need to reconstruct exact 2D-3D
-correspondences. Our point cloud has no per-point color, so a flat gray
+COLMAP points3D.txt lines only require id/xyz/rgb/error -- readers
+tolerate an empty track (image_id, point2d_idx pairs), so we do not need
+to reconstruct exact 2D-3D correspondences. Our point cloud has no per-point color, so a flat gray
 placeholder is used.
 
-Images are referenced by bare filename (Brush's find_image_by_name does a
-suffix search across the whole dataset dir, skipping anything under a
-"masks" folder) -- so --out_dir should be the dataset root that already
-contains (or will contain) the actual image files, e.g. pass the same
-directory as your images_flat parent.
+Images are referenced by bare filename (trainer loaders commonly resolve
+them by suffix search across the dataset dir) -- so --out_dir should be
+the dataset root that already contains (or will contain) the actual image
+files, for example the same directory as your images_flat parent.
 
-Mask baking (--masks_dir): Brush has been observed to SILENTLY ignore a
-separate masks/ folder when images and masks share the same stem and
-extension (e.g. both .png) -- it just trains on the full unmasked scene
-with no error. The reliable route is baking each camera's mask into the
-image's alpha channel; Brush auto-detects the alpha channel and applies
-its `--match-alpha-weight` loss automatically, no special training flag
-needed. Passing --masks_dir here produces that RGBA image set and points
+Mask baking (--masks_dir): trainers have been observed to SILENTLY
+ignore a separate masks/ folder when images and masks share the same
+stem and extension (for example both .png) -- they just train on the
+full unmasked scene with no error. The reliable route is baking each
+camera's mask into the image's alpha channel, which trainers detect and
+supervise against. Passing --masks_dir here produces that RGBA image set and points
 images.txt at it automatically. Do NOT dilate the masks before baking --
 dilated alpha supervision teaches a white background fringe at the
 silhouette (use clean_masks.py's output, which never dilates).
@@ -76,8 +73,8 @@ from scipy.spatial.transform import Rotation
 
 
 def opengl_c2w_to_colmap_w2c(c2w: np.ndarray):
-    """Matches Brush's opengl_c2w_to_pose, but returns COLMAP's w2c instead
-    of Brush's internal c2w pose (see module docstring)."""
+    """Standard nerfstudio/OpenGL c2w -> COLMAP w2c conversion (see the
+    module docstring for the axis rule)."""
     c2w_cv = c2w.copy()
     c2w_cv[:3, 1] *= -1
     c2w_cv[:3, 2] *= -1
@@ -119,7 +116,7 @@ def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
     # Zero RGB wherever fully transparent. The source photo's background isn't
     # masked out of the RGB channels by default, so a bright/white background
     # pixel can sit right behind the silhouette edge; any later bilinear/mipmap
-    # filtering (e.g. Brush's own image loading at --max-resolution) then blends
+    # filtering (for example a trainer's own downscaling image load) then blends
     # that "invisible" color into visible edge pixels, producing a white/bright
     # halo at the boundary. Zeroing it here removes the contamination at the source.
     img_arr[mask_arr == 0] = 0
@@ -260,7 +257,7 @@ def main():
     print(f"Wrote COLMAP sparse/0 to {sparse_dir}")
     print(f"  {len(frames)} cameras/images, {len(verts)} 3D points")
     if args.masks_dir is not None:
-        print("  Masks baked into alpha -- Brush auto-detects this, no special training flag needed")
+        print("  Masks baked into alpha -- trainers supervise against the alpha channel directly")
 
 
 if __name__ == "__main__":

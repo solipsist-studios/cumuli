@@ -15,6 +15,12 @@ per-frame SOG flipbook: `sog_flipbook_to_sogst.py` repacks such a
 sequence directly. It drops splats to fit a budget, so use it only to
 test existing assets, never as the production path.
 
+> **Orchestrated path.** `run_unified_pipeline.py` now automates the
+> dataset build and the pretrain as its `dataset4d` and `train4d`
+> stages (see `docs/pipeline.md`). The SPM stages (2b/2c below) remain
+> manual, via `spm_compress.py` / `spm_native.py`. This document stays
+> the reference for running the steps by hand and for the SPM paths.
+
 "OMG4" in this document is the *trainer* (MinShirley/OMG4), never a
 file format. The container it feeds is `.sogst`, specified in
 [sogst-format.md](sogst-format.md).
@@ -72,25 +78,32 @@ your clip length, `num_pts: 300_000`, `batch_size: 4`,
 `resolution: 1`, `dataloader: True`, 30k iterations,
 `densify_until_iter: 20_000`, `densify_until_num_points: 1_200_000`.
 
+The pretrain entry point is `train_scratch.py` in the OMG4 clone
+(`deps/OMG4`): upstream 4d-gaussian-splatting `train.py` vendored there,
+with this project's patches. Pass explicit `--test_iterations` and
+`--save_iterations` so the checkpoint name is deterministic
+(`chkpnt<iters>.pth`).
+
 ```bash
 # note the stdin redirect so a remote ssh channel can close
 ssh <host> 'cd <trainer-repo> && \
   GS4D_T_INIT_DIV=100 nohup \
-  <trainer-env-python> train.py \
+  <trainer-env-python> train_scratch.py \
   --config configs/<scene>.yaml \
+  --test_iterations 30000 --save_iterations 30000 \
   > <scene>_train.log 2>&1 < /dev/null &'
 ```
 
 Roughly 4 hours at full resolution on a 4090 (1.7–2.4 it/s, slower
 with aggressive densification). Output:
-`output/<model_path>/chkpnt30000.pth` (`chkpnt_best.pth` is the same
-file for these runs).
+`output/<model_path>/chkpnt30000.pth` (from `--save_iterations`;
+`chkpnt_best.pth` is the same file for these runs).
 
 Operational footguns, all hit in practice:
 
-- `pkill -f train.py` over ssh **kills your own ssh shell**, because
-  the pattern matches the remote command line. Use
-  `pkill -f '[t]rain.py'`, and run the kill and the relaunch as
+- `pkill -f train_scratch.py` over ssh **kills your own ssh shell**,
+  because the pattern matches the remote command line. Use
+  `pkill -f '[t]rain_scratch.py'`, and run the kill and the relaunch as
   *separate* ssh invocations.
 - A launch with `nohup ... &` over ssh, without `< /dev/null`, leaves
   the ssh channel held open by the child's inherited stdin.

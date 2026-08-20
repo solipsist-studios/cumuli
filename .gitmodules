@@ -7,9 +7,6 @@
 [submodule "deps/sapiens"]
 	path = deps/sapiens
 	url = https://github.com/facebookresearch/sapiens
-[submodule "deps/brush"]
-	path = deps/brush
-	url = https://github.com/ArthurBrussee/brush
 [submodule "deps/camera-calibration"]
 	path = deps/camera-calibration
 	url = https://github.com/solipsist-studios/camera-calibration

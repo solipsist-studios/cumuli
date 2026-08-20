@@ -7,8 +7,8 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 `run_unified_pipeline.py --config <file>.json` loads per-rig defaults for the
 flags that are about the machine/setup rather than a specific capture --
-conda env names, `--brush_app`, `--display`, `SAPIENS_CHECKPOINT_ROOT`, and
-the HLOC feature-extraction settings. Explicit CLI flags always win over the
+conda env names, `--trainer_env`, `--trainer_repo`, `SAPIENS_CHECKPOINT_ROOT`,
+and the HLOC feature-extraction settings. Explicit CLI flags always win over the
 config; the config only fills in what you didn't pass.
 
 Per-run flags (`--video_dir`, `--calib_dir`, `--out_dir`, `--target_time`,

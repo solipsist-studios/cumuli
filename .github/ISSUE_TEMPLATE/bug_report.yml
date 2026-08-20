@@ -11,7 +11,7 @@ body:
         Please do not report security issues here — see
         [SECURITY.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/SECURITY.md).
 
-        Bugs in the wrapped tools (COLMAP, HLOC, Brush, LichtFeld-Studio,
+        Bugs in the wrapped tools (COLMAP, HLOC, the 4D trainer stack,
         Sapiens, BiRefNet, Diffuman4D) should go upstream to those projects.
 
   - type: dropdown
@@ -33,7 +33,7 @@ body:
         - "clean_masks.py (mask cleanup)"
         - "triangulate_and_project_keypoints.py"
         - "build_colmap_sparse.py (COLMAP export)"
-        - "train_brush.py / train_lfs.py (training)"
+        - "Training (4D rotor trainer, dataset4d/train4d stages)"
         - "run_unified_pipeline.py (orchestrator itself)"
         - "render_frame_sequence.py (multi-frame)"
         - "Installation / conda environment setup"

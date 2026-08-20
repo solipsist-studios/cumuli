@@ -161,6 +161,22 @@ def build_sogst_meta(
 # Archive writers
 # ---------------------------------------------------------------------------
 
+# Every entry is stamped with the fixed ZIP epoch instead of the wall clock.
+# zipfile's str-name writestr() stamps time.localtime() at DOS 2-second
+# granularity, which made two packs of the same input byte-identical only
+# when they landed inside one 2-second tick -- a latent flake in any
+# hash-based same-input check, and the exact defect this module's tests
+# fault the TypeScript encoder for. The timestamp lives inside the fixed
+# 30-byte local header, so the section-6 offset arithmetic is unaffected.
+_ZIP_EPOCH = (1980, 1, 1, 0, 0, 0)
+
+
+def _entry(name: str) -> zipfile.ZipInfo:
+    zinfo = zipfile.ZipInfo(name, date_time=_ZIP_EPOCH)
+    zinfo.compress_type = zipfile.ZIP_STORED
+    zinfo.external_attr = 0o600 << 16
+    return zinfo
+
 def write_sogst(out_path: str, meta: dict, textures: dict) -> None:
     """Write a whole-clip .sogst archive.
 
@@ -184,9 +200,9 @@ def write_sogst(out_path: str, meta: dict, textures: dict) -> None:
         raise ValueError(f'write_sogst: missing texture blobs: {sorted(missing)}')
 
     with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr('meta.json', json.dumps(meta))
+        zf.writestr(_entry('meta.json'), json.dumps(meta))
         for name in sorted(expected):
-            zf.writestr(name, textures[name])
+            zf.writestr(_entry(name), textures[name])
 
 
 def write_sogst_streamed(out_path: str, meta: dict, entries, reveal_through: int) -> None:
@@ -234,9 +250,9 @@ def write_sogst_streamed(out_path: str, meta: dict, entries, reveal_through: int
             break
 
     with zipfile.ZipFile(out_path, 'w', compression=zipfile.ZIP_STORED) as zf:
-        zf.writestr('meta.json', json.dumps(meta))
+        zf.writestr(_entry('meta.json'), json.dumps(meta))
         for name, data in entries:
-            zf.writestr(name, data)
+            zf.writestr(_entry(name), data)
 
     # Verify the analytic offsets against the real layout. A marker points at
     # the local header of the entry after it.  When it is the last entry, it

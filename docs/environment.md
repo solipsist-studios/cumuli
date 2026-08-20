@@ -165,22 +165,22 @@ ruamel.yaml 0.19.1, tqdm 4.67.3, open3d 0.19.0.
 - `rawtherapee-cli` on PATH, or a flatpak install of RawTherapee --
   optional, only needed for extract_synced_frames.py's `--pp3_dir` color
   correction.
-- `brush_app` -- the compiled Brush gaussian-splat trainer, invoked as
-  a binary (no conda env). Either build from the `deps/brush` submodule
-  (needs a Rust toolchain -- see that repo's own build instructions) or
-  download/build a release binary and point the orchestrator at it.
 
-## Viewer display for `brush_app --with_viewer`
+## The `omg4` trainer environment
 
-`--with_viewer` (the default: see `docs/pipeline.md` for why
-`--no_viewer` is not recommended on some setups) needs `brush_app` to
-connect to a real, composited X or Xwayland display with something
-actually driving it. A headless or dummy display with no compositor or
-client attached has been observed to hang the viewer thread rather than
-fail cleanly. If you run headless (for example over SSH with no
-physical display), set one up via a streaming stack (Sunshine+gamescope,
-VNC, etc.) or a virtual compositor, and pass its display number via
-`--display` (for example `--display :1`).
+The `train4d` stage (training, bake, and eval) runs in one conda env
+named `omg4`. Two provisioning surfaces exist:
+
+- `envs/omg4.yml` is the package manifest: Python 3.11, CUDA torch,
+  and the eval dependencies (`gsplat`, `torchmetrics`, `lpips`).
+- `deps/OMG4/script/setup_omg4_env.sh` is the full provisioning path.
+  It installs the same packages AND builds the trainer's CUDA
+  extensions (diff-gaussian-rasterization, simple-knn, pointops2),
+  which a yml cannot do. Use the script for a new machine.
+
+A CUDA GPU is required for the `train4d` stage only. Every stage before
+it, including the full 4D dataset build, runs on CPU
+(`--stop_after_stage dataset4d`).
 
 ## Vendored script dependencies
 
