@@ -155,20 +155,18 @@ jobs:
         id: conda-cache
         uses: actions/cache@v4
         with:
-          # /tmp/hloc-src must be cached WITH the envs: hloc is installed
-          # editable (see the create step for why), so site-packages holds
-          # only a pointer at /tmp/hloc-src and the code lives there. The
-          # first-ever cache-hit run (2026-08-19) restored envs without it
-          # and died on `import hloc` mid-pipeline.
+          # The hloc source dir must be cached WITH the env: hloc is
+          # installed editable (see scripts/setup_cumuli_env.sh), so
+          # site-packages holds only a pointer and the code lives there.
+          # A cache that restored the env without it died on `import hloc`
+          # mid-pipeline (2026-08-19).
           path: |
             ${{ env.CONDA_BASE }}/envs
-            /tmp/hloc-src
-          # Hashes every envs/*.yml (hloc, diffuman4d, sapiens2, queen) --
-          # any pin change in any of them busts all four, which is the
-          # safe default (cheap to over-invalidate, expensive to silently
-          # run stale deps). The -v2 suffix retires the pre-2026-08-19
-          # entries that lack /tmp/hloc-src.
-          key: conda-envs-v2-${{ runner.os }}-${{ hashFiles('envs/*.yml') }}
+            ~/.cache/cumuli-env/hloc-src
+          # Hashes envs/*.yml (now the single cumuli.yml) AND the setup
+          # script -- a provisioning change busts the cache even when the
+          # yml is untouched. The -v3 suffix retires the five-env entries.
+          key: conda-envs-v3-${{ runner.os }}-${{ hashFiles('envs/*.yml', 'scripts/setup_cumuli_env.sh') }}
 
       - name: Verify restored envs actually import (cache-hit only)
         # A restored cache that passes actions/cache's own checks can still
@@ -180,83 +178,21 @@ jobs:
         if: steps.conda-cache.outputs.cache-hit == 'true'
         shell: bash -l {0}
         run: |
-          conda run -n hloc python -c "import hloc"
-          conda run -n diffuman4d python -c "import torch"
-          conda run -n sapiens2 python -c "import torch"
-          conda run -n queen python -c "import numpy"
+          conda run -n cumuli python -c "import hloc, lightglue, pycolmap"
+          conda run -n cumuli python -c "import torch, transformers, sapiens.pose"
+          conda run -n cumuli python -c "import numpy, cv2, open3d, plyfile"
+          conda run -n cumuli python -c "import easyvolcap.utils.console_utils"
 
-      - name: Create conda envs, one at a time, CPU-only from the start (cache miss only)
-        # Real CI failure (2026-07-29): creating all 4 envs first (each
-        # pulling the default CUDA-bundled torch wheel, several GB apiece)
-        # before ever fixing/cleaning any of them stacked all four envs'
-        # worth of unused CUDA bloat simultaneously -- ran the disk out
-        # mid-creation. Structural fix, not another cleanup pass: create,
-        # immediately force CPU-only torch, immediately clean caches, one
-        # env at a time, so peak disk usage is spread out instead of
-        # stacked. PIP_NO_CACHE_DIR also stops pip from keeping its own
-        # downloaded-wheel cache around as a second copy of what's already
-        # unpacked into site-packages.
+      - name: Create the cumuli env (cache miss only)
+        # One merged env replaces the old five (hloc/diffuman4d/sapiens2/
+        # queen/omg4). The setup script's --cpu mode keeps the historical
+        # disk discipline: cpu torch is installed BEFORE the rest of the
+        # requirements so nothing can drag the multi-GB CUDA-bundled PyPI
+        # torch wheel in transitively, pip caching is off, and the trainer
+        # CUDA extensions are skipped (train4d never runs here).
         if: steps.conda-cache.outputs.cache-hit != 'true'
         shell: bash -l {0}
-        env:
-          PIP_NO_CACHE_DIR: "1"
-        run: |
-          conda env create -f envs/hloc.yml
-          # Real CI failure (2026-07-30, this PR's first genuine cache-miss
-          # conda-env build to ever reach real HLOC feature extraction --
-          # every earlier CI attempt failed upstream of this point, so this
-          # gap was never exercised until now): envs/hloc.yml's `pip install
-          # git+https://...@<commit>` line installs hloc's own code, but
-          # `pip install git+URL` never fetches git submodules -- and hloc's
-          # SuperPoint extractor (hloc/extractors/superpoint.py) imports
-          # from third_party/SuperGluePretrainedNetwork, one of several
-          # submodules of the Hierarchical-Localization repo, so that plain
-          # pip install produces a package that crashes the instant SuperPoint
-          # feature extraction runs: "ModuleNotFoundError: No module named
-          # 'SuperGluePretrainedNetwork'". This exact gap is why the working
-          # local dev env's hloc install is editable from a real clone
-          # instead (see envs/hloc.yml's own comment) -- reproducing that
-          # here: clone the SAME pinned commit git+ already installed above
-          # WITH submodules, then reinstall editable (--no-deps: the plain
-          # install above already resolved every real dependency correctly,
-          # this is only replacing hloc's own code with a submodule-complete
-          # copy, not re-resolving anything).
-          git clone --recurse-submodules https://github.com/cvg/Hierarchical-Localization.git /tmp/hloc-src
-          (cd /tmp/hloc-src && git checkout c13273bd0ecc2917a35910fd843712a1c6243193 && git submodule update --init --recursive)
-          conda run -n hloc pip install --no-deps -e /tmp/hloc-src
-          conda run -n hloc pip install --index-url https://download.pytorch.org/whl/cpu \
-            torch==2.12.0 torchvision==0.27.0
-          conda clean -afy
-
-          conda env create -f envs/diffuman4d.yml
-          conda run -n diffuman4d pip install --index-url https://download.pytorch.org/whl/cpu \
-            torch==2.7.1 torchvision==0.22.1
-          # --no-deps: remove_background.py (generate_masks.py/clean_masks.py's
-          # real work) needs easyvolcap.utils.console_utils/.parallel_utils --
-          # same treatment as queen's easyvolcap install below, see its
-          # comment for why --no-deps and why this is safe.
-          conda run -n diffuman4d pip install --no-deps \
-            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
-          conda clean -afy
-
-          conda env create -f envs/sapiens2.yml
-          conda run -n sapiens2 pip install --index-url https://download.pytorch.org/whl/cpu \
-            torch==2.12.0 torchvision==0.27.0
-          conda clean -afy
-
-          conda env create -f envs/queen.yml
-          conda run -n queen pip install --index-url https://download.pytorch.org/whl/cpu \
-            torch==2.12.0
-          # --no-deps: skips easyvolcap's own heavy declared dependencies
-          # (torch+torchaudio+torchvision+cuda-python+tensorboard+trimesh+
-          # open3d+...) -- the real code actually touched here
-          # (easyvolcap.utils.console_utils/.parallel_utils/.base_utils)
-          # only needs the lightweight packages envs/queen.yml already
-          # lists, traced import-by-import, recursively, by hand. See that
-          # file's own comments for the full story.
-          conda run -n queen pip install --no-deps \
-            git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
-          conda clean -afy
+        run: bash scripts/setup_cumuli_env.sh --cpu
 
       - name: Restore cached Sapiens checkpoints
         id: sapiens-cache
@@ -289,8 +225,8 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          conda run -n sapiens2 pip install huggingface_hub
-          conda run -n sapiens2 python -c "
+          conda run -n cumuli pip install huggingface_hub
+          conda run -n cumuli python -c "
           from huggingface_hub import snapshot_download, hf_hub_download
           import os
           root = os.environ['SAPIENS_CHECKPOINT_ROOT']

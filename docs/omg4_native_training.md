@@ -25,12 +25,9 @@ test existing assets, never as the production path.
 file format. The container it feeds is `.sogst`, specified in
 [sogst-format.md](sogst-format.md).
 
-Two conda environments are needed:
-
-- a trainer environment: Python 3.7, torch 1.12, CUDA 11.6. It runs the
-  4D Gaussian Splatting trainer.
-- a bake environment: Python 3.11, torch 2.9. It runs the bake and pack
-  steps (`bake_sogst.py`, `sogst_pack.py`).
+One conda environment is needed: the pipeline's own `cumuli` env
+(`bash scripts/setup_cumuli_env.sh`, see docs/environment.md). It runs
+the trainer, the bake and pack steps, and eval.
 
 Trainer repo: the solipsist-studios fork of fudan-zvg/4d-gaussian-splatting
 ("rotor" 4DGS), vendored in this repository as the

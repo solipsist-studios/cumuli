@@ -80,8 +80,7 @@ DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "multiframe_sfm.py"
 
 STAGE_KEYS = ["sync", "production", "poses", "masks", "dataset4d", "train4d"]
 
-CONDA_ENV_HLOC = "hloc"
-CONDA_ENV_DIFFUMAN4D = "diffuman4d"
+
 
 _CONDA_CANDIDATES = [
     Path.home() / "miniforge3" / "condabin" / "conda",
@@ -309,7 +308,7 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
 
         run_script("generate_masks.py", [
             "--images_dir", f_undist, "--out_fmasks_dir", f_fmask, "--image_ext", image_ext,
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"generate_masks.py (candidates f{k}, {tag})")
+        ], conda_env=args.diffuman4d_env, label=f"generate_masks.py (candidates f{k}, {tag})")
 
         run_script("predict_keypoints_2d.py", keypoint_args(args, f_undist, f_kp2d, f_fmask),
                    conda_env=args.sapiens_env, label=f"predict_keypoints_2d.py (candidates f{k}, {tag})")
@@ -356,7 +355,7 @@ def run_hloc(args, undistorted_dir, undistorted_pkl_dir, outputs_dir, image_ext,
         "--feature_type", args.hloc_feature_type,
         "--resize_max", str(args.hloc_resize_max),
         "--max_keypoints", str(args.hloc_max_keypoints),
-    ], conda_env=CONDA_ENV_HLOC, label=label)
+    ], conda_env=args.hloc_env, label=label)
     return outputs_dir / "transforms_multiframe.json"
 
 
@@ -467,7 +466,7 @@ def stage_masks(args, L, image_ext):
     else:
         run_script("generate_masks.py", [
             "--images_dir", L["flat_images"], "--out_fmasks_dir", L["flat_fmasks"], "--image_ext", ".png",
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label="generate_masks.py (masks, flat production frame)")
+        ], conda_env=args.diffuman4d_env, label="generate_masks.py (masks, flat production frame)")
 
     if L["flat_poses2d"].is_dir() and any(L["flat_poses2d"].rglob("*.json")):
         info("predict_keypoints_2d.py/split_keypoints_per_camera.py already complete on disk -- reusing flat keypoints.")
@@ -485,7 +484,7 @@ def stage_masks(args, L, image_ext):
         run_script("clean_masks.py", [
             "--fmasks_dir", L["flat_fmasks"], "--kp2d_dir", L["flat_poses2d"],
             "--out_dir", L["flat_fmasks_clean"], "--images_dir", L["flat_images"], "--retry",
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label="clean_masks.py (mask cleanup, skeleton-guided, retry fallback)")
+        ], conda_env=args.diffuman4d_env, label="clean_masks.py (mask cleanup, skeleton-guided, retry fallback)")
 
     run_script("triangulate_and_project_keypoints.py", [
         "--camera_path", L["flat_transforms"], "--kp2d_dir", L["flat_poses2d"],
@@ -544,7 +543,7 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
         run_script("generate_masks.py", [
             "--images_dir", frame_images, "--out_fmasks_dir", frame_dir / "fmasks",
             "--image_ext", ".png",
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"generate_masks.py (train frame {k})")
+        ], conda_env=args.diffuman4d_env, label=f"generate_masks.py (train frame {k})")
 
         run_script("predict_keypoints_2d.py",
                    keypoint_args(args, frame_images, frame_dir / "kp2d", frame_dir / "fmasks"),
@@ -557,7 +556,7 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
         run_script("clean_masks.py", [
             "--fmasks_dir", frame_dir / "fmasks", "--kp2d_dir", frame_dir / "poses_2d",
             "--out_dir", frame_dir / "fmasks_clean", "--images_dir", frame_images, "--retry",
-        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"clean_masks.py (train frame {k})")
+        ], conda_env=args.diffuman4d_env, label=f"clean_masks.py (train frame {k})")
 
     # The hull carve requires each candidate point inside the mask in at
     # least --hull_min_views views. The builder's default of 9 suits a
@@ -682,7 +681,7 @@ def stage_train4d(args, L):
 CONFIGURABLE_DEFAULTS = {
     "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
     "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
-    "trainer_env", "trainer_repo",
+    "trainer_env", "trainer_repo", "hloc_env", "diffuman4d_env",
 }
 
 
@@ -728,18 +727,25 @@ def build_parser():
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
-    parser.add_argument("--sapiens_env", default="sapiens2", help="Conda env for predict_keypoints_2d.py")
+    parser.add_argument("--sapiens_env", default="cumuli", help="Conda env for predict_keypoints_2d.py")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
                              "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
+    parser.add_argument("--hloc_env", default="cumuli",
+                        help="Conda env for run_hloc.py/multiframe_sfm.py. Escape hatch for "
+                             "machines that keep a split HLOC env (the historical name: hloc).")
+    parser.add_argument("--diffuman4d_env", default="cumuli",
+                        help="Conda env for generate_masks.py/clean_masks.py (BiRefNet stack). "
+                             "Escape hatch for machines that keep the split env (historical "
+                             "name: diffuman4d, pinned to Diffuman4D's upstream requirements).")
     parser.add_argument("--sapiens_model_size", default="1b", choices=["0.4b", "0.8b", "1b", "5b"],
                         help="Sapiens2 pose checkpoint size (default 1b, production quality baseline). "
                              "Smaller sizes use dramatically less RAM at some accuracy cost -- see "
                              "predict_keypoints_2d.py's own --sapiens_model_size help.")
-    parser.add_argument("--triangulate_env", default="queen",
+    parser.add_argument("--triangulate_env", default="cumuli",
                         help="Conda env for triangulate_and_project_keypoints.py (needs easyvolcap/fire/open3d; "
                              "'queen' historically had these)")
-    parser.add_argument("--generic_env", default="queen",
+    parser.add_argument("--generic_env", default="cumuli",
                         help="Conda env for scripts needing numpy/scipy/Pillow/plyfile/cv2 but no special "
                              "framework (make_sync_grid.py, undistort_frames.py, build_flat_dataset.py, "
                              "build_colmap_sparse.py, run_pose_refinement.py). The orchestrator's own "
@@ -798,7 +804,7 @@ def build_parser():
     parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
                         help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
                              "deps/OMG4 submodule).")
-    parser.add_argument("--trainer_env", default="omg4",
+    parser.add_argument("--trainer_env", default="cumuli",
                         help="Conda env for training, bake, and eval (torch+CUDA, gsplat, lpips; "
                              "see envs/omg4.yml and deps/OMG4/script/setup_omg4_env.sh).")
     parser.add_argument("--eval_every", type=int, default=10,

@@ -53,8 +53,9 @@ pytest tests/integration -q
 
 Needs, on the machine running it:
 - An NVIDIA GPU (`nvidia-smi`)
-- The `hloc`, `diffuman4d`, `sapiens2`, `queen`, and `omg4` conda envs
-  (see `docs/environment.md`)
+- The `cumuli` conda env, provisioned by `scripts/setup_cumuli_env.sh`
+  (a plain `conda env create` lacks the trainer CUDA extensions the
+  GPU-mode prereq check probes for -- see `docs/environment.md`)
 - The `deps/OMG4` submodule checked out (the vendored trainer)
 - `ffmpeg` on PATH
 - Sapiens checkpoints (`SAPIENS_CHECKPOINT_ROOT`, or `VCP_SAPIENS_CHECKPOINT_ROOT`

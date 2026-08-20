@@ -32,7 +32,7 @@ deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
            (conda env names, --trainer_repo, --trainer_env, etc.) -- see
            configs/README.md
-envs/      environment.yml per conda env (hloc, diffuman4d, sapiens2),
+envs/      the cumuli env manifest (see scripts/setup_cumuli_env.sh),
            pinning the known-good versions from docs/environment.md
 tests/     unit/ (one file per script, mocked) and integration/ (real,
            unmocked end-to-end pipeline run against a committed fixture
@@ -117,18 +117,16 @@ BSD-3) is permissively licensed.
 
 ## Conda environments
 
-- `hloc` -- HLOC + pycolmap, for pose estimation (`run_hloc.py`)
-- `diffuman4d` -- Diffuman4D's own deps (BiRefNet masks, nerfstudio conversion) (`generate_masks.py`, `triangulate_and_project_keypoints.py`)
-- `sapiens2` -- Sapiens keypoint prediction; requires `SAPIENS_CHECKPOINT_ROOT` env var set (`predict_keypoints_2d.py`)
-
-Most scripts have no special conda env requirement beyond
-numpy/scipy/Pillow (and ffmpeg/ffprobe on PATH for the sync/extraction
-scripts; rawtherapee-cli on PATH, or flatpak with RawTherapee installed,
-for `extract_synced_frames.py`'s optional `--pp3_dir` color correction).
-`build_colmap_sparse.py` and `refine_poses_with_keypoints.py` need
-numpy/scipy/plyfile (no special env); `clean_masks.py` needs scipy +
-Pillow and, for its `--retry` flag, the `diffuman4d` env (it calls
-remove_background.py).
+One env, `cumuli`, serves every stage. Provision it with
+`bash scripts/setup_cumuli_env.sh` (see
+[docs/environment.md](docs/environment.md) -- a plain
+`conda env create` misses the installs a yml cannot express). The
+orchestrator dispatches every stage into it; per-stage `--*_env` flags
+remain as escape hatches. Keypoint prediction additionally needs
+`SAPIENS_CHECKPOINT_ROOT` set. ffmpeg/ffprobe must be on PATH for the
+sync/extraction scripts, and rawtherapee-cli (or the RawTherapee
+flatpak) only for `extract_synced_frames.py`'s optional `--pp3_dir`
+color correction.
 
 ## Quick start
 

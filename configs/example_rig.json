@@ -1,9 +1,9 @@
 {
-  "generic_env": "queen",
-  "triangulate_env": "queen",
-  "sapiens_env": "sapiens2",
+  "generic_env": "cumuli",
+  "triangulate_env": "cumuli",
+  "sapiens_env": "cumuli",
   "sapiens_checkpoint_root": "/home/you/sapiens/2",
-  "trainer_env": "omg4",
+  "trainer_env": "cumuli",
   "trainer_repo": "deps/OMG4",
   "hloc_resize_max": 4096,
   "hloc_max_keypoints": 8192,

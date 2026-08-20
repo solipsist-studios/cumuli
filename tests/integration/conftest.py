@@ -15,7 +15,7 @@ VCP_CPU_PIPELINE=1 selects the CPU-capable pipeline subset: the run stops
 after the dataset4d stage (--stop_after_stage dataset4d), so no GPU, no
 trainer env, and no trainer submodule are required. GPU mode (the toggle
 unset) runs the full pipeline through train4d, which additionally needs
-the `omg4` conda env and an initialised deps/OMG4 submodule
+the `cumuli` conda env and an initialised deps/OMG4 submodule
 (train_scratch.py is the trainer entry point).
 """
 
@@ -32,8 +32,11 @@ import run_unified_pipeline as unified
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "take01_11cam"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-REQUIRED_CONDA_ENVS = ("hloc", "diffuman4d", "sapiens2", "queen")
-GPU_CONDA_ENVS = ("omg4",)
+# The pipeline now runs in one merged env (see envs/cumuli.yml and
+# scripts/setup_cumuli_env.sh); the per-stage env flags remain as escape
+# hatches, and this suite checks only the default configuration.
+REQUIRED_CONDA_ENVS = ("cumuli",)
+GPU_CONDA_ENVS = ()
 
 
 def _check_ffmpeg():
@@ -93,6 +96,17 @@ def _check_trainer_repo(cpu_pipeline):
     if not train_script.is_file():
         return (f"trainer entry point not found at {train_script} -- initialise the "
                 f"submodule (git submodule update --init deps/OMG4)")
+    # The trainer's CUDA extensions are built into the env by
+    # scripts/setup_cumuli_env.sh, not installable from the yml -- a fresh
+    # `conda env create` alone leaves them missing and training fails deep
+    # inside the first iteration instead of here.
+    probe = subprocess.run(
+        ["conda", "run", "-n", "cumuli", "python", "-c",
+         "import diff_gaussian_rasterization, simple_knn"],
+        capture_output=True, text=True)
+    if probe.returncode != 0:
+        return ("cumuli env lacks the trainer CUDA extensions -- provision with "
+                "scripts/setup_cumuli_env.sh (not conda env create alone)")
     return None
 
 

@@ -2,7 +2,7 @@ name: Integration tests (GPU, manual)
 
 # Real, unmocked pipeline run against the committed take01_11cam fixture --
 # see tests/integration/. This needs a real CUDA GPU (the train4d stage),
-# the hloc/diffuman4d/sapiens2/queen/omg4 conda envs, the deps/OMG4 trainer
+# the single cumuli conda env (scripts/setup_cumuli_env.sh), the deps/OMG4 trainer
 # submodule, and Sapiens checkpoints -- none of which exist on a
 # GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below.
 #

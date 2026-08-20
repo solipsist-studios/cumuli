@@ -29,12 +29,10 @@ been run and validated end-to-end.
 - Per-camera calibration PKLs (from `deps/camera-calibration`), one per
   physical camera.
 - Raw GoPro `.mp4` clips, one per camera, all recording the same take.
-- Conda envs: `hloc` (HLOC + pycolmap), `diffuman4d` (BiRefNet background
-  removal deps), `sapiens2` (Sapiens keypoint prediction, needs
-  `SAPIENS_CHECKPOINT_ROOT` set), `queen` (generic scripts + triangulation),
-  and `omg4` (the 4D trainer, bake, and eval -- see `docs/environment.md`
-  and `envs/omg4.yml`). Training needs a CUDA GPU. Every stage before it
-  runs on CPU.
+- The `cumuli` conda env (`bash scripts/setup_cumuli_env.sh` -- see
+  `docs/environment.md`). One env serves every stage; keypoint
+  prediction additionally needs `SAPIENS_CHECKPOINT_ROOT` set. Training
+  needs a CUDA GPU. Every stage before it runs on CPU.
 
 ## Recommended: run everything with the unified orchestrator
 
@@ -160,7 +158,7 @@ geometry in one resample, instead of downscale-then-undistort.
 ## HLOC pose estimation
 
 ```bash
-conda activate hloc
+conda activate cumuli
 python3 scripts/run_hloc.py \
     --undistorted_dir ~/take01_1500ms/undistorted \
     --undistorted_pkl_dir ~/take01_1500ms/undistorted_pkls \
@@ -203,11 +201,11 @@ for k in 0 1 2 3 4; do
         --calib_dir /path/to/calibration_pkls \
         --out_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_pkl_dir ~/take01_1500ms/sync_candidates_pkls/f$k
-    conda activate diffuman4d
+    conda activate cumuli
     python3 scripts/generate_masks.py \
         --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_fmasks_dir ~/take01_1500ms/sync_candidates_fmasks/f$k
-    conda activate sapiens2
+    conda activate cumuli
     python3 scripts/predict_keypoints_2d.py \
         --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_kp2d_dir ~/take01_1500ms/sync_candidates_kp2d/f$k \
@@ -257,12 +255,12 @@ python3 scripts/build_flat_dataset.py \
 ## Masks and 2D keypoints for this frame
 
 ```bash
-conda activate diffuman4d
+conda activate cumuli
 python3 scripts/generate_masks.py \
     --images_dir ~/take01_1500ms/images_flat \
     --out_fmasks_dir ~/take01_1500ms/fmasks_flat
 
-conda activate sapiens2
+conda activate cumuli
 python3 scripts/predict_keypoints_2d.py \
     --images_dir ~/take01_1500ms/images_flat \
     --out_kp2d_dir ~/take01_1500ms/poses_2d_flat \
