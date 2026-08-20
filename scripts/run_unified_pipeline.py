@@ -142,7 +142,9 @@ def run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, labe
     of os.environ (plus extra_env) to the child -- the orchestrator's own
     process environment is never mutated, so conda envs never leak between
     stages or back into this process."""
-    script_path = SCRIPTS_DIR / script_name
+    script_path = Path(script_name)
+    if not script_path.is_absolute():
+        script_path = SCRIPTS_DIR / script_name
     if not script_path.is_file():
         raise StageError(f"{script_name} not found at {script_path}")
 
@@ -183,6 +185,20 @@ def parse_target_time(value: str) -> float:
     if v.endswith("s"):
         return float(v[:-1])
     return float(v)
+
+
+def gpu_available() -> bool:
+    """CUDA presence probe, stdlib-only so the orchestrator itself never
+    imports torch. nvidia-smi exists and lists at least one device."""
+    import shutil as _shutil
+    exe = _shutil.which("nvidia-smi")
+    if not exe:
+        return False
+    try:
+        result = subprocess.run([exe, "-L"], capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "GPU" in result.stdout
 
 
 def discover_cameras(video_dir: Path):
@@ -226,6 +242,16 @@ def build_layout(out_dir: Path):
         "train_set": out_dir / "train_set",
         "brush_output": out_dir / "brush_output",
 
+        # 4D training path (stage_dataset4d / stage_train4d)
+        "seq_raw": out_dir / "train_seq_raw",
+        "seq_undist": out_dir / "train_seq_undistorted",
+        "seq_pkls": out_dir / "train_seq_pkls",
+        "flipbook_src": out_dir / "flipbook_src",
+        "dataset4d": out_dir / "dataset_4dgs",
+        "train4d_config": out_dir / "gs4d_config.yaml",
+        "train4d_model": out_dir / "train4d_output",
+        "sogst_out": out_dir / "splat_4d.sogst",
+        "eval4d_report": out_dir / "eval_4d.json",
     }
     return L
 
@@ -491,11 +517,187 @@ def stage_branch_direct(args, L):
     run_script("train_brush.py", train_args, label="train_brush.py (train Brush, 4K masked)")
 
 
+def stage_dataset4d(args, L, image_ext, sync_json: Path):
+    """Build the 4D (D-NeRF-style) training dataset for the rotor trainer.
+
+    Extracts a --train_window frame sequence, runs the standard per-instant
+    chain (undistort, masks, keypoints, clean) on each frame, lays each
+    instant out as a flipbook frame dir, and hands the whole sequence to
+    build_flipbook_4dgs_dataset.py. Every step is CPU-capable, so CI can
+    stop after this stage. Depends on the poses and masks stages: the
+    refined transforms, the label map, and the flat transforms must exist.
+    Frame extraction is PNG end-to-end -- the flipbook layout and the
+    trainer's D-NeRF loader both expect .png."""
+    banner("STAGE: DATASET4D (frame sequence -> 4D training dataset)")
+
+    window = args.train_window
+    extract_args = [str(args.video_dir), str(sync_json), str(L["seq_raw"]),
+                    str(args.target_time_s), "--window", str(window),
+                    "--output_ext", ".png"]
+    if args.pp3_dir:
+        extract_args += ["--pp3_dir", str(args.pp3_dir)]
+    if L["seq_raw"].is_dir() and any(L["seq_raw"].rglob("*.png")):
+        info("train sequence already extracted on disk -- reusing "
+             f"(delete {L['seq_raw']} to force a redo)")
+    else:
+        run_script("extract_synced_frames.py", extract_args,
+                   label=f"extract_synced_frames.py (train window of {window})")
+
+    for k in range(window):
+        f_raw, f_undist, f_pkl = _instant_dirs(
+            (L["seq_raw"], L["seq_undist"], L["seq_pkls"]), window, k)
+        frame_dir = L["flipbook_src"] / f"frame_{k:04d}"
+
+        if (frame_dir / "fmasks_clean").is_dir() and any((frame_dir / "fmasks_clean").glob("*.png")):
+            info(f"frame_{k:04d} already fully processed on disk -- reusing "
+                 f"(delete {frame_dir} to force a redo)")
+            continue
+
+        run_script("undistort_frames.py",
+                   undistort_args(args, f_raw, f_undist, f_pkl, ".png"),
+                   conda_env=args.generic_env,
+                   label=f"undistort_frames.py (train frame {k})")
+
+        run_script("assemble_flipbook_frame.py", [
+            "--undist_dir", f_undist, "--label_map", L["flat_label_map"],
+            "--flat_transforms", L["flat_transforms"],
+            "--out_frame_dir", frame_dir, "--image_ext", ".png",
+        ], label=f"assemble_flipbook_frame.py (train frame {k})")
+
+        frame_images = frame_dir / "images_flat"
+        run_script("generate_masks.py", [
+            "--images_dir", frame_images, "--out_fmasks_dir", frame_dir / "fmasks",
+            "--image_ext", ".png",
+        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"generate_masks.py (train frame {k})")
+
+        run_script("predict_keypoints_2d.py",
+                   keypoint_args(args, frame_images, frame_dir / "kp2d", frame_dir / "fmasks"),
+                   conda_env=args.sapiens_env, label=f"predict_keypoints_2d.py (train frame {k})")
+
+        run_script("split_keypoints_per_camera.py", [
+            "--kp2d_flat_dir", frame_dir / "kp2d", "--out_dir", frame_dir / "poses_2d",
+        ], label=f"split_keypoints_per_camera.py (train frame {k})")
+
+        run_script("clean_masks.py", [
+            "--fmasks_dir", frame_dir / "fmasks", "--kp2d_dir", frame_dir / "poses_2d",
+            "--out_dir", frame_dir / "fmasks_clean", "--images_dir", frame_images, "--retry",
+        ], conda_env=CONDA_ENV_DIFFUMAN4D, label=f"clean_masks.py (train frame {k})")
+
+    build_args = [
+        "--flipbook_root", L["flipbook_src"], "--out", L["dataset4d"],
+        "--fps", str(args.train_fps), "--downscale", str(args.dataset_downscale),
+        "--jobs", str(args.dataset_jobs),
+    ]
+    # The eval camera's stereo mates must leave training entirely: a held-out
+    # camera whose near-duplicate mate keeps training measures leakage, not
+    # novel-view quality (~5.7 dB of pure leak measured on an 11-camera rig).
+    if args.eval_camera:
+        build_args += ["--test_cameras", args.eval_camera]
+        holdouts = [c for c in (args.holdout_cameras or []) if c != args.eval_camera]
+        if holdouts:
+            build_args += ["--holdout_cameras", *holdouts]
+    run_script("build_flipbook_4dgs_dataset.py", build_args,
+               conda_env=args.generic_env,
+               label="build_flipbook_4dgs_dataset.py (4D dataset assembly)")
+
+
+def stage_train4d(args, L):
+    """Train the rotor 4DGS model, bake it to .sogst, and score it.
+
+    GPU-gated: the trainer's rasterizer is CUDA-only, so this stage refuses
+    to start without a visible GPU rather than fail deep inside training.
+    The trainer is train_scratch.py in the vendored OMG4 fork (upstream
+    4d-gaussian-splatting train.py plus this project's patches), run in the
+    trainer conda env. Explicit --save_iterations makes the checkpoint name
+    deterministic: <model_path>/chkpnt<iters>.pth."""
+    banner("STAGE: TRAIN4D (rotor 4DGS training, bake, eval)")
+
+    if not gpu_available():
+        raise StageError(
+            "stage 'train4d' requires a CUDA GPU (nvidia-smi found no device). "
+            "Run through --stop_after_stage dataset4d on this machine and "
+            "train on a GPU host.")
+
+    trainer_repo = Path(args.trainer_repo).expanduser().resolve()
+    train_script = trainer_repo / "train_scratch.py"
+    if not train_script.is_file():
+        raise StageError(
+            f"trainer entry point not found at {train_script}. Initialise the "
+            f"submodule (git submodule update --init deps/OMG4) or point "
+            f"--trainer_repo at a patched OMG4 clone.")
+
+    iters = args.total_train_iters
+    duration_s = (args.train_window - 1) / args.train_fps
+    if args.trainer_config:
+        config_path = Path(args.trainer_config)
+        info(f"Using caller-supplied trainer config {config_path} "
+             "(template generation skipped)")
+    else:
+        template = (REPO_ROOT / "configs" / "gs4d_pretrain_template.yaml").read_text()
+        config_path = L["train4d_config"]
+        config_path.write_text(template.format_map({
+            "time_max": f"{duration_s:.6f}",
+            "num_pts": args.num_pts,
+            "batch_size": args.batch_size4d,
+            "source_path": str(L["dataset4d"].resolve()),
+            "model_path": str(L["train4d_model"].resolve()),
+            "iterations": iters,
+            "densify_until_iter": args.densify_until_iter,
+            "densify_until_num_points": args.densify_until_num_points,
+        }))
+        info(f"Wrote trainer config {config_path}")
+
+    extra_env = {}
+    if args.t_init_div:
+        # Initial temporal sigma divisor: sqrt(duration / div). Unset (0)
+        # preserves the trainer's upstream default of 5, which bakes several
+        # frames of motion smear into the starting sigma.
+        extra_env["GS4D_T_INIT_DIV"] = str(args.t_init_div)
+
+    checkpoint = L["train4d_model"] / f"chkpnt{iters}.pth"
+    if checkpoint.is_file():
+        info(f"checkpoint {checkpoint} already on disk -- skipping training "
+             "(delete it to force a retrain)")
+    else:
+        run_script(train_script, [
+            "--config", config_path,
+            "--test_iterations", str(iters),
+            "--save_iterations", str(iters),
+        ], conda_env=args.trainer_env, cwd=trainer_repo, extra_env=extra_env,
+            label="train_scratch.py (rotor 4DGS pretrain)")
+    if not checkpoint.is_file():
+        raise StageError(f"training finished but {checkpoint} does not exist")
+
+    bake_args = [
+        "--input", checkpoint, "--output", L["sogst_out"],
+        "--time_min", "0", "--time_max", f"{duration_s:.6f}",
+        "--fps", str(args.train_fps),
+        # Lifetime mask-consistency filter: drops splats that project outside
+        # the subject mask in most views across their active life. Removes
+        # real silhouette-escaping junk; it is not a quality regulariser.
+        "--mask_filter_root", L["dataset4d"],
+    ]
+    run_script("bake_sogst.py", bake_args, conda_env=args.trainer_env,
+               label="bake_sogst.py (bake checkpoint to .sogst)")
+
+    if args.skip_eval or not args.eval_camera:
+        info("eval skipped (no --eval_camera or --skip_eval given)")
+        return
+    run_script("eval_render.py", [
+        "--model", L["sogst_out"],
+        "--transforms", L["dataset4d"] / "transforms_test.json",
+        "--gt-dir", L["dataset4d"] / "eval_gt_flat",
+        "--every", str(args.eval_every),
+        "--report_json", L["eval4d_report"],
+    ], conda_env=args.trainer_env, label="eval_render.py (held-out scoring)")
+
+
 # ------------------------------------------------------------------------ CLI
 CONFIGURABLE_DEFAULTS = {
     "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
     "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
     "brush_app", "display",
+    "trainer_env", "trainer_repo",
 }
 
 
@@ -574,6 +776,46 @@ def build_parser():
                         help="Max keypoints per image for HLOC feature extraction.")
     parser.add_argument("--brush_app", type=Path, default=Path.home() / "brush-app-x86_64-unknown-linux-gnu" / "brush_app")
     parser.add_argument("--total_train_iters", type=int, default=30000)
+
+    # ---- 4D training path (stage_dataset4d / stage_train4d) ----
+    parser.add_argument("--train_window", type=int, default=48,
+                        help="Frame count of the 4D training sequence, extracted at --target_time. "
+                             "Clip duration is (window - 1) / --train_fps seconds.")
+    parser.add_argument("--train_fps", type=float, default=30.0,
+                        help="Frame rate the training sequence is extracted and trained at. "
+                             "Must match the capture's real frame stepping.")
+    parser.add_argument("--dataset_downscale", type=int, default=1,
+                        help="build_flipbook_4dgs_dataset.py --downscale for the 4D dataset.")
+    parser.add_argument("--dataset_jobs", type=int, default=8)
+    parser.add_argument("--eval_camera", default=None,
+                        help="2-digit camera label held out for eval_render.py scoring. "
+                             "Omit to train on every camera and skip eval.")
+    parser.add_argument("--holdout_cameras", nargs="*", default=[],
+                        help="Additional 2-digit labels excluded from training WITHOUT being "
+                             "scored -- the eval camera's stereo mates. A held-out camera whose "
+                             "near-duplicate mate keeps training measures leakage, not quality.")
+    parser.add_argument("--num_pts", type=int, default=100000,
+                        help="Initial gaussian count for the 4D trainer (production default).")
+    parser.add_argument("--batch_size4d", type=int, default=2)
+    parser.add_argument("--densify_until_iter", type=int, default=25000)
+    parser.add_argument("--densify_until_num_points", type=int, default=3000000)
+    parser.add_argument("--t_init_div", type=int, default=100,
+                        help="GS4D_T_INIT_DIV for the trainer: initial temporal sigma is "
+                             "sqrt(duration / div). 0 leaves the env var unset (upstream div = 5, "
+                             "which bakes several frames of motion smear into the initial sigma).")
+    parser.add_argument("--trainer_config", type=Path, default=None,
+                        help="Pre-written trainer yaml. Bypasses template generation entirely; "
+                             "the template's source_path/model_path substitutions become the "
+                             "caller's responsibility.")
+    parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
+                        help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
+                             "deps/OMG4 submodule).")
+    parser.add_argument("--trainer_env", default="omg4",
+                        help="Conda env for training, bake, and eval (torch+CUDA, gsplat, lpips; "
+                             "see envs/omg4.yml and deps/OMG4/script/setup_omg4_env.sh).")
+    parser.add_argument("--eval_every", type=int, default=10,
+                        help="eval_render.py --every: score every Nth held-out frame.")
+    parser.add_argument("--skip_eval", action="store_true")
     parser.add_argument("--brush_max_resolution", type=int, default=4096,
                         help="Passed to train_brush.py --max_resolution. The 4096 default is the "
                              "validated production configuration; lower it only for constrained "

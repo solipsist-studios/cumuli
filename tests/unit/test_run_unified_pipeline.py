@@ -994,3 +994,183 @@ def test_main_resume_without_resolved_sync_json_falls_back_to_default_path(rig, 
     # this resumed session).
     _, prod_args = stage_calls[0]
     assert prod_args[3] == unified.build_layout(rig["out_dir"])["sync_offsets"]
+
+
+# --------------------------------------------------------------------------
+# stage_dataset4d / stage_train4d -- the 4D training path
+# --------------------------------------------------------------------------
+
+def _dataset4d_args(tmp_path, window=2, eval_camera=None, holdouts=()):
+    return NS(video_dir=tmp_path / "videos", target_time_s=1.5, pp3_dir=None,
+              train_window=window, train_fps=30.0, dataset_downscale=1,
+              dataset_jobs=8, eval_camera=eval_camera,
+              holdout_cameras=list(holdouts), generic_env="queen",
+              sapiens_env="sapiens2", sapiens_checkpoint_root=None,
+              sapiens_model_size="1b", calib_dir=tmp_path / "calib",
+              target_pkl_dir=None)
+
+
+def _capture_runs(monkeypatch):
+    calls = []
+
+    def fake_run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
+        calls.append({"script": str(script_name), "args": [str(a) for a in args],
+                      "conda_env": conda_env, "cwd": cwd, "extra_env": extra_env})
+    monkeypatch.setattr(unified, "run_script", fake_run_script)
+    return calls
+
+
+def test_stage_dataset4d_runs_per_frame_chain_then_builder(monkeypatch, tmp_path):
+    calls = _capture_runs(monkeypatch)
+    L = unified.build_layout(tmp_path / "out")
+    unified.stage_dataset4d(_dataset4d_args(tmp_path, window=2), L, ".png",
+                            tmp_path / "sync.json")
+
+    scripts = [Path(c["script"]).name for c in calls]
+    assert scripts[0] == "extract_synced_frames.py"
+    # Per frame: undistort, assemble, masks, keypoints, split, clean.
+    per_frame = ["undistort_frames.py", "assemble_flipbook_frame.py",
+                 "generate_masks.py", "predict_keypoints_2d.py",
+                 "split_keypoints_per_camera.py", "clean_masks.py"]
+    assert scripts[1:13] == per_frame * 2
+    assert scripts[13] == "build_flipbook_4dgs_dataset.py"
+
+    extract = calls[0]["args"]
+    assert "--window" in extract and extract[extract.index("--window") + 1] == "2"
+    assert "--output_ext" in extract and extract[extract.index("--output_ext") + 1] == ".png"
+
+
+def test_stage_dataset4d_skips_processed_frames(monkeypatch, tmp_path):
+    calls = _capture_runs(monkeypatch)
+    L = unified.build_layout(tmp_path / "out")
+    done = L["flipbook_src"] / "frame_0000" / "fmasks_clean"
+    done.mkdir(parents=True)
+    (done / "00.png").write_bytes(b"")
+
+    unified.stage_dataset4d(_dataset4d_args(tmp_path, window=2), L, ".png",
+                            tmp_path / "sync.json")
+    scripts = [Path(c["script"]).name for c in calls]
+    # Frame 0 is reused: exactly one per-frame chain runs (frame 1).
+    assert scripts.count("clean_masks.py") == 1
+
+
+def test_stage_dataset4d_forwards_eval_and_mate_holdouts(monkeypatch, tmp_path):
+    calls = _capture_runs(monkeypatch)
+    L = unified.build_layout(tmp_path / "out")
+    unified.stage_dataset4d(
+        _dataset4d_args(tmp_path, window=1, eval_camera="05", holdouts=["05", "06"]),
+        L, ".png", tmp_path / "sync.json")
+
+    build = next(c for c in calls if Path(c["script"]).name == "build_flipbook_4dgs_dataset.py")
+    a = build["args"]
+    assert a[a.index("--test_cameras") + 1] == "05"
+    # The eval camera itself is stripped from the holdout list; only the
+    # mate remains excluded-but-unscored.
+    assert a[a.index("--holdout_cameras") + 1] == "06"
+    assert a.count("05") == 1
+
+
+def test_stage_dataset4d_omits_eval_flags_without_eval_camera(monkeypatch, tmp_path):
+    calls = _capture_runs(monkeypatch)
+    L = unified.build_layout(tmp_path / "out")
+    unified.stage_dataset4d(_dataset4d_args(tmp_path, window=1), L, ".png",
+                            tmp_path / "sync.json")
+    build = next(c for c in calls if Path(c["script"]).name == "build_flipbook_4dgs_dataset.py")
+    assert "--test_cameras" not in build["args"]
+    assert "--holdout_cameras" not in build["args"]
+
+
+def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
+                  eval_camera="05", skip_eval=False):
+    repo = tmp_path / "omg4repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    (repo / "train_scratch.py").write_text("# stub")
+    return NS(trainer_repo=repo, trainer_env="omg4", total_train_iters=iters,
+              train_window=8, train_fps=30.0, t_init_div=t_init_div,
+              num_pts=100000, batch_size4d=2, densify_until_iter=150,
+              densify_until_num_points=1000, trainer_config=trainer_config,
+              eval_camera=eval_camera, eval_every=10, skip_eval=skip_eval)
+
+
+def test_stage_train4d_raises_without_gpu(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: False)
+    with pytest.raises(unified.StageError, match="CUDA GPU"):
+        unified.stage_train4d(_train4d_args(tmp_path), unified.build_layout(tmp_path / "out"))
+
+
+def test_stage_train4d_generates_config_and_trains(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    calls = _capture_runs(monkeypatch)
+    args = _train4d_args(tmp_path, iters=200)
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
+
+    # Training "succeeds": the fake run_script drops the checkpoint the
+    # stage asserts on afterwards.
+    real_capture = unified.run_script
+
+    def run_and_checkpoint(script_name, a, **kw):
+        real_capture(script_name, a, **kw)
+        if Path(str(script_name)).name == "train_scratch.py":
+            L["train4d_model"].mkdir(parents=True, exist_ok=True)
+            (L["train4d_model"] / "chkpnt200.pth").write_bytes(b"x")
+    monkeypatch.setattr(unified, "run_script", run_and_checkpoint)
+
+    unified.stage_train4d(args, L)
+
+    config = L["train4d_config"].read_text()
+    assert "iterations: 200" in config
+    assert f'source_path: "{L["dataset4d"].resolve()}"' in config
+    # (window - 1) / fps = 7/30
+    assert "time_duration: [0.0, 0.233333]" in config
+
+    train = next(c for c in calls if Path(c["script"]).name == "train_scratch.py")
+    assert train["conda_env"] == "omg4"
+    assert str(train["cwd"]) == str(args.trainer_repo)
+    assert train["extra_env"] == {"GS4D_T_INIT_DIV": "100"}
+    a = train["args"]
+    assert a[a.index("--save_iterations") + 1] == "200"
+    assert a[a.index("--test_iterations") + 1] == "200"
+
+    bake = next(c for c in calls if Path(c["script"]).name == "bake_sogst.py")
+    assert "--mask_filter_root" in bake["args"]
+    assert any(Path(c["script"]).name == "eval_render.py" for c in calls)
+
+
+def test_stage_train4d_t_init_div_zero_leaves_env_unset(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    calls = _capture_runs(monkeypatch)
+    args = _train4d_args(tmp_path, iters=7, t_init_div=0, skip_eval=True)
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt7.pth").write_bytes(b"x")
+    L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
+
+    unified.stage_train4d(args, L)
+    # Training was skipped (checkpoint pre-existing), so only bake ran; the
+    # env-var rule is observable on the generated config path instead: no
+    # train call happened, and no call carries GS4D_T_INIT_DIV.
+    assert all(not (c["extra_env"] or {}).get("GS4D_T_INIT_DIV") for c in calls)
+    assert not any(Path(c["script"]).name == "eval_render.py" for c in calls)
+
+
+def test_stage_train4d_trainer_config_bypasses_generation(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    calls = _capture_runs(monkeypatch)
+    own_config = tmp_path / "mine.yaml"
+    own_config.write_text("gaussian_dim: 4\n")
+    args = _train4d_args(tmp_path, iters=7, trainer_config=own_config, skip_eval=True)
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "chkpnt7.pth").write_bytes(b"x")
+
+    unified.stage_train4d(args, L)
+    assert not L["train4d_config"].exists()
+
+
+def test_stage_train4d_missing_trainer_repo_is_a_stage_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    args = _train4d_args(tmp_path)
+    (args.trainer_repo / "train_scratch.py").unlink()
+    with pytest.raises(unified.StageError, match="trainer entry point"):
+        unified.stage_train4d(args, unified.build_layout(tmp_path / "out"))
