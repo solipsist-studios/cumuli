@@ -30,7 +30,7 @@ scripts/   pipeline scripts, plus run_unified_pipeline.py (the
            have posed cameras
 deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
-           (conda env names, --trainer_repo, --trainer_env, etc.) -- see
+           (--trainer_repo, HLOC settings, etc.) -- see
            configs/README.md
 envs/      the cumuli env manifest (see scripts/setup_cumuli_env.sh),
            pinning the known-good versions from docs/environment.md
@@ -121,8 +121,7 @@ One env, `cumuli`, serves every stage. Provision it with
 `bash scripts/setup_cumuli_env.sh` (see
 [docs/environment.md](docs/environment.md) -- a plain
 `conda env create` misses the installs a yml cannot express). The
-orchestrator dispatches every stage into it; per-stage `--*_env` flags
-remain as escape hatches. Keypoint prediction additionally needs
+orchestrator dispatches every stage into it. Keypoint prediction additionally needs
 `SAPIENS_CHECKPOINT_ROOT` set. ffmpeg/ffprobe must be on PATH for the
 sync/extraction scripts, and rawtherapee-cli (or the RawTherapee
 flatpak) only for `extract_synced_frames.py`'s optional `--pp3_dir`

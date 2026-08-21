@@ -685,25 +685,25 @@ def test_build_parser_rejects_invalid_start_from_stage_choice():
 
 def test_apply_config_defaults_overrides_configurable_defaults(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"generic_env": "custom_env", "trainer_env": "omg4b"}))
+    config_path.write_text(json.dumps({"hloc_feature_type": "aliked", "trainer_repo": "/elsewhere/OMG4"}))
     parser = unified.build_parser()
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path)])
 
     unified.apply_config_defaults(parser)
     args = parser.parse_args(_BASE_CLI)
-    assert args.generic_env == "custom_env"
-    assert args.trainer_env == "omg4b"
+    assert args.hloc_feature_type == "aliked"
+    assert str(args.trainer_repo) == "/elsewhere/OMG4"
 
 
 def test_apply_config_defaults_explicit_cli_flag_wins_over_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"generic_env": "custom_env"}))
+    config_path.write_text(json.dumps({"hloc_feature_type": "aliked"}))
     parser = unified.build_parser()
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path)])
 
     unified.apply_config_defaults(parser)
-    args = parser.parse_args(_BASE_CLI + ["--generic_env", "explicit_env"])
-    assert args.generic_env == "explicit_env"
+    args = parser.parse_args(_BASE_CLI + ["--hloc_feature_type", "superpoint"])
+    assert args.hloc_feature_type == "superpoint"
 
 
 def test_apply_config_defaults_rejects_unknown_key(tmp_path, monkeypatch, capsys):
@@ -744,7 +744,7 @@ def test_apply_config_defaults_is_noop_when_no_config_given(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["prog"] + _BASE_CLI)
     unified.apply_config_defaults(parser)  # must not raise
     args = parser.parse_args(_BASE_CLI)
-    assert args.generic_env == "cumuli"  # untouched built-in default
+    assert args.hloc_feature_type == "superpoint"  # untouched built-in default
 
 
 # --------------------------------------------------------------------------
@@ -1055,7 +1055,7 @@ def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
     repo = tmp_path / "omg4repo"
     repo.mkdir(parents=True, exist_ok=True)
     (repo / "train_scratch.py").write_text("# stub")
-    return NS(trainer_repo=repo, trainer_env="omg4", total_train_iters=iters,
+    return NS(trainer_repo=repo, total_train_iters=iters,
               train_window=8, train_fps=30.0, t_init_div=t_init_div,
               num_pts=100000, batch_size4d=2, densify_until_iter=150,
               densify_until_num_points=1000, trainer_config=trainer_config,
@@ -1095,7 +1095,7 @@ def test_stage_train4d_generates_config_and_trains(monkeypatch, tmp_path):
     assert "time_duration: [0.0, 0.233333]" in config
 
     train = next(c for c in calls if Path(c["script"]).name == "train_scratch.py")
-    assert train["conda_env"] == "omg4"
+    assert train["conda_env"] == "cumuli"
     assert str(train["cwd"]) == str(args.trainer_repo)
     assert train["extra_env"] == {"GS4D_T_INIT_DIV": "100"}
     a = train["args"]

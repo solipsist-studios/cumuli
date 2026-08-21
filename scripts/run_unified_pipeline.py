@@ -80,7 +80,12 @@ DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "multiframe_sfm.py"
 
 STAGE_KEYS = ["sync", "production", "poses", "masks", "dataset4d", "train4d"]
 
-
+# Every stage runs in the one pipeline env (envs/cumuli.yml,
+# scripts/setup_cumuli_env.sh). The historical per-stage env parameters
+# were removed once the merged env was verified by full GPU and CPU
+# pipeline runs; a machine that genuinely needs a different env name can
+# change this constant.
+CONDA_ENV = "cumuli"
 
 _CONDA_CANDIDATES = [
     Path.home() / "miniforge3" / "condabin" / "conda",
@@ -304,14 +309,14 @@ def prepare_candidate_window(args, L, sync_json: Path, window: int, image_ext: s
             continue
 
         run_script("undistort_frames.py", undistort_args(args, f_raw, f_undist, f_pkl, image_ext),
-                   conda_env=args.generic_env, label=f"undistort_frames.py (candidates f{k}, {tag})")
+                   conda_env=CONDA_ENV, label=f"undistort_frames.py (candidates f{k}, {tag})")
 
         run_script("generate_masks.py", [
             "--images_dir", f_undist, "--out_fmasks_dir", f_fmask, "--image_ext", image_ext,
-        ], conda_env=args.diffuman4d_env, label=f"generate_masks.py (candidates f{k}, {tag})")
+        ], conda_env=CONDA_ENV, label=f"generate_masks.py (candidates f{k}, {tag})")
 
         run_script("predict_keypoints_2d.py", keypoint_args(args, f_undist, f_kp2d, f_fmask),
-                   conda_env=args.sapiens_env, label=f"predict_keypoints_2d.py (candidates f{k}, {tag})")
+                   conda_env=CONDA_ENV, label=f"predict_keypoints_2d.py (candidates f{k}, {tag})")
 
         run_script("split_keypoints_per_camera.py", [
             "--kp2d_flat_dir", f_kp2d, "--out_dir", f_poses2d,
@@ -355,7 +360,7 @@ def run_hloc(args, undistorted_dir, undistorted_pkl_dir, outputs_dir, image_ext,
         "--feature_type", args.hloc_feature_type,
         "--resize_max", str(args.hloc_resize_max),
         "--max_keypoints", str(args.hloc_max_keypoints),
-    ], conda_env=args.hloc_env, label=label)
+    ], conda_env=CONDA_ENV, label=label)
     return outputs_dir / "transforms_multiframe.json"
 
 
@@ -370,14 +375,14 @@ def stage_sync(args, L, image_ext):
         raw_sync_json = L["sync_offsets"]
     else:
         run_script("compute_sync_offsets.py",
-                   [args.video_dir, args.out_dir], conda_env=args.generic_env, label="compute_sync_offsets.py (rough audio sync)")
+                   [args.video_dir, args.out_dir], conda_env=CONDA_ENV, label="compute_sync_offsets.py (rough audio sync)")
         # compute_sync_offsets.py always names its output sync_offsets.json inside the given out dir
         raw_sync_json = L["sync_offsets"]
 
     extract_args = [str(args.video_dir), str(raw_sync_json), str(L["cand_raw"]), str(args.target_time_s)]
     run_script("extract_synced_frames.py", extract_args, label="extract_synced_frames.py (extract frame for sync QA grid)")
     run_script("make_sync_grid.py",
-               [L["cand_raw"], L["sync_grid"]], conda_env=args.generic_env, label="make_sync_grid.py (sync QA grid)")
+               [L["cand_raw"], L["sync_grid"]], conda_env=CONDA_ENV, label="make_sync_grid.py (sync QA grid)")
     info(f"Inspect {L['sync_grid']} -- every camera should show the same instant of action. "
          "This offset is NOT auto-corrected (automatic skeleton-based correction isn't part "
          "of this build yet) -- hand-tune any camera's frame_offset in sync_offsets.json that's "
@@ -397,7 +402,7 @@ def stage_production(args, L, image_ext, sync_json: Path):
 
     run_script("undistort_frames.py",
                undistort_args(args, L["production_raw"], L["production_undist"], L["production_pkls"], image_ext),
-               conda_env=args.generic_env, label="undistort_frames.py (production)")
+               conda_env=CONDA_ENV, label="undistort_frames.py (production)")
 
 
 def stage_poses(args, L, image_ext, sync_json: Path):
@@ -432,13 +437,13 @@ def stage_poses(args, L, image_ext, sync_json: Path):
         "--kp2d_dirs", ",".join(str(p) for p in poses2d_dirs),
         "--out_transforms", L["transforms_refined"],
         "--report_only",
-    ], conda_env=args.generic_env, label="run_pose_refinement.py (pose refinement, report only -- pre-optimization residuals)")
+    ], conda_env=CONDA_ENV, label="run_pose_refinement.py (pose refinement, report only -- pre-optimization residuals)")
 
     run_script("run_pose_refinement.py", [
         "--transforms", final_transforms,
         "--kp2d_dirs", ",".join(str(p) for p in poses2d_dirs),
         "--out_transforms", L["transforms_refined"],
-    ], conda_env=args.generic_env, label="run_pose_refinement.py (pose refinement)")
+    ], conda_env=CONDA_ENV, label="run_pose_refinement.py (pose refinement)")
 
 
 def stage_masks(args, L, image_ext):
@@ -459,20 +464,20 @@ def stage_masks(args, L, image_ext):
             "--out_images_flat", L["flat_images"],
             "--out_transforms", L["flat_transforms"],
             "--image_ext", image_ext, "--out_image_ext", ".png",
-        ], conda_env=args.generic_env, label="build_flat_dataset.py (flatten to 2-digit labels)")
+        ], conda_env=CONDA_ENV, label="build_flat_dataset.py (flatten to 2-digit labels)")
 
     if L["flat_fmasks"].is_dir() and any(L["flat_fmasks"].glob("*.png")):
         info("generate_masks.py already complete on disk -- reusing flat masks.")
     else:
         run_script("generate_masks.py", [
             "--images_dir", L["flat_images"], "--out_fmasks_dir", L["flat_fmasks"], "--image_ext", ".png",
-        ], conda_env=args.diffuman4d_env, label="generate_masks.py (masks, flat production frame)")
+        ], conda_env=CONDA_ENV, label="generate_masks.py (masks, flat production frame)")
 
     if L["flat_poses2d"].is_dir() and any(L["flat_poses2d"].rglob("*.json")):
         info("predict_keypoints_2d.py/split_keypoints_per_camera.py already complete on disk -- reusing flat keypoints.")
     else:
         run_script("predict_keypoints_2d.py", keypoint_args(args, L["flat_images"], L["flat_kp2d"], L["flat_fmasks"]),
-                   conda_env=args.sapiens_env, label="predict_keypoints_2d.py (keypoints, flat production frame)")
+                   conda_env=CONDA_ENV, label="predict_keypoints_2d.py (keypoints, flat production frame)")
 
         run_script("split_keypoints_per_camera.py", [
             "--kp2d_flat_dir", L["flat_kp2d"], "--out_dir", L["flat_poses2d"],
@@ -484,12 +489,12 @@ def stage_masks(args, L, image_ext):
         run_script("clean_masks.py", [
             "--fmasks_dir", L["flat_fmasks"], "--kp2d_dir", L["flat_poses2d"],
             "--out_dir", L["flat_fmasks_clean"], "--images_dir", L["flat_images"], "--retry",
-        ], conda_env=args.diffuman4d_env, label="clean_masks.py (mask cleanup, skeleton-guided, retry fallback)")
+        ], conda_env=CONDA_ENV, label="clean_masks.py (mask cleanup, skeleton-guided, retry fallback)")
 
     run_script("triangulate_and_project_keypoints.py", [
         "--camera_path", L["flat_transforms"], "--kp2d_dir", L["flat_poses2d"],
         "--out_kp3d_dir", L["poses_3d_fullres"], "--out_pcd_dir", L["poses_pcd_fullres"],
-    ], conda_env=args.triangulate_env, label="triangulate_and_project_keypoints.py (triangulate subject point cloud, real cameras)")
+    ], conda_env=CONDA_ENV, label="triangulate_and_project_keypoints.py (triangulate subject point cloud, real cameras)")
 
 
 def stage_dataset4d(args, L, image_ext, sync_json: Path):
@@ -530,7 +535,7 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
 
         run_script("undistort_frames.py",
                    undistort_args(args, f_raw, f_undist, f_pkl, ".png"),
-                   conda_env=args.generic_env,
+                   conda_env=CONDA_ENV,
                    label=f"undistort_frames.py (train frame {k})")
 
         run_script("assemble_flipbook_frame.py", [
@@ -543,11 +548,11 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
         run_script("generate_masks.py", [
             "--images_dir", frame_images, "--out_fmasks_dir", frame_dir / "fmasks",
             "--image_ext", ".png",
-        ], conda_env=args.diffuman4d_env, label=f"generate_masks.py (train frame {k})")
+        ], conda_env=CONDA_ENV, label=f"generate_masks.py (train frame {k})")
 
         run_script("predict_keypoints_2d.py",
                    keypoint_args(args, frame_images, frame_dir / "kp2d", frame_dir / "fmasks"),
-                   conda_env=args.sapiens_env, label=f"predict_keypoints_2d.py (train frame {k})")
+                   conda_env=CONDA_ENV, label=f"predict_keypoints_2d.py (train frame {k})")
 
         run_script("split_keypoints_per_camera.py", [
             "--kp2d_flat_dir", frame_dir / "kp2d", "--out_dir", frame_dir / "poses_2d",
@@ -556,7 +561,7 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
         run_script("clean_masks.py", [
             "--fmasks_dir", frame_dir / "fmasks", "--kp2d_dir", frame_dir / "poses_2d",
             "--out_dir", frame_dir / "fmasks_clean", "--images_dir", frame_images, "--retry",
-        ], conda_env=args.diffuman4d_env, label=f"clean_masks.py (train frame {k})")
+        ], conda_env=CONDA_ENV, label=f"clean_masks.py (train frame {k})")
 
     # The hull carve requires each candidate point inside the mask in at
     # least --hull_min_views views. The builder's default of 9 suits a
@@ -582,7 +587,7 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
         if holdouts:
             build_args += ["--holdout_cameras", *holdouts]
     run_script("build_flipbook_4dgs_dataset.py", build_args,
-               conda_env=args.generic_env,
+               conda_env=CONDA_ENV,
                label="build_flipbook_4dgs_dataset.py (4D dataset assembly)")
 
 
@@ -648,7 +653,7 @@ def stage_train4d(args, L):
             "--config", config_path,
             "--test_iterations", str(iters),
             "--save_iterations", str(iters),
-        ], conda_env=args.trainer_env, cwd=trainer_repo, extra_env=extra_env,
+        ], conda_env=CONDA_ENV, cwd=trainer_repo, extra_env=extra_env,
             label="train_scratch.py (rotor 4DGS pretrain)")
     if not checkpoint.is_file():
         raise StageError(f"training finished but {checkpoint} does not exist")
@@ -662,7 +667,7 @@ def stage_train4d(args, L):
         # real silhouette-escaping junk; it is not a quality regulariser.
         "--mask_filter_root", L["dataset4d"],
     ]
-    run_script("bake_sogst.py", bake_args, conda_env=args.trainer_env,
+    run_script("bake_sogst.py", bake_args, conda_env=CONDA_ENV,
                label="bake_sogst.py (bake checkpoint to .sogst)")
 
     if args.skip_eval or not args.eval_camera:
@@ -674,14 +679,14 @@ def stage_train4d(args, L):
         "--gt-dir", L["dataset4d"] / "eval_gt_flat",
         "--every", str(args.eval_every),
         "--report_json", L["eval4d_report"],
-    ], conda_env=args.trainer_env, label="eval_render.py (held-out scoring)")
+    ], conda_env=CONDA_ENV, label="eval_render.py (held-out scoring)")
 
 
 # ------------------------------------------------------------------------ CLI
 CONFIGURABLE_DEFAULTS = {
-    "sapiens_env", "sapiens_checkpoint_root", "triangulate_env", "generic_env",
+    "sapiens_checkpoint_root",
     "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
-    "trainer_env", "trainer_repo", "hloc_env", "diffuman4d_env",
+    "trainer_repo",
 }
 
 
@@ -727,30 +732,13 @@ def build_parser():
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
-    parser.add_argument("--sapiens_env", default="cumuli", help="Conda env for predict_keypoints_2d.py")
     parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
                         help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
                              "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
-    parser.add_argument("--hloc_env", default="cumuli",
-                        help="Conda env for run_hloc.py/multiframe_sfm.py. Escape hatch for "
-                             "machines that keep a split HLOC env (the historical name: hloc).")
-    parser.add_argument("--diffuman4d_env", default="cumuli",
-                        help="Conda env for generate_masks.py/clean_masks.py (BiRefNet stack). "
-                             "Escape hatch for machines that keep the split env (historical "
-                             "name: diffuman4d, pinned to Diffuman4D's upstream requirements).")
     parser.add_argument("--sapiens_model_size", default="1b", choices=["0.4b", "0.8b", "1b", "5b"],
                         help="Sapiens2 pose checkpoint size (default 1b, production quality baseline). "
                              "Smaller sizes use dramatically less RAM at some accuracy cost -- see "
                              "predict_keypoints_2d.py's own --sapiens_model_size help.")
-    parser.add_argument("--triangulate_env", default="cumuli",
-                        help="Conda env for triangulate_and_project_keypoints.py (needs easyvolcap/fire/open3d; "
-                             "'queen' historically had these)")
-    parser.add_argument("--generic_env", default="cumuli",
-                        help="Conda env for scripts needing numpy/scipy/Pillow/plyfile/cv2 but no special "
-                             "framework (make_sync_grid.py, undistort_frames.py, build_flat_dataset.py, "
-                             "build_colmap_sparse.py, run_pose_refinement.py). The orchestrator's own "
-                             "launching python may not have these installed, so these are NOT run bare "
-                             "with sys.executable. 'queen' is confirmed to have the full set on this machine.")
     parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
                         help="Path to multiframe_sfm.py (override to test local changes to it)")
     parser.add_argument("--hloc_feature_type", default="superpoint", choices=["superpoint", "aliked"],
@@ -804,9 +792,6 @@ def build_parser():
     parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
                         help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
                              "deps/OMG4 submodule).")
-    parser.add_argument("--trainer_env", default="cumuli",
-                        help="Conda env for training, bake, and eval (torch+CUDA, gsplat, lpips; "
-                             "see envs/omg4.yml and deps/OMG4/script/setup_omg4_env.sh).")
     parser.add_argument("--eval_every", type=int, default=10,
                         help="eval_render.py --every: score every Nth held-out frame.")
     parser.add_argument("--skip_eval", action="store_true")
@@ -908,7 +893,7 @@ def main():
             return
         run_script("validate_stage_output.py", [
             "--stage", key, "--out_dir", args.out_dir, "--real_cameras", real_cameras_arg,
-        ], conda_env=args.generic_env, label=f"validate_stage_output.py ({key})")
+        ], conda_env=CONDA_ENV, label=f"validate_stage_output.py ({key})")
 
     try:
         if should_run("sync"):

@@ -30,9 +30,9 @@ and the optional cupy/cuml SPM accelerators).
 
 One env serves every stage. `scripts/run_unified_pipeline.py` dispatches
 each stage into it automatically (you do not need to `conda activate`
-except when running a stage's script directly), and each stage's env
-remains overridable through the `--*_env` flags as an escape hatch for
-machines that keep a split setup.
+except when running a stage's script directly). The env name is the
+`CONDA_ENV` constant in that script; there is no per-stage env
+parameter.
 
 Known-good combination, verified 2026-08-20 by a full six-stage pipeline
 run on the take01 fixture (drift vs the previous five-env setup:

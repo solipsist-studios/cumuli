@@ -32,9 +32,9 @@ import run_unified_pipeline as unified
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "take01_11cam"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# The pipeline now runs in one merged env (see envs/cumuli.yml and
-# scripts/setup_cumuli_env.sh); the per-stage env flags remain as escape
-# hatches, and this suite checks only the default configuration.
+# The pipeline runs in one merged env (see envs/cumuli.yml and
+# scripts/setup_cumuli_env.sh); the orchestrator's CONDA_ENV constant
+# names it, and this suite checks that configuration.
 REQUIRED_CONDA_ENVS = ("cumuli",)
 GPU_CONDA_ENVS = ()
 
