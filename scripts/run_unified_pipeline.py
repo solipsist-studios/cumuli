@@ -112,6 +112,33 @@ def resolve_conda():
         f"{[str(c) for c in _CONDA_CANDIDATES]}). Pass its path via --conda_bin.")
 
 
+_ENV_PYTHON = None
+
+
+def resolve_env_python():
+    """The CONDA_ENV interpreter, resolved once per process.
+
+    Every stage runs in the same env, so paying `conda run`'s activation
+    overhead (its own Python boot plus env resolution, seconds per call)
+    on every one of the potentially hundreds of stage subprocesses bought
+    nothing. Scripts are invoked with the env's python directly instead,
+    which is how the pipeline's historical manual runs always worked."""
+    global _ENV_PYTHON
+    if _ENV_PYTHON is not None:
+        return _ENV_PYTHON
+    result = subprocess.run([resolve_conda(), "info", "--base"],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        raise StageError(f"conda info --base failed: {result.stderr.strip()}")
+    candidate = Path(result.stdout.strip()) / "envs" / CONDA_ENV / "bin" / "python3"
+    if not candidate.is_file():
+        raise StageError(
+            f"conda env {CONDA_ENV!r} not found at {candidate}. Provision it "
+            f"with scripts/setup_cumuli_env.sh.")
+    _ENV_PYTHON = str(candidate)
+    return _ENV_PYTHON
+
+
 # --------------------------------------------------------------- console UI
 class C:
     RESET = "\033[0m"
@@ -151,8 +178,13 @@ class StageError(RuntimeError):
 def run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, label=None):
     """Invoke one pipeline script as a subprocess. Always passes a FRESH copy
     of os.environ (plus extra_env) to the child -- the orchestrator's own
-    process environment is never mutated, so conda envs never leak between
-    stages or back into this process."""
+    process environment is never mutated, so nothing leaks between stages
+    or back into this process.
+
+    conda_env selects the interpreter: truthy runs the script with the
+    CONDA_ENV env's python (resolved once, no per-call `conda run`
+    activation), None runs it with the orchestrator's own interpreter
+    (stdlib-only helpers)."""
     script_path = Path(script_name)
     if not script_path.is_absolute():
         script_path = SCRIPTS_DIR / script_name
@@ -161,8 +193,7 @@ def run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, labe
 
     str_args = [str(a) for a in args]
     if conda_env:
-        cmd = [resolve_conda(), "run", "-n", conda_env, "--no-capture-output",
-               "python3", str(script_path)] + str_args
+        cmd = [resolve_env_python(), str(script_path)] + str_args
     else:
         cmd = [sys.executable, str(script_path)] + str_args
 

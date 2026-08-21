@@ -201,10 +201,13 @@ def test_run_script_without_conda_env_uses_sys_executable(tmp_path, monkeypatch)
     assert captured["cmd"] == [sys.executable, str(tmp_path / "foo.py"), "--a", "1"]
 
 
-def test_run_script_with_conda_env_wraps_command(tmp_path, monkeypatch):
+def test_run_script_with_conda_env_uses_env_python_directly(tmp_path, monkeypatch):
+    """No per-call `conda run` wrapping: the env interpreter is resolved
+    once and scripts are invoked with it directly (activation overhead was
+    seconds per call across hundreds of stage subprocesses)."""
     monkeypatch.setattr(unified, "SCRIPTS_DIR", tmp_path)
     (tmp_path / "foo.py").touch()
-    monkeypatch.setattr(unified, "resolve_conda", lambda: "/opt/conda/bin/conda")
+    monkeypatch.setattr(unified, "resolve_env_python", lambda: "/opt/conda/envs/cumuli/bin/python3")
     captured = {}
 
     def fake_run(cmd, cwd=None, env=None):
@@ -212,9 +215,33 @@ def test_run_script_with_conda_env_wraps_command(tmp_path, monkeypatch):
         return FakeCompletedProcess(0)
     monkeypatch.setattr(unified.subprocess, "run", fake_run)
 
-    unified.run_script("foo.py", [], conda_env="hloc")
-    assert captured["cmd"] == ["/opt/conda/bin/conda", "run", "-n", "hloc", "--no-capture-output",
-                                "python3", str(tmp_path / "foo.py")]
+    unified.run_script("foo.py", [], conda_env=unified.CONDA_ENV)
+    assert captured["cmd"] == ["/opt/conda/envs/cumuli/bin/python3", str(tmp_path / "foo.py")]
+
+
+def test_resolve_env_python_caches_and_errors_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(unified, "_ENV_PYTHON", None)
+    monkeypatch.setattr(unified, "resolve_conda", lambda: "/opt/conda/bin/conda")
+
+    def fake_run(cmd, capture_output=None, text=None):
+        class R:
+            returncode = 0
+            stdout = str(tmp_path) + "\n"
+            stderr = ""
+        return R()
+    monkeypatch.setattr(unified.subprocess, "run", fake_run)
+    with pytest.raises(unified.StageError, match="setup_cumuli_env"):
+        unified.resolve_env_python()
+
+    env_py = tmp_path / "envs" / "cumuli" / "bin" / "python3"
+    env_py.parent.mkdir(parents=True)
+    env_py.touch()
+    assert unified.resolve_env_python() == str(env_py)
+    # Cached: a second call must not re-run conda info.
+    monkeypatch.setattr(unified.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("re-resolved")))
+    assert unified.resolve_env_python() == str(env_py)
+    monkeypatch.setattr(unified, "_ENV_PYTHON", None)
 
 
 def test_run_script_passes_fresh_env_copy_not_mutating_process_env(tmp_path, monkeypatch):
