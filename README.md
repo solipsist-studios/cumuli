@@ -68,53 +68,6 @@ git submodule update --init --recursive
 - `deps/4d-gaussian-splatting` -- 4D "rotor" gaussian splat trainer for the native `.sogst` path (solipsist-studios fork, carries required patches, see docs/omg4_native_training.md)
 - `deps/OMG4` -- SPM compression + SPM-native fine-tuning for the 4D path (solipsist-studios fork with the `--spm_native_out` patches)
 
-### Third-party model licenses
-
-This repository's own code is PolyForm Noncommercial 1.0.0
-([LICENSE.md](LICENSE.md)). The external tools it wraps are **not**
-covered by that license: you obtain each of them directly from its
-own project under its own terms. Two of them restrict commercial use,
-and neither restriction is lifted by buying a commercial license to
-this pipeline:
-
-- **SuperPoint** -- the default HLOC feature type
-  (`--feature_type superpoint`) uses Magic Leap's SuperPoint detector
-  and its `superpoint_v1.pth` weights, licensed "ACADEMIC OR NON-PROFIT
-  ORGANIZATION NONCOMMERCIAL RESEARCH USE ONLY". Note that this holds
-  even though HLOC and LightGlue are both Apache-2.0: the SuperPoint
-  source file carries its own Magic Leap proprietary notice, and a
-  repository-level Apache-2.0 label does not relicense it. Use
-  `--feature_type aliked` (ALIKED, BSD-3-Clause, paired with LightGlue,
-  Apache-2.0) for a fully permissive feature/matcher stack.
-- **Sapiens (legacy path)** -- `deps/sapiens` and
-  `--model coco_wholebody133` are CC BY-NC 4.0, non-commercial only.
-
-The default keypoint path (`--model goliath308`) uses **Sapiens2**,
-which is under Meta's own Sapiens2 License rather than CC BY-NC. That
-agreement *does* permit commercial use, but it carries an acceptable-use
-list that prohibits, among other things, surveillance, **biometric
-processing**, deepfakes and impersonation, and inferring sensitive
-personal information without the required consents. It also grants Meta
-audit rights and lets Meta amend the terms unilaterally. Because
-"biometric processing" is not defined in the agreement and this is a
-human capture pipeline, anyone deploying it commercially should read
-the agreement and take their own legal advice rather than relying on
-this summary.
-
-`deps/4d-gaussian-splatting` is MIT at the repository level, with the
-Inria Gaussian-Splatting license (non-commercial research) covering its
-3DGS-derived parts. Both license files ship in the submodule.
-`deps/OMG4` carries **no license file**. It is consumed as a GitHub fork
-of an academic repository, and several of its files carry the Inria
-non-commercial notice. Treat both trainers as research-use components
-and take advice before any commercial deployment of the 4D training
-path.
-
-Everything else wrapped by the pipeline (BiRefNet:
-MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
-HLOC: Apache-2.0, LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP:
-BSD-3) is permissively licensed.
-
 ## Conda environments
 
 One env, `cumuli`, serves every stage. Provision it with
@@ -194,6 +147,52 @@ requires a separate license: contact <jeff@solipsist.studio>.
 
 A commercial license covers this repository's code only. It does not
 grant rights to the third-party models the pipeline invokes. See
-[Third-party model licenses](#third-party-model-licenses) above, and
+[Third-party model licenses](#third-party-model-licenses) below, and
 note that the default `--feature_type superpoint` is itself restricted
 to noncommercial research by Magic Leap.
+
+### Third-party model licenses
+
+Note that the external tools this pipeline wraps are **not**
+covered by the PolyForm license: you obtain each of them directly from its
+own project under its own terms. Two of them restrict commercial use,
+and neither restriction is lifted by buying a commercial license to
+this pipeline:
+
+- **SuperPoint** -- the default HLOC feature type
+  (`--feature_type superpoint`) uses Magic Leap's SuperPoint detector
+  and its `superpoint_v1.pth` weights, licensed "ACADEMIC OR NON-PROFIT
+  ORGANIZATION NONCOMMERCIAL RESEARCH USE ONLY". Note that this holds
+  even though HLOC and LightGlue are both Apache-2.0: the SuperPoint
+  source file carries its own Magic Leap proprietary notice, and a
+  repository-level Apache-2.0 label does not relicense it. Use
+  `--feature_type aliked` (ALIKED, BSD-3-Clause, paired with LightGlue,
+  Apache-2.0) for a fully permissive feature/matcher stack.
+- **Sapiens (legacy path)** -- `deps/sapiens` and
+  `--model coco_wholebody133` are CC BY-NC 4.0, non-commercial only.
+
+The default keypoint path (`--model goliath308`) uses **Sapiens2**,
+which is under Meta's own Sapiens2 License rather than CC BY-NC. That
+agreement *does* permit commercial use, but it carries an acceptable-use
+list that prohibits, among other things, surveillance, **biometric
+processing**, deepfakes and impersonation, and inferring sensitive
+personal information without the required consents. It also grants Meta
+audit rights and lets Meta amend the terms unilaterally. Because
+"biometric processing" is not defined in the agreement and this is a
+human capture pipeline, anyone deploying it commercially should read
+the agreement and take their own legal advice rather than relying on
+this summary.
+
+`deps/4d-gaussian-splatting` is MIT at the repository level, with the
+Inria Gaussian-Splatting license (non-commercial research) covering its
+3DGS-derived parts. Both license files ship in the submodule.
+`deps/OMG4` carries **no license file**. It is consumed as a GitHub fork
+of an academic repository, and several of its files carry the Inria
+non-commercial notice. Treat both trainers as research-use components
+and take advice before any commercial deployment of the 4D training
+path.
+
+Everything else wrapped by the pipeline (BiRefNet:
+MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
+HLOC: Apache-2.0, LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP:
+BSD-3) is permissively licensed.
