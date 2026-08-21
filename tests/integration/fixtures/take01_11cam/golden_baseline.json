@@ -1,8 +1,8 @@
 {
   "_comment": "Regression baseline for the take01_11cam fixture ONLY -- not a universal quality bar (different camera rigs/subjects have no comparable absolute number, see tests/integration/test_pipeline_end_to_end.py and docs/integration-tests.md). Current gating: structural checks plus the reprojection-error and mask-coverage floors below, which gate stages upstream of the trainer and whose variance studies remain valid. The eval4d_* fields (held-out PSNR/SSIM/LPIPS from eval_render.py on the 4D-trained .sogst) are recorded by tests/integration/update_golden_baseline.py on the GPU runner; until the first such run lands them, test_eval4d_metrics_meet_baseline skips with a reason rather than gate on an invented number. Every value here is a floor/ceiling with margin in the test, not an exact-match target -- update deliberately if a real, intentional pipeline improvement shifts these numbers, same as updating a snapshot test.",
-  "run_date": "2026-07-23",
+  "run_date": "2026-08-21",
   "reproducibility_check": "Expanded to a real 7-run variance study before setting the test file's margin constants from evidence rather than the original 2-run guess: 7 identical runs of this fixture at --total_train_iters 1000 gave reprojection error mean 5.581px / stdev 0.025px / range 0.06px (min 5.54, max 5.60), masked PSNR mean 22.167dB / stdev 0.170dB / range 0.49dB (min 21.90, max 22.39), and mask coverage bit-identical to 4 decimal places across all 7 runs and all 11 cameras (zero variance -- BiRefNet + clean_masks.py involve no stochastic step). Confirms the earlier 2-run finding (5.54/5.60px, 22.36/22.16dB) was representative, not a lucky pair. A supplementary 5-run batch at --total_train_iters 250 (faster but less converged) showed PSNR run-to-run variance roughly doubles at that lower iteration count (0.91dB range on 4 completed runs vs 0.49dB at 1000 iters) -- informational only, this fixture stays at 1000 iters. Reprojection error and mask coverage are effectively deterministic and not a strong regression signal on their own; PSNR is the metric genuinely capable of catching a real regression, and is the primary one this suite relies on for that (see test_pipeline_end_to_end.py's margin comments).",
-  "median_reprojection_error_px": 5.57,
+  "median_reprojection_error_px": 5.54,
   "mask_coverage": {
     "0001": 0.0157,
     "0002": 0.0129,
@@ -16,6 +16,19 @@
     "0011": 0.0224,
     "0012": 0.0229
   },
-  "eval4d_holdout": null,
-  "eval4d_notes": "eval4d_psnr_db/eval4d_ssim/eval4d_lpips land after the first GPU-runner baseline run (update_golden_baseline.py). The eval camera's stereo mates must be excluded from training (not merely unscored) before absolute numbers are trusted -- a held-out camera whose near-duplicate mate keeps training measures leakage (~5.7 dB observed on an 11-camera paired rig), not novel-view quality. eval4d_holdout records the camera and the excluded mates the numbers were measured under."
+  "eval4d_holdout": {
+    "eval_camera": "00",
+    "excluded_mates": []
+  },
+  "eval4d_notes": "eval4d_psnr_db/eval4d_ssim/eval4d_lpips land after the first GPU-runner baseline run (update_golden_baseline.py). The eval camera's stereo mates must be excluded from training (not merely unscored) before absolute numbers are trusted -- a held-out camera whose near-duplicate mate keeps training measures leakage (~5.7 dB observed on an 11-camera paired rig), not novel-view quality. eval4d_holdout records the camera and the excluded mates the numbers were measured under.",
+  "source_commit": "1e928f215ce9f4ca0a44fe66bfe52d3751b9a799",
+  "eval4d_psnr_db": 25.99,
+  "eval4d_ssim": 0.9763,
+  "eval4d_lpips": 0.0559,
+  "eval4d_config": {
+    "train_window": 8,
+    "dataset_downscale": 4,
+    "total_train_iters": 2000,
+    "target_time": "1500ms"
+  }
 }

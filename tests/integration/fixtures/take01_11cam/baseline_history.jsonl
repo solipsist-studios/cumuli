@@ -1,0 +1,1 @@
+{"timestamp": "2026-08-21T15:09:05+00:00", "commit": "1e928f215ce9f4ca0a44fe66bfe52d3751b9a799", "median_reprojection_error_px": 5.54, "mask_coverage_avg": 0.0163, "eval4d_psnr_db": 25.99, "eval4d_ssim": 0.9763, "eval4d_lpips": 0.0559}
