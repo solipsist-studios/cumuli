@@ -105,7 +105,10 @@ Key flags:
 
 ## Sync and extract a frame
 
+Every manual step below runs in the one `cumuli` env. Activate it once:
+
 ```bash
+conda activate cumuli
 python3 scripts/compute_sync_offsets.py \
     ~/captures/take01/movies \
     ~/take01_undist \
@@ -158,7 +161,6 @@ geometry in one resample, instead of downscale-then-undistort.
 ## HLOC pose estimation
 
 ```bash
-conda activate cumuli
 python3 scripts/run_hloc.py \
     --undistorted_dir ~/take01_1500ms/undistorted \
     --undistorted_pkl_dir ~/take01_1500ms/undistorted_pkls \
@@ -201,11 +203,9 @@ for k in 0 1 2 3 4; do
         --calib_dir /path/to/calibration_pkls \
         --out_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_pkl_dir ~/take01_1500ms/sync_candidates_pkls/f$k
-    conda activate cumuli
     python3 scripts/generate_masks.py \
         --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_fmasks_dir ~/take01_1500ms/sync_candidates_fmasks/f$k
-    conda activate cumuli
     python3 scripts/predict_keypoints_2d.py \
         --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_kp2d_dir ~/take01_1500ms/sync_candidates_kp2d/f$k \
@@ -255,12 +255,10 @@ python3 scripts/build_flat_dataset.py \
 ## Masks and 2D keypoints for this frame
 
 ```bash
-conda activate cumuli
 python3 scripts/generate_masks.py \
     --images_dir ~/take01_1500ms/images_flat \
     --out_fmasks_dir ~/take01_1500ms/fmasks_flat
 
-conda activate cumuli
 python3 scripts/predict_keypoints_2d.py \
     --images_dir ~/take01_1500ms/images_flat \
     --out_kp2d_dir ~/take01_1500ms/poses_2d_flat \
