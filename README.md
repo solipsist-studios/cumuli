@@ -142,8 +142,8 @@ python3 scripts/run_unified_pipeline.py \
     --target_time <e.g. 2500ms>
 ```
 
-`--config` loads per-rig defaults (conda env names, `--trainer_repo`,
-`SAPIENS_CHECKPOINT_ROOT`) from a JSON file so you do not have
+`--config` loads per-rig defaults (`--trainer_repo`,
+`SAPIENS_CHECKPOINT_ROOT`, HLOC settings) from a JSON file so you do not have
 to repeat them on every run. Copy [configs/example_rig.json](configs/example_rig.json)
 and fill in your own paths. See [configs/README.md](configs/README.md).
 Everything it sets can still be overridden on the command line.
@@ -157,6 +157,59 @@ python3 scripts/extract_synced_frames.py <movies_dir> <sync_offsets.json> <out_d
 ```
 
 Continue through `docs/pipeline.md` for the rest of the pipeline.
+
+## How compressed 4DGS methods compare
+
+Published results on the DyNeRF / Neural 3D Video benchmark (6 scenes,
+1352x1014, camera 0 held out), the standard everyone reports on. All
+numbers come from the cited papers, not from our runs. Read the
+footnotes before comparing across rows: the field does not agree on
+SSIM or LPIPS variants, and per-frame sizes must be multiplied by the
+~300-frame sequence length to compare against total-model sizes.
+
+| Method | Source | PSNR (dB) | LPIPS | Size | FPS |
+|---|---|---|---|---|---|
+| Real-Time (rotor) 4DGS | [arXiv 2310.10642](https://arxiv.org/abs/2310.10642) | 32.01 | 0.055 (Alex) | ~2 GB | 114 |
+| SpacetimeGaussians | [arXiv 2312.16812](https://arxiv.org/abs/2312.16812) | 32.05 | 0.044 (Alex) | 200 MB | 140 |
+| 4DGaussians | [arXiv 2310.08528](https://arxiv.org/abs/2310.08528) | 31.15 | 0.049 | 90 MB | 30 |
+| E-D3DGS | [arXiv 2404.03613](https://arxiv.org/abs/2404.03613) | 31.31 | 0.037 | 35 MB | 75 |
+| MEGA | [arXiv 2410.13613](https://arxiv.org/abs/2410.13613) | 31.49 | 0.057 (Alex) | 25 MB | 77 |
+| 4DGS-1K | [arXiv 2503.16422](https://arxiv.org/abs/2503.16422) | 31.88 | 0.052 | 418 MB | 805 |
+| Light4GS [^lg] | [arXiv 2503.13948](https://arxiv.org/abs/2503.13948) | 31.5-31.7 | 0.053-0.064 | 3.8-5.5 MB | 37-40 |
+| OMG4 (L to T) | [arXiv 2510.03857](https://arxiv.org/abs/2510.03857) | 31.99-31.47 | 0.056-0.067 | 5.75-2.09 MB | 202-275 |
+| QUEEN-l [^pf] | [arXiv 2412.04469](https://arxiv.org/abs/2412.04469) | 32.19 | 0.136 (VGG) | 0.75 MB/frame | 248 |
+| 3DGStream [^pf] | [arXiv 2403.01444](https://arxiv.org/abs/2403.01444) | 31.67 | - | 7.6 MB/frame | 215 |
+| HiCoM [^pf] | [arXiv 2411.07541](https://arxiv.org/abs/2411.07541) | 31.17 | - | 0.7-0.9 MB/frame | 274 |
+
+[^lg]: Light4GS reports its N3V average WITHOUT coffee_martini, the
+hardest scene. Averages with and without it differ by ~0.7 dB
+(SpacetimeGaussians reports both: 32.05 with, 32.74 without), so this
+row reads higher than a like-for-like average would.
+[^pf]: Streamable / online methods report per-frame sizes. Multiply by
+~300 frames for the sequence total before comparing with the
+total-model rows.
+
+Caveats that make cross-row comparison approximate: LPIPS backbones
+are mixed (AlexNet values sit in the 0.04-0.07 range, VGG values in the
+0.13-0.25 range, and several papers do not state which they used), and
+"SSIM" spans three protocols (plain SSIM, D-SSIM, and two DSSIM data
+ranges), so we omit the SSIM column entirely. TSOG
+([arXiv 2607.28049](https://arxiv.org/abs/2607.28049)), the closest
+published analog to the `.sogst` container itself, reports only quality
+deltas against its input representation (-0.4 to +0.9 dB at >90% size
+reduction), not absolute benchmark metrics.
+
+Where this pipeline stands: it trains the same rotor 4DGS model the
+OMG4 paper compresses, so OMG4's rows are the closest published analog.
+Our own measurement on the benchmark's coffee_martini scene, decoded
+and scored with this repo's `eval_render.py` harness rather than the
+papers' protocol: 25.9 dB / LPIPS 0.144 at 3.15 MB through the OMG4
+implicit-appearance path. Published per-scene coffee_martini numbers
+span 27.3-29.1 dB, and roughly 2 dB of our gap is the implicit
+appearance round-trip itself, which is why this pipeline's recommended
+compression path (`spm_native.py`) keeps explicit SH instead. A
+same-protocol benchmark run of the SPM-native path is future work; do
+not read the numbers above as a claim about `.sogst` quality.
 
 ## Contributing
 
