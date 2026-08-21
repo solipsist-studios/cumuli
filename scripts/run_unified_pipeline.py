@@ -80,7 +80,7 @@ DEFAULT_MULTIFRAME_SFM_SCRIPT = SCRIPTS_DIR / "multiframe_sfm.py"
 
 STAGE_KEYS = ["sync", "production", "poses", "masks", "dataset4d", "train4d"]
 
-# Every stage runs in the one pipeline env (envs/cumuli.yml,
+# Every stage runs in the one pipeline env (environment.yml,
 # scripts/setup_cumuli_env.sh). The historical per-stage env parameters
 # were removed once the merged env was verified by full GPU and CPU
 # pipeline runs; a machine that genuinely needs a different env name can

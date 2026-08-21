@@ -32,7 +32,7 @@ deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
            (--trainer_repo, HLOC settings, etc.), see
            configs/README.md
-envs/      the cumuli env manifest (see scripts/setup_cumuli_env.sh),
+environment.yml  the cumuli env manifest (see scripts/setup_cumuli_env.sh),
            pinning the known-good versions from docs/environment.md
 tests/     unit/ (one file per script, mocked) and integration/ (real,
            unmocked end-to-end pipeline run against a committed fixture,
@@ -139,7 +139,7 @@ python3 scripts/run_unified_pipeline.py \
     --video_dir <movies_dir> \
     --calib_dir <calibration_pkls_dir> \
     --out_dir <out_dir> \
-    --target_time <for example 2500ms>
+    --target_time <e.g. 2500ms>
 ```
 
 `--config` loads per-rig defaults (conda env names, `--trainer_repo`,

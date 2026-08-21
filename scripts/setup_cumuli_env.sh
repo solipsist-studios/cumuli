@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 #
-# Full provisioning for the single `cumuli` pipeline env. envs/cumuli.yml
+# Full provisioning for the single `cumuli` pipeline env. environment.yml
 # is the package manifest. This script adds the four installs a yml cannot
 # express (see that file's header) and verifies the result.
 #
@@ -49,7 +49,7 @@ if [ "$CPU_ONLY" = 1 ]; then
     "$PY" -m pip install --no-cache-dir \
         --index-url https://download.pytorch.org/whl/cpu torch==2.13.0 torchvision
     REQS="$(mktemp --suffix=.txt)"
-    "$PY" - "$REPO_ROOT/envs/cumuli.yml" > "$REQS" <<'PYREQ'
+    "$PY" - "$REPO_ROOT/environment.yml" > "$REQS" <<'PYREQ'
 import sys
 lines = []
 in_pip = False
@@ -73,8 +73,8 @@ PYREQ
     rm -f "$REQS"
     "$CONDA" clean -afy
 else
-    echo "=== create $ENV_NAME from envs/cumuli.yml ==="
-    "$CONDA" env create -n "$ENV_NAME" -f "$REPO_ROOT/envs/cumuli.yml"
+    echo "=== create $ENV_NAME from environment.yml ==="
+    "$CONDA" env create -n "$ENV_NAME" -f "$REPO_ROOT/environment.yml"
     PY="$("$CONDA" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)')"
 fi
 

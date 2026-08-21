@@ -9,7 +9,7 @@ Precise setup instructions for the single `cumuli` conda environment
 and system tools this pipeline needs, plus the known-good versions this
 has actually been tested against. Provision it with
 `bash scripts/setup_cumuli_env.sh`, NOT `conda env create` alone:
-`envs/cumuli.yml` is the package manifest, and the script adds four
+`environment.yml` is the package manifest, and the script adds four
 installs a yml cannot express (an editable, submodule-recursive hloc
 checkout, easyvolcap `--no-deps`, the OMG4 trainer's CUDA extensions,
 and the optional cupy/cuml SPM accelerators).

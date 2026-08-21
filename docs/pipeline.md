@@ -109,6 +109,9 @@ Every manual step below runs in the one `cumuli` env. Activate it once:
 
 ```bash
 conda activate cumuli
+```
+
+```bash
 python3 scripts/compute_sync_offsets.py \
     ~/captures/take01/movies \
     ~/take01_undist \

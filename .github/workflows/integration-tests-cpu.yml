@@ -163,10 +163,10 @@ jobs:
           path: |
             ${{ env.CONDA_BASE }}/envs
             ~/.cache/cumuli-env/hloc-src
-          # Hashes envs/*.yml (now the single cumuli.yml) AND the setup
+          # Hashes environment.yml AND the setup
           # script -- a provisioning change busts the cache even when the
           # yml is untouched. The -v3 suffix retires the five-env entries.
-          key: conda-envs-v3-${{ runner.os }}-${{ hashFiles('envs/*.yml', 'scripts/setup_cumuli_env.sh') }}
+          key: conda-envs-v3-${{ runner.os }}-${{ hashFiles('environment.yml', 'scripts/setup_cumuli_env.sh') }}
 
       - name: Verify restored envs actually import (cache-hit only)
         # A restored cache that passes actions/cache's own checks can still
