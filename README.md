@@ -201,15 +201,26 @@ reduction), not absolute benchmark metrics.
 
 Where this pipeline stands: it trains the same rotor 4DGS model the
 OMG4 paper compresses, so OMG4's rows are the closest published analog.
-Our own measurement on the benchmark's coffee_martini scene, decoded
-and scored with this repo's `eval_render.py` harness rather than the
-papers' protocol: 25.9 dB / LPIPS 0.144 at 3.15 MB through the OMG4
-implicit-appearance path. Published per-scene coffee_martini numbers
-span 27.3-29.1 dB, and roughly 2 dB of our gap is the implicit
-appearance round-trip itself, which is why this pipeline's recommended
-compression path (`spm_native.py`) keeps explicit SH instead. A
-same-protocol benchmark run of the SPM-native path is future work; do
-not read the numbers above as a claim about `.sogst` quality.
+Our own coffee_martini measurements, trained and scored end to end with
+this repo (`train_scratch.py` -> `spm_native.py` -> `eval_render.py`,
+30-frame held-out subset, LPIPS-AlexNet):
+
+| model | splats | size | PSNR | SSIM | LPIPS |
+|---|---|---|---|---|---|
+| pretrain (1.2M-point cap) | 1.2M | ~350 MB raw | 24.97 | - | - |
+| SPM-native `.sogst` | 414k | **10.0 MB** | 24.51 | 0.851 | 0.200 |
+
+The headline: SPM-native cost **0.46 dB** against its own pretrain while
+cutting the model to a 10 MB streamable archive - the count reduction
+is nearly free when explicit SH is kept, which is why `spm_native.py`
+is the recommended path. The gap to the published 27.3-29.1 dB range is
+dominated by the pretrain itself: our 32 GB consumer GPU forced a
+1.2M-gaussian densification cap where the papers train unconstrained
+multi-million-point models on data-center hardware. For calibration on
+the identical harness, the OMG4 authors' own published (uncapped,
+implicit-path) coffee_martini artifact scores 25.92 dB / LPIPS 0.144 at
+3.15 MB. Do not compare any of these numbers against the table above
+without the caveats listed there.
 
 ## Contributing
 
