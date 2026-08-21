@@ -93,7 +93,7 @@ ssh <host> 'cd <trainer-repo> && \
 
 Roughly 4 hours at full resolution on a 4090 (1.7–2.4 it/s, slower
 with aggressive densification). Output:
-`output/<model_path>/chkpnt30000.pth` (from `--save_iterations`;
+`output/<model_path>/chkpnt30000.pth` (from `--save_iterations`.
 `chkpnt_best.pth` is the same file for these runs).
 
 Operational footguns, all hit in practice:
@@ -218,7 +218,7 @@ larger appearance codebook.
 
 `spm_native.py` keeps the count reduction and drops the round-trip. It
 drives the same sampling → gradient-pruning → merging schedule via
-`train.py --spm_native_out` (a patched OMG4 clone; the `deps/OMG4`
+`train.py --spm_native_out` (a patched OMG4 clone: the `deps/OMG4`
 submodule carries the patches). At the point the stock trainer would call
 `construct_net()`, it instead fine-tunes the surviving **explicit-SH**
 Gaussians for `--extra-iter` iterations and saves a rotor-style
@@ -241,7 +241,7 @@ other model dir to A/B the two paths without recomputing them.
 > **Availability note.** The `--spm_native_out` flag and the SPM-native
 > schedule live on the solipsist-studios OMG4 fork, vendored here as the
 > `deps/OMG4` submodule. `spm_compress.py` also works against a stock
-> upstream clone; `spm_native.py` needs the fork.
+> upstream clone. `spm_native.py` needs the fork.
 
 ## 3. Export + pack
 

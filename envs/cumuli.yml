@@ -16,8 +16,8 @@
 #   3. The OMG4 trainer CUDA extensions (diff-gaussian-rasterization,
 #      simple-knn, pointops2), compiled against THIS env's torch from the
 #      deps/OMG4 checkout. ABI-bound: changing torch means rebuilding them.
-#   4. cupy-cuda13x / cuml-cu13 (optional SPM accelerators; install
-#      failure is a warning, not an error).
+#   4. cupy-cuda13x / cuml-cu13 (optional SPM accelerators, whose
+#      install failure is a warning, not an error).
 #
 # Anchor pins (immovable without rebuilding the CUDA extensions):
 # torch 2.13.0+cu130, the combination the OMG4 extensions were verified
@@ -27,12 +27,12 @@
 # attempt), and the extensions are rebuilt against this env by the setup
 # script anyway. pycolmap==4.0.4 on 3.12 is already proven by the
 # unit-test CI job (requirements-dev.txt). Everything else was merged from the per-env known-good pins,
-# taking the newest where envs disagreed; the integration suite's golden
+# taking the newest where envs disagreed. The integration suite's golden
 # reprojection and mask-coverage gates are the drift detectors for that
 # choice.
 #
-# transformers 5.12.1 serves both Sapiens2 (DETR classes) and -- pending
-# the setup script's probe -- BiRefNet's dynamically downloaded model
+# transformers 5.12.1 serves both Sapiens2 (DETR classes) and (pending
+# the setup script's probe) BiRefNet's dynamically downloaded model
 # code, which was previously verified only against 4.49.0. If that probe
 # fails, the diffuman4d env stays separate (see docs/environment.md) and
 # the "diffuman4d extras" block below can be dropped.
@@ -55,9 +55,9 @@ dependencies:
       - plyfile==1.1.4
       - fire==0.7.1
       - huggingface_hub==1.19.0
-      - gdown  # hloc declares it; harmless and silences pip's resolver
+      - gdown  # hloc declares it. Harmless, and silences pip's resolver
       # hloc's matcher (hloc itself installs --no-deps via the setup
-      # script; lightglue is its one runtime dep not already listed here).
+      # script. lightglue is its one runtime dep not already listed here).
       # Commit recovered from the working env's own direct_url.json --
       # the historical hloc.yml omitted it and CI's shallow `import hloc`
       # probe never noticed.

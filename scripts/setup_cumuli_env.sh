@@ -3,7 +3,7 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 #
 # Full provisioning for the single `cumuli` pipeline env. envs/cumuli.yml
-# is the package manifest; this script adds the four installs a yml cannot
+# is the package manifest. This script adds the four installs a yml cannot
 # express (see that file's header) and verifies the result.
 #
 # Usage:
@@ -38,12 +38,11 @@ if [ "$CPU_ONLY" = 1 ]; then
     # The yml's cu130 torch is multi-GB and must never be downloaded on a
     # CPU runner at all. An install-then-replace would stack both wheel
     # sets on an already-tight disk budget (the failure mode the old
-    # per-env CI creation was engineered around). Create from a filtered
-    # yml with the CUDA index and torch lines removed, then install the
-    # cpu wheels explicitly.
-    # cpu torch is installed FIRST so no transitive dependency (diffusers,
-    # lpips, kornia, ...) can drag the CUDA-bundled PyPI torch in during
-    # resolution -- pip only installs torch if it is not already present.
+    # per-env CI creation was engineered around). So cpu torch is
+    # installed FIRST, before the yml's requirements: no transitive
+    # dependency (diffusers, lpips, kornia, ...) can then drag the
+    # CUDA-bundled PyPI torch in during resolution, because pip only
+    # installs torch if it is not already present.
     export PIP_NO_CACHE_DIR=1
     "$CONDA" create -y -n "$ENV_NAME" python=3.12 pip
     PY="$("$CONDA" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)')"
