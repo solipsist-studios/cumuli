@@ -5,188 +5,81 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 # Environment setup
 
-Precise setup instructions for the four conda environments and system
-tools this pipeline needs, plus known-good versions this has actually
-been tested against. `README.md` and `docs/pipeline.md` mention which
-env each stage needs. This doc is the "how do I actually create them"
-reference. `envs/*.yml` pin the exact known-good combination for each.
-`conda env create -f envs/<name>.yml` is the fastest path, and the
-manual steps below explain what is actually in them.
+Precise setup instructions for the single `cumuli` conda environment
+and system tools this pipeline needs, plus the known-good versions this
+has actually been tested against. Provision it with
+`bash scripts/setup_cumuli_env.sh`, NOT `conda env create` alone:
+`environment.yml` is the package manifest, and the script adds four
+installs a yml cannot express (an editable, submodule-recursive hloc
+checkout, easyvolcap `--no-deps`, the OMG4 trainer's CUDA extensions,
+and the optional cupy/cuml SPM accelerators).
 
 ## Requirements
 
 - Linux, NVIDIA GPU with recent drivers (tested on Pop!_OS 24.04 /
   Ubuntu Noble, driver 580.x). CPU-only or non-NVIDIA GPUs are not
-  supported -- HLOC, Sapiens, and Diffuman4D all require CUDA.
+  supported: HLOC, Sapiens, and Diffuman4D all require CUDA.
   Comfortably tested on a single RTX 4090 (24GB VRAM). Smaller cards
   may need reduced `--hloc_max_keypoints` or Diffuman4D batch settings.
-- No system-wide CUDA toolkit install is required -- each conda env
-  below pulls its own CUDA runtime via the `torch`/`torchvision` wheel
-  (`+cuXXX` build tag). Don't rely on a system `nvcc`.
+- No system-wide CUDA toolkit install is required. The env pulls its
+  own CUDA runtime via the `torch`/`torchvision` wheel (`+cuXXX` build
+  tag). Do not rely on a system `nvcc`.
 - [Miniforge](https://github.com/conda-forge/miniforge) (or any
   conda/mamba distribution).
 
-## Conda environments
+## The `cumuli` environment
 
-Three envs are wired into `scripts/run_unified_pipeline.py`, which
-dispatches each stage into the right one automatically. You do not
-need to `conda activate` manually except when running a stage's script
-directly.
+One env serves every stage. `scripts/run_unified_pipeline.py` dispatches
+each stage into it automatically (you do not need to `conda activate`
+except when running a stage's script directly). The env name is the
+`CONDA_ENV` constant in that script. There is no per-stage env
+parameter.
 
-### `hloc` -- pose estimation (run_hloc.py)
+Known-good combination, verified 2026-08-20 by a full six-stage pipeline
+run on the take01 fixture (drift vs the previous five-env setup:
+reprojection 5.44 px vs 5.57 golden, eval PSNR within 0.02 dB, SSIM and
+LPIPS identical to 4 decimals):
 
-```bash
-conda env create -f envs/hloc.yml
-```
+- Python 3.12, torch 2.13.0+cu130, torchvision (cu130 pair)
+- transformers 5.12.1 (serves both BiRefNet's dynamic model code and
+  Sapiens2's DETR classes. BiRefNet was verified against it by a real
+  mask-generation run, not only an import)
+- numpy 2.4.6, scipy 1.17.1, Pillow 12.2.0, opencv-python 4.13.0.92
+- pycolmap 4.0.4, hloc @c13273b (editable, --no-deps, submodules),
+  lightglue @eb42fee, sapiens @7e5bae8, easyvolcap @4cb3c00 (--no-deps)
+- gsplat, torchmetrics, lpips, dahuffman, open3d 0.19.0, and the
+  trainer CUDA extensions built by the setup script
 
-That pins the exact known-good combination below. Equivalent by hand:
+The anchor pin is torch 2.13.0+cu130: the trainer's CUDA extensions are
+ABI-compiled against it, and cupy/cuml come from the CUDA-13 wheel
+family. Changing torch means rebuilding the extensions (rerun the setup
+script).
 
-```bash
-conda create -n hloc python=3.10 -y
-conda activate hloc
-pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
-pip install -r deps/camera-calibration/requirements.txt  # if not already covered
-pip install pycolmap
-pip install git+https://github.com/cvg/Hierarchical-Localization.git@c13273bd0ecc2917a35910fd843712a1c6243193  # hloc -- NOT on plain PyPI, see envs/hloc.yml
-```
+A CUDA GPU is required for the `train4d` stage only. Every stage before
+it, including the full 4D dataset build, runs on CPU
+(`--stop_after_stage dataset4d`). The setup script's `--cpu` mode
+provisions a CPU-wheel variant without the extensions, which is what CI
+uses.
 
-Known-good combination (verified 2026-07-13): Python 3.10.20, torch
-2.12.0+cu130, torchvision 0.27.0+cu130, pycolmap 4.0.4, hloc 1.5 (commit
-c13273b above -- this exact source was missing from both this doc and
-envs/hloc.yml until 2026-07-29, when a fresh CI checkout failed trying to
-`pip install hloc==1.5` from plain PyPI, which doesn't have it; recovered
-from pip's own direct_url.json on the working dev env), numpy 2.2.6,
-scipy 1.15.3, Pillow 12.2.0.
-
-### `diffuman4d` -- masks, Diffuman4D inference, nerfstudio conversion (generate_masks.py, the not-yet-built Diffuman4D-branch scripts, and clean_masks.py's `--retry`)
-
-```bash
-conda env create -f envs/diffuman4d.yml
-```
-
-Equivalent by hand:
-
-```bash
-conda create -n diffuman4d python=3.10 -y
-conda activate diffuman4d
-pip install -r deps/Diffuman4D/requirements.txt
-pip install -r deps/BiRefNet/requirements.txt
-```
-
-Known-good combination: Python 3.10.20, torch 2.7.1+cu126, torchvision
-0.22.1+cu126, pycolmap 4.0.4, diffusers 0.33.1, transformers 4.49.0,
-numpy 2.2.6, scipy 1.15.3, Pillow 12.2.0. **This env intentionally pins
-an older CUDA build than `hloc`/`sapiens2`** -- it follows whatever
-Diffuman4D's own upstream `requirements.txt` specifies. Don't force it
-to match the other envs' torch/CUDA versions without checking that
-Diffuman4D still works against them.
-
-### `sapiens2` -- 2D keypoint prediction (predict_keypoints_2d.py)
-
-```bash
-conda env create -f envs/sapiens2.yml
-```
-
-Equivalent by hand:
-
-```bash
-conda create -n sapiens2 python=3.12 -y
-conda activate sapiens2
-pip install torch torchvision  # CUDA 12/13 wheel, matches your driver
-pip install transformers
-pip install git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4  # predict_keypoints_2d.py imports sapiens.pose
-```
-
-Known-good combination: Python 3.12.13, torch 2.12.0+cu130, torchvision
-0.27.0+cu130, transformers 5.12.1, numpy 2.4.6, scipy 1.17.1, Pillow
-12.2.0, sapiens 2.0.0 (commit 7e5bae8 above -- this package was missing
-from both this doc and envs/sapiens2.yml until 2026-07-28; recovered
-from pip's own direct_url.json on the working dev env, since neither
-file had recorded it).
-
-Requires the `SAPIENS_CHECKPOINT_ROOT` env var pointed at a directory
-laid out like:
-
-```
-<root>/detector/detr-resnet-101-dc5/...
-<root>/pose/sapiens2_1b_pose.safetensors
-```
-
-Download the detector and pose checkpoints from Sapiens' released
-weights and place them in that layout. Pass the root via
-`--sapiens_checkpoint_root` to the orchestrator (or set
-`SAPIENS_CHECKPOINT_ROOT` directly for standalone predict_keypoints_2d.py runs).
-
-### `queen` -- generic scripts + triangulation (`--generic_env`/`--triangulate_env`)
-
-```bash
-conda env create -f envs/queen.yml
-conda run -n queen pip install --no-deps git+https://github.com/zju3dv/EasyVolcap.git@4cb3c000a31b8764834c79792b355f110d947e75
-```
-
-This is `run_unified_pipeline.py`'s default target for `--generic_env`
-(make_sync_grid.py, undistort_frames.py, build_flat_dataset.py,
-build_colmap_sparse.py, run_pose_refinement.py, compute_sync_offsets.py)
-and `--triangulate_env` (triangulate_and_project_keypoints.py, which
-wraps Diffuman4D's triangulate_skeleton.py). The orchestrator never runs
-these bare with its own launching Python -- always through this named
-env -- so it has to actually exist, unlike a genuinely env-agnostic
-script. Missing from every committed env spec entirely until 2026-07-29
-(found when a fresh CI checkout failed with "Not a conda environment:
-.../envs/queen").
-
-Deliberately narrower than the real local `queen` env this was recovered
-from (which is much larger -- also used for unrelated local
-experimentation): this lists only what's actually imported by the real
-code path, traced by hand, import by import, recursively, through to
-easyvolcap's own internal utility modules. `open3d` IS needed -- a
-function-local `import open3d as o3d` inside Diffuman4D's
-triangulate_skeleton.py (`write_kp3d_pcd()`, which runs whenever
-`--out_pcd_dir` is set, which this pipeline always does) was missed by an
-earlier top-level-only trace and caused a real CI failure
-(`ModuleNotFoundError: No module named 'open3d'`, 2026-07-31, the first
-fresh CI build of this env to reach that code path) before being added
-back -- see `envs/queen.yml`'s own header comment for the full story.
-
-Known-good combination (verified 2026-07-29, open3d added 2026-07-31):
-Python 3.11.15, numpy 2.4.4, scipy 1.17.1, Pillow 12.2.0, plyfile 1.1.3,
-opencv-python 4.13.0.92, fire 0.7.1, torch 2.12.0 (CPU-safe -- the one
-real usage, Diffuman4D's camera_parser.py, is plain tensor math, no
-`.cuda()`/device placement), easyvolcap 0.0.0 (commit 4cb3c00 above,
-`--no-deps` -- skips its own heavy declared dependencies, none of which
-the real code path here touches), pdbr 0.9.7, rich 15.0.0, ujson 5.13.0,
-ruamel.yaml 0.19.1, tqdm 4.67.3, open3d 0.19.0.
+Sapiens checkpoints are separate from the env: set
+`SAPIENS_CHECKPOINT_ROOT` (or `--sapiens_checkpoint_root`) to a
+directory holding `detector/` (facebook/detr-resnet-101-dc5 snapshot)
+and `pose/sapiens2_<size>_pose.safetensors`.
 
 ## System-level tools (no conda env)
 
-- `ffmpeg` / `ffprobe` on PATH -- required by compute_sync_offsets.py
+- `ffmpeg` / `ffprobe` on PATH, required by compute_sync_offsets.py
   and extract_synced_frames.py. Any recent build works (tested against
   6.1.1).
 - `rawtherapee-cli` on PATH, or a flatpak install of RawTherapee --
   optional, only needed for extract_synced_frames.py's `--pp3_dir` color
   correction.
 
-## The `omg4` trainer environment
-
-The `train4d` stage (training, bake, and eval) runs in one conda env
-named `omg4`. Two provisioning surfaces exist:
-
-- `envs/omg4.yml` is the package manifest: Python 3.11, CUDA torch,
-  and the eval dependencies (`gsplat`, `torchmetrics`, `lpips`).
-- `deps/OMG4/script/setup_omg4_env.sh` is the full provisioning path.
-  It installs the same packages AND builds the trainer's CUDA
-  extensions (diff-gaussian-rasterization, simple-knn, pointops2),
-  which a yml cannot do. Use the script for a new machine.
-
-A CUDA GPU is required for the `train4d` stage only. Every stage before
-it, including the full 4D dataset build, runs on CPU
-(`--stop_after_stage dataset4d`).
-
 ## Vendored script dependencies
 
 `multiframe_sfm.py` (used by `run_hloc.py`) and
 `refine_poses_with_keypoints.py` (used by the `run_pose_refinement.py`
-wrapper) live directly in `scripts/` -- no external checkout needed.
+wrapper) live directly in `scripts/`. No external checkout is needed.
 Pass `--multiframe_sfm_script` / `--refine_script` only if you want to
 point at a different copy (for example while testing local changes to
 them).
@@ -196,6 +89,6 @@ them).
 Per-camera calibration PKLs (from `deps/camera-calibration`) live
 outside the repo and are passed via `--calib_dir`. If you recalibrate a
 subset of cameras later, double check they end up at the same native
-resolution as the rest of the rig -- a mismatched-resolution camera in
+resolution as the rest of the rig. A mismatched-resolution camera in
 an otherwise-consistent calib folder has caused measurably worse pose
 estimation in testing here.

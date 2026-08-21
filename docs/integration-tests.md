@@ -1,12 +1,13 @@
 # Integration tests
 
-`tests/integration/` runs the real pipeline -- real ffmpeg, real HLOC,
-real Sapiens, real BiRefNet, real 4D training, no mocking -- against a
+`tests/integration/` runs the real pipeline (real ffmpeg, real HLOC,
+real Sapiens, real BiRefNet, real 4D training, no mocking) against a
 small committed fixture capture, and checks that the output is actually
 good, not just that nothing crashed. This is the opposite of
-`tests/unit/` (371 tests as of the 4D cutover, one file per script, everything mocked): unit tests
-verify each script's own logic in isolation; this verifies the whole
-chain produces correct real output together.
+`tests/unit/` (371 tests as of the 4D cutover, one file per script,
+everything mocked): unit tests verify each script's own logic in
+isolation, while this verifies the whole chain produces correct real
+output together.
 
 ## What it checks
 
@@ -17,14 +18,14 @@ a real capture would be processed, then:
 - **Structural checks per stage** -- every camera present at every stage,
   valid transforms, non-empty masks/point clouds/exports. Largely a second
   look at what `validate_stage_output.py` already checks automatically
-  (the orchestrator runs it after every stage; if that fails, the whole
-  run fails before these tests even get their own chance to look).
+  (the orchestrator runs it after every stage, and a failure there stops
+  the run before these tests even get their own chance to look).
 - **Regression checks against a golden baseline** -- pose refinement's
   median reprojection error and per-camera mask coverage, compared with
   margin against `tests/integration/fixtures/take01_11cam/golden_baseline.json`.
   That file records numbers from real runs of this fixture that a human
   reviewed and confirmed looked right. This is *not* a universal quality
-  bar -- different rigs/subjects have no comparable absolute number -- it
+  bar (different rigs/subjects have no comparable absolute number). It
   only answers "did this change make our one reference capture's output
   measurably worse than before."
 - **Held-out metrics on the final 4D splat (GPU runs only)** -- the
@@ -34,15 +35,15 @@ a real capture would be processed, then:
   mates leave training WITHOUT being scored, because a held-out camera
   whose mate keeps training measures ~5.7 dB of pure leakage rather
   than quality. These are **proxy signals, not measures of real
-  production quality** -- production never holds a camera out (more
-  cameras only ever improves a real splat) -- and absolute PSNR on a
+  production quality**: production never holds a camera out (more
+  cameras only ever improves a real splat), and absolute PSNR on a
   masked capture is dominated by background pixels, so the numbers are
   relative regression gates only. The `eval4d_*` fields in
   `golden_baseline.json` are informational until the first GPU-runner
   baseline lands.
 
-The whole pipeline runs from scratch every time -- no resuming from a
-cached partial run -- so a regression in any stage (not just training)
+The whole pipeline runs from scratch every time, with no resuming from
+a cached partial run, so a regression in any stage (not just training)
 gets caught.
 
 ## Running it
@@ -53,18 +54,19 @@ pytest tests/integration -q
 
 Needs, on the machine running it:
 - An NVIDIA GPU (`nvidia-smi`)
-- The `hloc`, `diffuman4d`, `sapiens2`, `queen`, and `omg4` conda envs
-  (see `docs/environment.md`)
+- The `cumuli` conda env, provisioned by `scripts/setup_cumuli_env.sh`
+  (a plain `conda env create` lacks the trainer CUDA extensions the
+  GPU-mode prereq check probes for, see `docs/environment.md`)
 - The `deps/OMG4` submodule checked out (the vendored trainer)
 - `ffmpeg` on PATH
 - Sapiens checkpoints (`SAPIENS_CHECKPOINT_ROOT`, or `VCP_SAPIENS_CHECKPOINT_ROOT`
   to point at a different location than the orchestrator's own default)
 
 Missing any of these -> the suite **skips with a specific reason**, it
-doesn't fail. This is deliberate: the same test file works identically on
+does not fail. This is deliberate: the same test file works identically on
 any machine, doing the real thing where the environment supports it and
 skipping cleanly everywhere else, rather than needing CI-side conditionals
-to know when it's safe to run.
+to know when it is safe to run.
 
 ### Running without a GPU
 
@@ -85,32 +87,34 @@ to start without a GPU by design.
 the removed trainer are in git history):
 
 1. (2026-07-30) **A real GitHub-hosted CI runner has only ~7.75GB RAM**,
-   not the 16GB an earlier version of this doc assumed -- confirmed
-   directly via `[resmon]` telemetry added to `integration-tests-cpu.yml`.
+   not the 16GB an earlier version of this doc assumed. This was
+   confirmed directly via `[resmon]` telemetry added to
+   `integration-tests-cpu.yml`.
    The 1b Sapiens checkpoint alone peaks at 6.5-7.6GB regardless of camera
    count (dominated by the model's fixed weight size, not image count),
    leaving so little headroom the runner swap-thrashed for ~40min then
    became unresponsive. CI-mode CPU testing therefore uses the smaller
-   **0.4b checkpoint** (`CPU_SAPIENS_MODEL_SIZE`, measured 4.1GB peak --
+   **0.4b checkpoint** (`CPU_SAPIENS_MODEL_SIZE`, measured 4.1GB peak,
    real margin) via `--sapiens_model_size`, wired through
    `predict_keypoints_2d.py`. Quality is unchecked in CPU mode anyway (see
    below), so the accuracy tradeoff costs nothing here. Separately, HLOC's
    SuperPoint feature extraction at the production `resize_max` of 4096
-   peaks at 11.7GB RSS on CPU -- also capped, to 1024 (`CPU_HLOC_RESIZE_MAX`,
-   `--hloc_resize_max`), the lowest setting that still reconstructs (512
-   fails outright).
-2. (2026-07-30) **2 cameras is never enough for CI's reduced config** --
+   peaks at 11.7GB RSS on CPU. It is also capped, to 1024
+   (`CPU_HLOC_RESIZE_MAX`, `--hloc_resize_max`), the lowest setting that
+   still reconstructs (512 fails outright).
+2. (2026-07-30) **2 cameras is never enough for CI's reduced config**:
    every 2-camera pair tried made HLOC's COLMAP reconstruction fail
    outright ("Failed to create any sparse model"), confirmed via a fast
    standalone probe isolating just the reconstruction step across many
-   camera-pair combinations; every 3-camera trial succeeded. CI-mode CPU
-   testing therefore uses a 3-camera subset (`CPU_REAL_CAMERAS`), not the
-   full 11 -- a real functional minimum, not a scope choice. This also
+   camera-pair combinations, and every 3-camera trial succeeded. CI-mode
+   CPU testing therefore uses a 3-camera subset (`CPU_REAL_CAMERAS`), not
+   the full 11: a real functional minimum, not a scope choice. This also
    means CI's CPU path is structurally weaker than the full 11-camera
    fixture at registration robustness (see "The fixture" below on why 11
-   was chosen for the GPU path) -- acceptable since CPU mode no longer
-   checks reconstruction quality at all, only that the pipeline completes.
-3. (2026-07-30) **`--sync_window 1` crashed outright** --
+   was chosen for the GPU path). That is acceptable since CPU mode no
+   longer checks reconstruction quality at all, only that the pipeline
+   completes.
+3. (2026-07-30) **`--sync_window 1` crashed outright**:
    `extract_synced_frames.py`'s `--window` has two different output
    layouts, not just "fewer frames": `window=1` writes flat files
    (`output_dir/0001.jpg`), any `window>1` writes per-instant subdirs
@@ -118,8 +122,8 @@ the removed trainer are in git history):
    subdir layout unconditionally. Fixed via a new `_instant_dirs()` helper
    that matches whichever layout is actually on disk. CI-mode CPU testing
    uses `CPU_SYNC_WINDOW = 1` (vs. the production default of 5) since
-   Sapiens keypoint prediction -- the dominant cost -- runs once per
-   candidate window frame; this cuts that cost 5x.
+   Sapiens keypoint prediction, the dominant cost, runs once per
+   candidate window frame. This cuts that cost 5x.
 
 **What CPU mode validates:** structural completion through the dataset
 build (`--stop_after_stage dataset4d`, the reduced config from the
@@ -138,13 +142,13 @@ Sapiens checkpoints from scratch, each layer cached so only the first
 run (or a cache-busting dependency change) pays the full cost. This is
 the always-on safety net: it catches plumbing/logic regressions through
 the dataset build on every PR. It produces no held-out eval numbers
-(training never runs on CPU) -- see the CPU section above for the
+(training never runs on CPU). See the CPU section above for the
 reduced-config list and why.
 
 `.github/workflows/integration-tests.yml` runs the full GPU-accurate path,
 targeting a `self-hosted, gpu`-labeled runner since none of its
 prerequisites exist on GitHub's own hosted runners. **Manual-dispatch
-only** (`workflow_dispatch`, not `on: pull_request`) -- no runner with
+only** (`workflow_dispatch`, not `on: pull_request`): no runner with
 that label has ever been registered, so an automatic trigger would just
 queue forever on every PR with nothing to ever pick it up. Real GPU
 validation happens locally today (`pytest tests/integration -q`, see
@@ -154,11 +158,11 @@ runner, a missing prerequisite means the runner's setup broke, and
 skipping there would show up as a green check with zero tests run.
 
 Registering an actual runner with that label is a separate, deliberate
-decision (not bundled into this workflow) -- once this repo is public, a
+decision (not bundled into this workflow). Once this repo is public, a
 self-hosted runner executes whatever code a triggering PR checks out, so
 it needs its own sign-off (and likely a required-reviewer gate for PRs
 from forks). When that happens, switch the trigger back to `pull_request`
-(with a `paths:` filter, so a docs-only PR doesn't pay the ~20-minute run
+(with a `paths:` filter, so a docs-only PR does not pay the ~20-minute run
 cost or contend for the one GPU runner) and enable branch protection on
 `main` requiring this workflow's check to pass: without it, a direct push
 to `main` bypasses the PR gate entirely but still triggers the rolling
@@ -166,43 +170,44 @@ baseline update below, letting unreviewed output become the new baseline.
 
 ## Rolling baseline
 
-`golden_baseline.json`'s numbers aren't static forever. After a PR merges
-to `main` (one touching the same pipeline-relevant paths the PR gate
-watches -- a docs-only merge can't change pipeline output, so it doesn't
-trigger a re-measure), `.github/workflows/update-integration-baseline.yml`
+`golden_baseline.json`'s numbers are not static forever. After a PR
+merges to `main` (one touching the same pipeline-relevant paths the PR
+gate watches, because a docs-only merge cannot change pipeline output
+and so does not trigger a re-measure),
+`.github/workflows/update-integration-baseline.yml`
 re-runs `tests/integration/update_golden_baseline.py`, which:
 
 1. Re-runs the real pipeline against the same fixture/settings.
 2. Confirms the run itself succeeded structurally (reusing
    `test_pipeline_end_to_end.py`'s own per-stage checks, imported directly
-   so the two can't drift apart) -- a crashed/broken run writes nothing.
+   so the two cannot drift apart). A crashed/broken run writes nothing.
 3. Overwrites `golden_baseline.json`'s metric fields (reprojection
    error, mask coverage, and the `eval4d_*` metrics once the GPU runner
    populates them) with this run's numbers and commits the change back
    to `main`.
 4. Appends one line to `golden_baseline.json`'s sibling
-   `baseline_history.jsonl` -- an append-only record of every *merged*
+   `baseline_history.jsonl`, an append-only record of every *merged*
    result over time (not failed/abandoned PRs), for trend visibility and
    as a reference point if a change needs reverting.
 
 The baseline is always the single most recent merged result, deliberately
-**not** an average across runs -- averaging would dilute a real,
+**not** an average across runs. Averaging would dilute a real,
 intentional quality improvement the same way it would dilute noise. This
-step does not compare against the old baseline or fail on drift; that
+step does not compare against the old baseline or fail on drift. That
 gating already happened on the PR's own `pull_request`-triggered
-`integration-tests.yml` run before the code ever reached `main` -- its
-only job is capturing fresh ground truth for the *next* PR to be checked
-against.
+`integration-tests.yml` run before the code ever reached `main`, so this
+step's only job is capturing fresh ground truth for the *next* PR to be
+checked against.
 
 Margins (`REPROJECTION_ERROR_MARGIN_PX`, `MASK_COVERAGE_MARGIN` in
 `test_pipeline_end_to_end.py`) are derived from a real 7-run variance
-study, not guessed -- see the comments above those constants and
+study, not guessed. See the comments above those constants and
 `golden_baseline.json`'s own `reproducibility_check` field. The
 `eval4d_*` margins start deliberately wide (PSNR -2 dB) until an
 equivalent variance study exists for the 4D trainer.
 Mask coverage is genuinely deterministic run to run (bit-identical across
 every run so far). Reprojection error is *usually* similarly stable but
-is not actually deterministic -- a 500-iter follow-up study found HLOC's
+is not actually deterministic. A 500-iter follow-up study found HLOC's
 own initial pose estimate varies run to run (a real ~2.3px spread before
 refinement even runs), which occasionally, not usually, carries through
 into the final refined number too (one run out of 18+ landed 0.25px off
@@ -223,14 +228,15 @@ the 4D trainer's CUDA rasterizer.
 ## The fixture
 
 `tests/integration/fixtures/take01_11cam/`: all 11 real cameras, full-length
-clips (~3s), from the validated `take01` capture (the same capture `docs/pipeline.md` uses as its worked example). An earlier 5-camera
+clips (~3s), from the validated `take01` capture (the same capture
+`docs/pipeline.md` uses as its worked example). An earlier 5-camera
 subset was tried first (smaller/faster) but retired after real testing
 showed it was measurably worse on two fronts: HLOC's final reconstruction
 failed to register one camera on a first attempt (not enough background
 feature overlap with so few cameras), and the held-out-camera PSNR check
 swung 4.6dB between two otherwise-identical training runs. All 11
-cameras fixed both -- registration succeeded cleanly across repeated
+cameras fixed both: registration succeeded cleanly across repeated
 runs, and the PSNR swing dropped to 0.2dB (see `golden_baseline.json`'s
 `reproducibility_check` field for the numbers, measured with the
-previous trainer; the stability argument is about camera count, not the
-trainer).
+previous trainer). The stability argument is about camera count, not
+the trainer.

@@ -29,17 +29,15 @@ been run and validated end-to-end.
 - Per-camera calibration PKLs (from `deps/camera-calibration`), one per
   physical camera.
 - Raw GoPro `.mp4` clips, one per camera, all recording the same take.
-- Conda envs: `hloc` (HLOC + pycolmap), `diffuman4d` (BiRefNet background
-  removal deps), `sapiens2` (Sapiens keypoint prediction, needs
-  `SAPIENS_CHECKPOINT_ROOT` set), `queen` (generic scripts + triangulation),
-  and `omg4` (the 4D trainer, bake, and eval -- see `docs/environment.md`
-  and `envs/omg4.yml`). Training needs a CUDA GPU. Every stage before it
-  runs on CPU.
+- The `cumuli` conda env (`bash scripts/setup_cumuli_env.sh`, see
+  `docs/environment.md`). One env serves every stage. Keypoint
+  prediction additionally needs `SAPIENS_CHECKPOINT_ROOT` set. Training
+  needs a CUDA GPU. Every stage before it runs on CPU.
 
 ## Recommended: run everything with the unified orchestrator
 
 `scripts/run_unified_pipeline.py` runs the full pipeline end-to-end in
-one process -- sync through mask cleanup and training, plus pose
+one process: sync through mask cleanup and training, plus pose
 refinement when a known-good sync is reused. It dispatches each stage
 into the right conda env itself, so you do not need to `conda activate`
 between steps the way the walkthrough below shows. Read the walkthrough
@@ -59,12 +57,12 @@ python3 scripts/run_unified_pipeline.py \
 
 Key flags:
 
-- **`--config`** -- JSON file of per-rig defaults (conda env names,
+- **`--config`** -- JSON file of per-rig defaults (
   `--trainer_repo`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
   you do not have to repeat them on every run. Explicit CLI flags always
   override the config. See `configs/README.md`.
 - **`--start_from_stage` / `--stop_after_stage`** (`sync`, `production`,
-  `poses`, `masks`, `dataset4d`, `train4d`) -- resume partway through, or
+  `poses`, `masks`, `dataset4d`, `train4d`): resume partway through, or
   stop early to inspect intermediate output before committing GPU time to
   training. On a machine with no CUDA GPU, run with
   `--stop_after_stage dataset4d` and train elsewhere: every stage through
@@ -75,8 +73,8 @@ Key flags:
 - **Sync: verify once, reuse, and do not re-trust automatically every run.**
   `compute_sync_offsets.py`'s sync method (envelope cross-correlation,
   always runs unless `--initial_sync_json` is given) had a sign-inversion
-  bug and a confidence metric that couldn't tell a correct lock from a
-  lucky one on periodic/rhythmic audio -- both fixed and validated against
+  bug and a confidence metric that could not tell a correct lock from a
+  lucky one on periodic/rhythmic audio. Both are fixed and validated against
   a hand-verified sync file, and periodic-audio ambiguity is now flagged
   via `peak_ratio` rather than passing silently. Nothing in the pipeline
   auto-gates on that flag yet though (`validate_stage_output.py` only
@@ -97,7 +95,7 @@ Key flags:
      normal way to iterate without re-running (and re-trusting) sync
      search each time.
 - **`--hloc_resize_max`** (default 4096) / **`--hloc_max_keypoints`**
-  (default 8192) -- HLOC feature-extraction settings, passed through to
+  (default 8192): HLOC feature-extraction settings, passed through to
   `multiframe_sfm.py`. The 4096 default is deliberately higher than that
   script's own default of 2048: on an 11-camera rig with ~5312px native
   media, 2048 discarded enough detail to measurably hurt camera pose
@@ -106,6 +104,12 @@ Key flags:
   in the previously-worst cameras).
 
 ## Sync and extract a frame
+
+Every manual step below runs in the one `cumuli` env. Activate it once:
+
+```bash
+conda activate cumuli
+```
 
 ```bash
 python3 scripts/compute_sync_offsets.py \
@@ -147,7 +151,7 @@ python3 scripts/undistort_frames.py \
     --model OPENCV_FISHEYE
 ```
 
-**Calibration sanity check** happens automatically here -- if a camera's
+**Calibration sanity check** happens automatically here. If a camera's
 calibration `image_size` disagrees with the actual frame resolution by a
 uniform scale, it is auto-corrected with a loud warning (this was a real
 bug: a calibration made at the GoPro 5.3K full-sensor width, 5568px,
@@ -160,7 +164,6 @@ geometry in one resample, instead of downscale-then-undistort.
 ## HLOC pose estimation
 
 ```bash
-conda activate hloc
 python3 scripts/run_hloc.py \
     --undistorted_dir ~/take01_1500ms/undistorted \
     --undistorted_pkl_dir ~/take01_1500ms/undistorted_pkls \
@@ -172,7 +175,7 @@ python3 scripts/run_hloc.py \
 
 Background SfM features (HLOC, above) live on distant walls/windows, so
 camera poses can fit the background well while still disagreeing by
-dozens of pixels at the capture volume center -- exactly where the
+dozens of pixels at the capture volume center, exactly where the
 subject is. This step bundle-adjusts the camera poses against 2D human
 keypoints instead ("human as calibration wand"), and has been reliable:
 real runs have seen it take subject-space median reprojection error from
@@ -182,8 +185,8 @@ The optimization is meaningfully more constrained with keypoints from
 several time instants of the same static rig instead of one (the subject
 sweeping through the capture volume over a few seconds anchors the
 cameras far more strongly than a single pose), so this is the validated
-approach: extract a short candidate window per camera -- separate from,
-and in addition to, the single production frame extracted above --
+approach: extract a short candidate window per camera (separate from,
+and in addition to, the single production frame extracted above),
 predict keypoints on each instant, and refine against all of them at
 once (10+ instants recommended, 5 shown here for brevity):
 
@@ -203,11 +206,9 @@ for k in 0 1 2 3 4; do
         --calib_dir /path/to/calibration_pkls \
         --out_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_pkl_dir ~/take01_1500ms/sync_candidates_pkls/f$k
-    conda activate diffuman4d
     python3 scripts/generate_masks.py \
         --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_fmasks_dir ~/take01_1500ms/sync_candidates_fmasks/f$k
-    conda activate sapiens2
     python3 scripts/predict_keypoints_2d.py \
         --images_dir ~/take01_1500ms/sync_candidates_undist/f$k \
         --out_kp2d_dir ~/take01_1500ms/sync_candidates_kp2d/f$k \
@@ -228,7 +229,7 @@ python3 scripts/run_pose_refinement.py \
 Use `transforms_refined.json` in place of `transforms_multiframe.json`
 from here on. For a single instant instead (lighter-weight, less
 constrained), skip the candidate-window loop above and call the
-underlying script directly with this frame's own `poses_2d` -- note the
+underlying script directly with this frame's own `poses_2d`. Note the
 singular `--kp2d`, not `--kp2d_dirs`:
 
 ```bash
@@ -244,7 +245,7 @@ python3 scripts/refine_poses_with_keypoints.py \
 Downstream tooling looks up cameras by the literal `camera_label` string
 in transforms.json, and assumes plain zero-padded 2-digit labels ("00",
 "01", ...). This step is where HLOC's `Camera_undistorted_0001`-style
-labels get converted to that convention -- every later stage inherits it.
+labels get converted to that convention. Every later stage inherits it.
 
 ```bash
 python3 scripts/build_flat_dataset.py \
@@ -257,12 +258,10 @@ python3 scripts/build_flat_dataset.py \
 ## Masks and 2D keypoints for this frame
 
 ```bash
-conda activate diffuman4d
 python3 scripts/generate_masks.py \
     --images_dir ~/take01_1500ms/images_flat \
     --out_fmasks_dir ~/take01_1500ms/fmasks_flat
 
-conda activate sapiens2
 python3 scripts/predict_keypoints_2d.py \
     --images_dir ~/take01_1500ms/images_flat \
     --out_kp2d_dir ~/take01_1500ms/poses_2d_flat \
@@ -273,7 +272,7 @@ python3 scripts/split_keypoints_per_camera.py \
     --out_dir ~/take01_1500ms/poses_2d
 ```
 
-**Mask quality**: clean masks before trusting them for anything -- raw
+**Mask quality**: clean masks before you trust them for anything. Raw
 BiRefNet output can include bystanders/props and can also drop part of
 the subject:
 
@@ -286,10 +285,10 @@ python3 scripts/clean_masks.py \
     --retry
 ```
 
-Score any evaluation against the CLEANED masks, not the raw ones -- raw
+Score any evaluation against the CLEANED masks, not the raw ones. Raw
 masks with bystanders make a good model's eval metrics look broken.
 Masking/alignment quality on real captures is still an open problem
-being actively worked (see project notes) -- treat this as the current
+being actively worked (see project notes). Treat this as the current
 best approach, not a solved one.
 
 ## Triangulate the subject point cloud

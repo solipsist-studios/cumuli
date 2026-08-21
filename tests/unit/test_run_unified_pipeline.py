@@ -201,10 +201,13 @@ def test_run_script_without_conda_env_uses_sys_executable(tmp_path, monkeypatch)
     assert captured["cmd"] == [sys.executable, str(tmp_path / "foo.py"), "--a", "1"]
 
 
-def test_run_script_with_conda_env_wraps_command(tmp_path, monkeypatch):
+def test_run_script_with_conda_env_uses_env_python_directly(tmp_path, monkeypatch):
+    """No per-call `conda run` wrapping: the env interpreter is resolved
+    once and scripts are invoked with it directly (activation overhead was
+    seconds per call across hundreds of stage subprocesses)."""
     monkeypatch.setattr(unified, "SCRIPTS_DIR", tmp_path)
     (tmp_path / "foo.py").touch()
-    monkeypatch.setattr(unified, "resolve_conda", lambda: "/opt/conda/bin/conda")
+    monkeypatch.setattr(unified, "resolve_env_python", lambda: "/opt/conda/envs/cumuli/bin/python3")
     captured = {}
 
     def fake_run(cmd, cwd=None, env=None):
@@ -212,9 +215,33 @@ def test_run_script_with_conda_env_wraps_command(tmp_path, monkeypatch):
         return FakeCompletedProcess(0)
     monkeypatch.setattr(unified.subprocess, "run", fake_run)
 
-    unified.run_script("foo.py", [], conda_env="hloc")
-    assert captured["cmd"] == ["/opt/conda/bin/conda", "run", "-n", "hloc", "--no-capture-output",
-                                "python3", str(tmp_path / "foo.py")]
+    unified.run_script("foo.py", [], conda_env=unified.CONDA_ENV)
+    assert captured["cmd"] == ["/opt/conda/envs/cumuli/bin/python3", str(tmp_path / "foo.py")]
+
+
+def test_resolve_env_python_caches_and_errors_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(unified, "_ENV_PYTHON", None)
+    monkeypatch.setattr(unified, "resolve_conda", lambda: "/opt/conda/bin/conda")
+
+    def fake_run(cmd, capture_output=None, text=None):
+        class R:
+            returncode = 0
+            stdout = str(tmp_path) + "\n"
+            stderr = ""
+        return R()
+    monkeypatch.setattr(unified.subprocess, "run", fake_run)
+    with pytest.raises(unified.StageError, match="setup_cumuli_env"):
+        unified.resolve_env_python()
+
+    env_py = tmp_path / "envs" / "cumuli" / "bin" / "python3"
+    env_py.parent.mkdir(parents=True)
+    env_py.touch()
+    assert unified.resolve_env_python() == str(env_py)
+    # Cached: a second call must not re-run conda info.
+    monkeypatch.setattr(unified.subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("re-resolved")))
+    assert unified.resolve_env_python() == str(env_py)
+    monkeypatch.setattr(unified, "_ENV_PYTHON", None)
 
 
 def test_run_script_passes_fresh_env_copy_not_mutating_process_env(tmp_path, monkeypatch):
@@ -362,12 +389,12 @@ def test_run_hloc_builds_correct_argv_and_conda_env(monkeypatch, tmp_path):
                          conda_env=conda_env, label=label)
     monkeypatch.setattr(unified, "run_script", fake_run_script)
 
-    args = NS(multiframe_sfm_script=Path("/mfs.py"), hloc_feature_type="aliked",
+    args = NS(hloc_env="cumuli", multiframe_sfm_script=Path("/mfs.py"), hloc_feature_type="aliked",
               hloc_resize_max=2048, hloc_max_keypoints=4096)
     out = unified.run_hloc(args, Path("/undist"), Path("/pkl"), tmp_path / "outputs", ".jpg", "mylabel")
 
     assert captured["script_name"] == "run_hloc.py"
-    assert captured["conda_env"] == unified.CONDA_ENV_HLOC
+    assert captured["conda_env"] == "cumuli"
     assert captured["label"] == "mylabel"
     assert "aliked" in captured["args"]
     assert "2048" in captured["args"]
@@ -380,7 +407,7 @@ def test_run_hloc_builds_correct_argv_and_conda_env(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 def _window_args(tmp_path, pp3_dir=None):
-    return NS(video_dir=tmp_path / "videos", pp3_dir=pp3_dir, target_time_s=1.5,
+    return NS(hloc_env="cumuli", diffuman4d_env="cumuli", video_dir=tmp_path / "videos", pp3_dir=pp3_dir, target_time_s=1.5,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None)
 
@@ -548,7 +575,7 @@ def test_stage_production_forwards_pp3_dir_and_calls_undistort(monkeypatch, tmp_
 # --------------------------------------------------------------------------
 
 def _poses_args(sync_window=2):
-    return NS(video_dir=Path("/videos"), pp3_dir=None, target_time_s=1.5, sync_window=sync_window,
+    return NS(hloc_env="cumuli", diffuman4d_env="cumuli", video_dir=Path("/videos"), pp3_dir=None, target_time_s=1.5, sync_window=sync_window,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None,
               multiframe_sfm_script=Path("/mfs.py"), hloc_feature_type="superpoint",
@@ -611,7 +638,7 @@ def test_stage_poses_reuses_cached_hloc_output(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 def _masks_args():
-    return NS(generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
+    return NS(hloc_env="cumuli", diffuman4d_env="cumuli", generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", triangulate_env="queen")
 
 
@@ -685,25 +712,25 @@ def test_build_parser_rejects_invalid_start_from_stage_choice():
 
 def test_apply_config_defaults_overrides_configurable_defaults(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"generic_env": "custom_env", "trainer_env": "omg4b"}))
+    config_path.write_text(json.dumps({"hloc_feature_type": "aliked", "trainer_repo": "/elsewhere/OMG4"}))
     parser = unified.build_parser()
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path)])
 
     unified.apply_config_defaults(parser)
     args = parser.parse_args(_BASE_CLI)
-    assert args.generic_env == "custom_env"
-    assert args.trainer_env == "omg4b"
+    assert args.hloc_feature_type == "aliked"
+    assert str(args.trainer_repo) == "/elsewhere/OMG4"
 
 
 def test_apply_config_defaults_explicit_cli_flag_wins_over_config(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"generic_env": "custom_env"}))
+    config_path.write_text(json.dumps({"hloc_feature_type": "aliked"}))
     parser = unified.build_parser()
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path)])
 
     unified.apply_config_defaults(parser)
-    args = parser.parse_args(_BASE_CLI + ["--generic_env", "explicit_env"])
-    assert args.generic_env == "explicit_env"
+    args = parser.parse_args(_BASE_CLI + ["--hloc_feature_type", "superpoint"])
+    assert args.hloc_feature_type == "superpoint"
 
 
 def test_apply_config_defaults_rejects_unknown_key(tmp_path, monkeypatch, capsys):
@@ -744,7 +771,7 @@ def test_apply_config_defaults_is_noop_when_no_config_given(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["prog"] + _BASE_CLI)
     unified.apply_config_defaults(parser)  # must not raise
     args = parser.parse_args(_BASE_CLI)
-    assert args.generic_env == "queen"  # untouched built-in default
+    assert args.hloc_feature_type == "superpoint"  # untouched built-in default
 
 
 # --------------------------------------------------------------------------
@@ -937,7 +964,7 @@ def test_main_resume_without_resolved_sync_json_falls_back_to_default_path(rig, 
 # --------------------------------------------------------------------------
 
 def _dataset4d_args(tmp_path, window=2, eval_camera=None, holdouts=()):
-    return NS(video_dir=tmp_path / "videos", target_time_s=1.5, pp3_dir=None,
+    return NS(diffuman4d_env="cumuli", video_dir=tmp_path / "videos", target_time_s=1.5, pp3_dir=None,
               train_window=window, train_fps=30.0, dataset_downscale=1,
               dataset_jobs=8, eval_camera=eval_camera,
               holdout_cameras=list(holdouts), generic_env="queen",
@@ -1055,7 +1082,7 @@ def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
     repo = tmp_path / "omg4repo"
     repo.mkdir(parents=True, exist_ok=True)
     (repo / "train_scratch.py").write_text("# stub")
-    return NS(trainer_repo=repo, trainer_env="omg4", total_train_iters=iters,
+    return NS(trainer_repo=repo, total_train_iters=iters,
               train_window=8, train_fps=30.0, t_init_div=t_init_div,
               num_pts=100000, batch_size4d=2, densify_until_iter=150,
               densify_until_num_points=1000, trainer_config=trainer_config,
@@ -1095,7 +1122,7 @@ def test_stage_train4d_generates_config_and_trains(monkeypatch, tmp_path):
     assert "time_duration: [0.0, 0.233333]" in config
 
     train = next(c for c in calls if Path(c["script"]).name == "train_scratch.py")
-    assert train["conda_env"] == "omg4"
+    assert train["conda_env"] == "cumuli"
     assert str(train["cwd"]) == str(args.trainer_repo)
     assert train["extra_env"] == {"GS4D_T_INIT_DIV": "100"}
     a = train["args"]
