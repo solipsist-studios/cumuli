@@ -358,9 +358,14 @@ def render_pair_sweep(sequence_root: Path, transforms: Path, out_dir: Path, *,
                         "loss_weight": weights[index],
                         "w2c": w2c.tolist(), "position": position.tolist()})
 
+    # `up` is recorded because it cannot be recovered exactly from the poses:
+    # lookat_w2c orthogonalizes the down vector against forward, so an elevated
+    # camera's image-down axis is tilted off world up by its elevation angle.
+    # project_skeleton_conditioning.py needs the true axis to separate a head's
+    # yaw from its height.
     meta = {"pair": list(pair), "res": res, "zoom": zoom, "fps": fps, "lambda_gt": lambda_gt,
             "fl_x": focal, "fl_y": focal, "cx": principal, "cy": principal,
-            "target": centroid.tolist(), "frames": records}
+            "target": centroid.tolist(), "up": up.tolist(), "frames": records}
 
     # real-pixel endpoints and, when asked, the held-out probe
     pinned = {"real_first": (by_label[pair[0]], 0),

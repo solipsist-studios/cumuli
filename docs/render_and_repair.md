@@ -393,6 +393,51 @@ keypoints behind them. 3D keypoints are view-independent, so projecting them int
 any swept pose costs nothing and needs no new fitting stage, no model download
 and no goliath308-to-SMPL-X joint mapping.
 
+That stage is built:
+
+```bash
+python3 scripts/project_skeleton_conditioning.py \
+    --sweep_dir ~/sweeps/03_to_07 --out_dir ~/skeletons/03_to_07 --draw
+# -> skeletons/03_to_07/kp2d/03_to_07/NNNN.json + kpmap/03_to_07/NNNN.png
+```
+
+It re-solves no geometry; it projects the existing `poses_3d` points through the
+sweep's cameras and writes Diffuman4D's own kp2d format, then wraps that repo's
+`draw_skeleton.py` so the link topology, per-joint palette and depth sorting match
+the maps its model was conditioned on. Repainting a skeleton in different colours
+would be a different control signal.
+
+Two details make a projected skeleton usable at views no camera saw:
+
+- **True depth per keypoint.** Projecting from 3D gives each joint its exact
+  camera-space depth in the swept view, so the drawer sorts limbs back-to-front
+  instead of painting an arm that is behind the torso on top of it. Pipelines
+  working from real views often have no depth to hand it.
+- **Face fade.** As the sweep passes behind the subject, face keypoints must fade
+  rather than be drawn through the back of the skull. Scores for the face group
+  are scaled by `(1 + cos)/2` between the head's facing direction and the camera.
+  The facing vector is this repo's construction (`nose - eye_midpoint`, vertical
+  component projected out, as in `render_orbit_views.facing_azimuth`) rather than
+  Diffuman4D's `get_face_normal`, which crosses the eye line with the nose offset
+  and so is dominated by the head's up axis and flips sign with the eye-labelling
+  convention. Nothing is lost by departing from it: their preprocessing calls
+  `project_points` with `kp3d_score=None`, which skips that demotion entirely, so
+  there is no conditioning behaviour to stay consistent with.
+
+Confidence comes from each keypoint's triangulation reprojection error, which is
+what `poses_3d` records. Note that `keypoint_reproj` is an **error** in pixels and
+low is good, despite `triangulate_one_point`'s stale docstring naming its second
+return `kp3d_score`; reading it as a score inverts every confidence in the sweep.
+`--reproj_tau` is in source-image pixels, so the right value depends on capture
+resolution, and the script prints the actual error distribution every run so you
+can set it from data.
+
+`render_pair_sweep.py` records the rig `up` axis in `cameras.json` for this stage.
+It cannot be recovered exactly from the poses, because `lookat_w2c` orthogonalizes
+its down vector against forward, which tilts an elevated camera's image-down axis
+off world up by the elevation angle and would leak head height into a measurement
+meant to capture head yaw.
+
 Reach for SMPL-X only when the bakeoff shows errors a stick figure cannot fix.
 Its genuine marginal value over a skeleton is a *surface*: silhouette, occlusion
 and depth, none of which a skeleton has. That is worth a fitting stage if
