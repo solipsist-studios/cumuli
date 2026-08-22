@@ -272,6 +272,140 @@ crops are still worth rendering and still worth using for per-frame training
 that cannot digest them. On a capture without blown backlighting, try
 `--include_head_views` and measure.
 
+## The video-model successor: pair sweeps
+
+The image-repair chain above holds neighbouring views together by brute force,
+one fixed seed for every view of every frame. A video model does that natively,
+so the successor path replaces the per-image repair with a per-clip one. Two
+scripts exist for it; the repair stage itself is deliberately unbuilt until the
+bakeoff below picks a model.
+
+```bash
+python3 scripts/render_pair_sweep.py \
+    --sequence_root ~/run --transforms ~/run/transforms.json \
+    --out_dir ~/sweeps --pair 03 07 --frames 0-80 --res 1024
+# -> sweeps/03_to_07/{sweep_0000..0080.png, real_first.png, real_last.png, cameras.json}
+```
+
+What changes, and why:
+
+- **The camera path is still rendered, never generated.** The generative model
+  gets a video-to-video job on a sequence that is already structurally correct.
+  Asking a model to invent views between two cameras returns frames with no
+  camera pose attached, and the 4D trainer needs an exact pose per image; a
+  wrong pose is worse than no view.
+- **Time advances as the camera turns.** One capture frame per sweep frame, so
+  the motion in the clip is the subject's real motion. A time-frozen sweep asks
+  a video model to hold a subject perfectly still while the camera flies, which
+  is the thing video models are worst at. Sweep a pair in both directions for
+  two synthetic poses per instant.
+- **Both ends are pinned to real pixels.** Every swept frame shares one square
+  frustum, but its centre is interpolated between the two real camera centres
+  and equals a real centre exactly at the endpoints. Cameras sharing a centre
+  differ by an exact homography, so the real photo warps into the sweep frustum
+  losslessly and becomes the clip's first and last frame. That is what keeps
+  generated colour and exposure on the real cameras' manifold -- the failure
+  measured at the top of this document.
+
+## Choosing a repair model: the bakeoff
+
+Do not pick on how the samples look. A repair that is sharper and better lit
+than the render still hurts the fit if it sits off the real cameras' manifold,
+which is exactly how the first attempt lost 18.0 -> 13.3 dB.
+
+```bash
+python3 scripts/render_pair_sweep.py ... --pair 03 07 --holdout_label 05
+python3 scripts/score_novel_views.py --sweep_dir ~/sweeps/03_to_07 \
+    --candidate wan22 ~/repaired/wan22/sweep_0040.png \
+    --candidate ltx25 ~/repaired/ltx25/sweep_0040.png
+```
+
+`--holdout_label` names a real camera between the pair. Its nearest swept frame
+is snapped to that camera's exact centre, so its photo warps in as ground truth
+for whatever the model generated there. `score_novel_views.py` scores every
+candidate *and the raw render*: *a candidate below the raw render is destroying
+agreement with the real cameras*, however good it looks. Hold that camera out of
+training too.
+
+## What the low-overlap literature says
+
+Hwang et al., "4D Human-Scene Reconstruction from Low-Overlap Captures"
+(SIGGRAPH 2026, arXiv 2607.09125), attack the same deficit -- sparse cameras,
+moving human, unobserved directions -- and three of their findings bear directly
+on this pipeline.
+
+- **They render before they generate, too.** Their view synthesis runs GEN3C,
+  which conditions on a 3D cache: point clouds rendered along the target camera
+  trajectory. That is the same architecture as the sweep above, with a weaker
+  cache -- theirs is predicted depth, ours is a trained splat. Independent
+  arrival at the same shape is the strongest evidence the render anchor is
+  right.
+- **Weight generated views by angular distance, do not weight them flat.** Their
+  Equation S2, `w = 1 + 2 * (1 + cos(pi * d / d_max)) / 2` with `d` the angular
+  distance to the nearest real camera, makes a view on a real camera worth 3x
+  one at the midpoint. `render_pair_sweep.py` writes exactly this per frame as
+  `loss_weight` in `cameras.json` (`--lambda_gt 0` disables it).
+- **They never let the generative model supervise the human.** Backgrounds are
+  fit on synthesized views; the person is fit on real views only, masked out of
+  the generated supervision entirely. Our subject *is* the deliverable, so we
+  cannot simply copy that -- but their caution and our own 18.0 -> 13.3 dB
+  result point the same way. Generated supervision of the subject is the claim
+  the bakeoff has to prove, not the assumption it starts from.
+
+Their reported PSNR runs 18.6-21.7 dB across four sparse-rig datasets, which
+puts our 18.0 dB held-out baseline in the normal range for this regime rather
+than anomalously low.
+
+### Body geometry as conditioning, not as the base image
+
+That paper also fits SMPL-X bodies, which raises an obvious question: why not
+render a clean synthetic body and hand *that* to the video model instead of a
+splat render full of holes and floaters?
+
+Because a body model has the right geometry and the wrong appearance. SMPL-X
+carries no clothing, no hair, no face texture and no identity, so at the denoise
+that works here (0.15) it returns a mannequin, and at a denoise high enough to
+dress it you are generating the subject again, which is the 18.0 -> 13.3 dB
+failure. The splat render's one irreplaceable property is that its appearance is
+already correct. Body geometry's complementary property is that it is correct in
+directions no camera saw. Keep both, in their own roles: **splat render as the
+video-to-video base, body geometry as a structural conditioning channel.**
+
+In that role it earns its place three ways:
+
+- **Structure where the render has none.** A hole or a floater in a coverage gap
+  leaves the model guessing; a conditioning channel tells it where the body
+  actually is, while the base image keeps supplying real colour and exposure.
+- **A validity oracle.** Body geometry answers "is there a person at this pixel"
+  authoritatively, which detects floaters (opaque pixels outside the envelope)
+  and holes (envelope pixels with no coverage) without the circularity that
+  makes mask-consistency filtering weak on a moving subject.
+- **Per-pixel confidence.** Hwang et al. derive confidence from optical-flow warp
+  error, `c = max(0, 1 - e / 30)`. Agreement against known body geometry is a
+  stronger signal than an estimated flow field, and it refines the per-frame
+  `loss_weight` above into a per-pixel one.
+
+**Start with skeletons, not SMPL-X.** Diffuman4D (already in `deps/`) conditions
+on drawn skeleton images, not on body meshes: `scripts/preprocess/draw_skeleton.py`
+renders goliath308 skeletons, the exact layout this pipeline standardizes on, and
+`triangulate_and_project_keypoints.py` already produces the triangulated 3D
+keypoints behind them. 3D keypoints are view-independent, so projecting them into
+any swept pose costs nothing and needs no new fitting stage, no model download
+and no goliath308-to-SMPL-X joint mapping.
+
+Reach for SMPL-X only when the bakeoff shows errors a stick figure cannot fix.
+Its genuine marginal value over a skeleton is a *surface*: silhouette, occlusion
+and depth, none of which a skeleton has. That is worth a fitting stage if
+silhouettes are what fail. Two cautions if you go there: fitting error becomes
+conditioning error (the paper measured 3-5 degrees of SMPL pose noise costing
+0.09-0.14 dB, but their SMPL drives deformation rather than conditioning, so that
+number does not transfer), and the stock SMPL-X body is an adult, which the
+`tatum` child capture is not.
+
+One practical caution: GEN3C reports ~43 GB peak with full offloading and was
+tested on A100/H100. That does not fit a 32 GB RTX 5090 as shipped, so treat it
+as a bakeoff entrant contingent on quantization rather than a default.
+
 ## Known limits
 
 - **The repair model is a subject prior.** Klein holds a child's face well at

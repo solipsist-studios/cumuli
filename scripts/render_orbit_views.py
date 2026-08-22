@@ -155,8 +155,12 @@ def densified_azimuths(real_azimuths: np.ndarray, count: int,
 
 def load_rig(transforms_path: Path):
     """Real camera geometry from a nerfstudio transforms.json: per-camera label,
-    center, 3x4 projection matrix, plus the rig-average up axis and reference
-    intrinsics (first frame's focal and width) used to scale the render frustum."""
+    center, 3x4 projection matrix, w2c, 3x3 intrinsics and source file_path, plus
+    the rig-average up axis and reference intrinsics (first frame's focal and
+    width) used to scale the render frustum.
+
+    render_pair_sweep.py needs the separated w2c/intrinsics (not just their
+    product) to warp a real photo into a synthetic frustum sharing its centre."""
     data = json.loads(transforms_path.read_text())
     frames = data["frames"]
     if not frames:
@@ -176,6 +180,9 @@ def load_rig(transforms_path: Path):
             "label": str(fr.get("camera_label", "")),
             "center": c2w[:3, 3],
             "projection": intrinsics @ w2c[:3, :],
+            "w2c": w2c,
+            "intrinsics": intrinsics,
+            "file_path": str(fr.get("file_path", "")),
         })
     reference = frames[0]
     return cameras, up, float(reference["fl_x"]), float(reference["w"])
