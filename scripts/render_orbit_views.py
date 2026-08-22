@@ -160,7 +160,26 @@ def load_rig(transforms_path: Path):
     width) used to scale the render frustum.
 
     render_pair_sweep.py needs the separated w2c/intrinsics (not just their
-    product) to warp a real photo into a synthetic frustum sharing its centre."""
+    product) to warp a real photo into a synthetic frustum sharing its centre.
+
+    Accepts both layouts this project has produced. The documented one is
+    build_flat_dataset.py's: one entry per camera, `camera_label` set, `w` on the
+    frame. The 4D layout (an entry per camera AND timestamp, `w`/`h` at the top
+    level, the camera implied by the file_path's first path component) collapses
+    to one entry per camera here, since a static rig's pose does not depend on
+    time.
+
+    What DOES depend on time is the principal point. The full4d datasets crop
+    each frame around the moving subject, so `cx`/`cy` shift frame to frame
+    (measured: 84 distinct `cx` values over 146 frames on one camera, and `cy`
+    moving 249 px between frame 1 and frame 58) while the focal and the pose stay
+    fixed. Collapsing to one entry per camera must therefore NOT collapse the
+    intrinsics: each camera keeps `per_frame`, mapping frame number to that
+    frame's file_path and intrinsics. A caller that warps a real photo has to use
+    the matching frame's intrinsics or it misaligns by that shift.
+
+    The camera-level `intrinsics` is the first frame's, kept for callers that
+    only need an approximate frustum (render_orbit_views' own passes)."""
     data = json.loads(transforms_path.read_text())
     frames = data["frames"]
     if not frames:
@@ -170,22 +189,52 @@ def load_rig(transforms_path: Path):
     up = np.mean([m[:3, 1] for m in c2ws], axis=0)
     up = up / np.linalg.norm(up)
 
-    cameras = []
-    for fr, c2w in zip(frames, c2ws):
-        w2c = opengl_c2w_to_w2c(c2w)
+    cameras: dict = {}
+    for index, (fr, c2w) in enumerate(zip(frames, c2ws)):
+        file_path = str(fr.get("file_path", ""))
+        label = str(fr.get("camera_label", "")) or camera_label_from_path(file_path) or str(index)
         intrinsics = np.array([[fr["fl_x"], 0.0, fr["cx"]],
                                [0.0, fr["fl_y"], fr["cy"]],
                                [0.0, 0.0, 1.0]])
-        cameras.append({
-            "label": str(fr.get("camera_label", "")),
-            "center": c2w[:3, 3],
-            "projection": intrinsics @ w2c[:3, :],
-            "w2c": w2c,
-            "intrinsics": intrinsics,
-            "file_path": str(fr.get("file_path", "")),
-        })
+        if label not in cameras:
+            w2c = opengl_c2w_to_w2c(c2w)
+            cameras[label] = {
+                "label": label,
+                "center": c2w[:3, 3],
+                "projection": intrinsics @ w2c[:3, :],
+                "w2c": w2c,
+                "intrinsics": intrinsics,
+                "file_path": file_path,
+                "per_frame": {},
+            }
+        cameras[label]["per_frame"][trailing_number(file_path)] = {
+            "file_path": file_path, "intrinsics": intrinsics,
+        }
+
     reference = frames[0]
-    return cameras, up, float(reference["fl_x"]), float(reference["w"])
+    width = reference.get("w", data.get("w"))
+    if width is None:
+        raise ValueError(f"{transforms_path}: no image width on the first frame or at the top level")
+    return list(cameras.values()), up, float(reference["fl_x"]), float(width)
+
+
+def camera_label_from_path(file_path: str) -> str:
+    """Camera label implied by a file_path's first path component, for transforms
+    that carry no explicit camera_label (`cam01/frame_00042` -> `cam01`)."""
+    parts = [p for p in file_path.replace("\\", "/").split("/") if p]
+    return parts[0] if len(parts) > 1 else ""
+
+
+def trailing_number(file_path: str) -> int | None:
+    """The trailing integer of a file_path's stem (`frame_00042.jpg` -> 42), or
+    None when it ends in no digits. This keys each camera's per-instant images."""
+    stem = file_path.replace("\\", "/").split("/")[-1].split(".")[0]
+    digits = ""
+    for char in reversed(stem):
+        if not char.isdigit():
+            break
+        digits = char + digits
+    return int(digits) if digits else None
 
 
 def load_face_keypoints(kp2d_dir: Path, tem_label: str, cameras: list) -> dict:

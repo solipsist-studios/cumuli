@@ -101,7 +101,7 @@ from scipy import ndimage
 
 from image_formats import SUPPORTED_IMAGE_EXTS
 from render_and_repair_sequence import find_splat, resolve_frames
-from render_orbit_views import lookat_w2c, load_rig, load_splat, subject_anchors
+from render_orbit_views import lookat_w2c, load_rig, load_splat, subject_anchors, trailing_number
 
 WARP_ORDER = 1  # bilinear; the homography is exact, so resampling is the only error
 LAMBDA_GT = 2.0  # angular loss-weight strength; Hwang et al. (SIGGRAPH 2026) Eq. S2
@@ -213,15 +213,21 @@ def angular_loss_weights(parameters: list, lambda_gt: float = LAMBDA_GT) -> list
     return weights
 
 
-def homography_to_frustum(camera: dict, w2c_new: np.ndarray, focal: float, principal: float) -> np.ndarray:
+def homography_to_frustum(camera: dict, w2c_new: np.ndarray, focal: float, principal: float,
+                          intrinsics_real: np.ndarray | None = None) -> np.ndarray:
     """3x3 mapping NEW image pixels back to `camera`'s real image pixels.
 
     Valid only because the two cameras share a centre: with translation gone, a
     world point's ray is the same for both and only rotation and intrinsics
-    differ. Returned inverted (new -> real) because resampling pulls."""
+    differ. Returned inverted (new -> real) because resampling pulls.
+
+    Pass `intrinsics_real` for the specific frame being warped. The camera-level
+    intrinsics are the first frame's, and on a subject-cropped 4D dataset the
+    principal point moves every frame."""
     intrinsics_new = np.array([[focal, 0.0, principal], [0.0, focal, principal], [0.0, 0.0, 1.0]])
+    real = camera["intrinsics"] if intrinsics_real is None else intrinsics_real
     rotation = camera["w2c"][:3, :3] @ w2c_new[:3, :3].T
-    return camera["intrinsics"] @ rotation @ np.linalg.inv(intrinsics_new)
+    return real @ rotation @ np.linalg.inv(intrinsics_new)
 
 
 def warp_real_image(image_path: Path, homography: np.ndarray, res: int) -> Image.Image:
@@ -249,26 +255,43 @@ def warp_real_image(image_path: Path, homography: np.ndarray, res: int) -> Image
     return Image.fromarray(np.dstack([rgb, alpha]), mode="RGBA")
 
 
-def resolve_real_image(camera: dict, transforms: Path, images_dir: Path | None) -> Path | None:
-    """The real photo behind a transforms.json frame. `file_path` is normally
-    relative to the transforms file; --images_dir overrides that for datasets
-    moved after they were written, and the extension is re-sniffed because
-    build_refit_dataset.py's uniform-.png naming means the recorded name may not
-    be the one on disk."""
-    recorded = camera.get("file_path") or ""
+def resolve_real_view(camera: dict, transforms: Path, images_dir: Path | None,
+                      frame_number: int | None = None) -> tuple:
+    """(path to the real photo, that photo's intrinsics) for one camera at one
+    instant, or (None, None) when the file is missing.
+
+    Both halves are per-instant, and the intrinsics half is the one that bites.
+    The full4d datasets crop every frame around the moving subject, so a camera's
+    principal point shifts frame to frame while its focal and pose hold still.
+    Warping frame 58's photo through frame 1's principal point misaligns it by
+    that shift, which measured 249 px vertically on one camera -- enough to make
+    a "real pixel" pin anchor the clip to the wrong place.
+
+    `file_path` is normally relative to the transforms file; --images_dir
+    overrides that for datasets moved after they were written, and the extension
+    is re-sniffed because build_refit_dataset.py's uniform-.png naming means the
+    recorded name may not be the one on disk."""
+    per_frame = camera.get("per_frame") or {}
+    entry = per_frame.get(frame_number) if frame_number is not None else None
+    if entry is None and len(per_frame) == 1:
+        entry = next(iter(per_frame.values()))  # a static rig has one image per camera
+    recorded = (entry or {}).get("file_path") or camera.get("file_path") or ""
+    intrinsics = (entry or {}).get("intrinsics")
+    if intrinsics is None:
+        intrinsics = camera["intrinsics"]
     if not recorded:
-        return None
+        return None, None
     candidates = [transforms.parent / recorded]
     if images_dir is not None:
         candidates.append(images_dir / Path(recorded).name)
     for candidate in candidates:
         if candidate.exists():
-            return candidate
+            return candidate, intrinsics
         for extension in SUPPORTED_IMAGE_EXTS:
             alternative = candidate.with_suffix(extension)
             if alternative.exists():
-                return alternative
-    return None
+                return alternative, intrinsics
+    return None, None
 
 
 def render_pair_sweep(sequence_root: Path, transforms: Path, out_dir: Path, *,
@@ -375,15 +398,20 @@ def render_pair_sweep(sequence_root: Path, transforms: Path, out_dir: Path, *,
 
     warped = {}
     for name, (camera, index) in pinned.items():
-        image_path = resolve_real_image(camera, transforms, images_dir)
+        # the capture frame this swept index sits on, so a 4D transforms yields
+        # that camera's photo at this instant rather than at some other one
+        frame_number = trailing_number(Path(records[index]["frame_dir"]).name)
+        image_path, intrinsics_real = resolve_real_view(camera, transforms, images_dir, frame_number)
         if image_path is None:
             print(f"  WARNING: no real image on disk for camera {camera['label']!r} "
                   f"({camera.get('file_path')!r}) -- {name}.png not written; "
                   "the repair pass will have nothing to pin this end to", file=sys.stderr)
             continue
-        homography = homography_to_frustum(camera, np.array(records[index]["w2c"]), focal, principal)
+        homography = homography_to_frustum(camera, np.array(records[index]["w2c"]), focal, principal,
+                                           intrinsics_real)
         warp_real_image(image_path, homography, res).save(out_dir / f"{name}.png")
-        warped[name] = {"camera": camera["label"], "idx": index, "source": str(image_path)}
+        warped[name] = {"camera": camera["label"], "idx": index, "source": str(image_path),
+                        "frame": frame_number}
 
     meta["real_endpoints"] = warped
     if probe_index is not None:

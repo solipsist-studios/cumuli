@@ -290,17 +290,21 @@ def test_warp_treats_points_behind_the_camera_as_uncovered(tmp_path):
 # Real-image resolution
 # --------------------------------------------------------------------------
 
-def test_resolve_real_image_finds_the_recorded_path(tmp_path):
+STATIC_K = np.array([[900.0, 0.0, 512.0], [0.0, 900.0, 512.0], [0.0, 0.0, 1.0]])
+
+
+def test_resolve_real_view_finds_the_recorded_path(tmp_path):
     (tmp_path / "images").mkdir()
     (tmp_path / "images" / "05.png").write_bytes(b"")
     transforms = tmp_path / "transforms.json"
     transforms.write_text("{}")
 
-    found = rps.resolve_real_image({"file_path": "images/05.png"}, transforms, None)
+    found, _ = rps.resolve_real_view({"file_path": "images/05.png", "intrinsics": STATIC_K},
+                                     transforms, None)
     assert found == tmp_path / "images" / "05.png"
 
 
-def test_resolve_real_image_re_sniffs_the_extension(tmp_path):
+def test_resolve_real_view_re_sniffs_the_extension(tmp_path):
     # build_refit_dataset.py writes uniform .png names over real .jpg frames, so
     # the recorded extension routinely disagrees with what is on disk.
     (tmp_path / "images").mkdir()
@@ -308,26 +312,75 @@ def test_resolve_real_image_re_sniffs_the_extension(tmp_path):
     transforms = tmp_path / "transforms.json"
     transforms.write_text("{}")
 
-    found = rps.resolve_real_image({"file_path": "images/05.png"}, transforms, None)
+    found, _ = rps.resolve_real_view({"file_path": "images/05.png", "intrinsics": STATIC_K},
+                                     transforms, None)
     assert found == tmp_path / "images" / "05.jpg"
 
 
-def test_resolve_real_image_honours_the_override_directory(tmp_path):
+def test_resolve_real_view_honours_the_override_directory(tmp_path):
     elsewhere = tmp_path / "moved"
     elsewhere.mkdir()
     (elsewhere / "05.png").write_bytes(b"")
     transforms = tmp_path / "transforms.json"
     transforms.write_text("{}")
 
-    found = rps.resolve_real_image({"file_path": "gone/05.png"}, transforms, elsewhere)
+    found, _ = rps.resolve_real_view({"file_path": "gone/05.png", "intrinsics": STATIC_K},
+                                     transforms, elsewhere)
     assert found == elsewhere / "05.png"
 
 
-def test_resolve_real_image_returns_none_when_absent(tmp_path):
+def test_resolve_real_view_returns_none_when_absent(tmp_path):
     transforms = tmp_path / "transforms.json"
     transforms.write_text("{}")
-    assert rps.resolve_real_image({"file_path": "images/05.png"}, transforms, None) is None
-    assert rps.resolve_real_image({"file_path": ""}, transforms, None) is None
+    camera = {"file_path": "images/05.png", "intrinsics": STATIC_K}
+    assert rps.resolve_real_view(camera, transforms, None)[0] is None
+    assert rps.resolve_real_view({"file_path": "", "intrinsics": STATIC_K}, transforms, None)[0] is None
+
+
+def test_resolve_real_view_returns_the_requested_frames_intrinsics(tmp_path):
+    # The full4d crops move the principal point every frame. Warping frame 58's
+    # photo through frame 1's principal point misaligned it by 249 px.
+    (tmp_path / "cam04").mkdir()
+    (tmp_path / "cam04" / "frame_00058.jpg").write_bytes(b"")
+    transforms = tmp_path / "transforms.json"
+    transforms.write_text("{}")
+
+    early = np.array([[1309.5, 0.0, 1231.6], [0.0, 1309.5, 753.7], [0.0, 0.0, 1.0]])
+    late = np.array([[1309.5, 0.0, 1262.6], [0.0, 1309.5, 504.7], [0.0, 0.0, 1.0]])
+    camera = {"file_path": "cam04/frame_00001.jpg", "intrinsics": early, "per_frame": {
+        1: {"file_path": "cam04/frame_00001.jpg", "intrinsics": early},
+        58: {"file_path": "cam04/frame_00058.jpg", "intrinsics": late},
+    }}
+
+    found, intrinsics = rps.resolve_real_view(camera, transforms, None, frame_number=58)
+    assert found == tmp_path / "cam04" / "frame_00058.jpg"
+    assert intrinsics[1, 2] == pytest.approx(504.7)
+
+
+def test_resolve_real_view_uses_the_sole_entry_for_a_static_rig(tmp_path):
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "05.png").write_bytes(b"")
+    transforms = tmp_path / "transforms.json"
+    transforms.write_text("{}")
+
+    camera = {"file_path": "images/05.png", "intrinsics": STATIC_K,
+              "per_frame": {None: {"file_path": "images/05.png", "intrinsics": STATIC_K}}}
+    found, intrinsics = rps.resolve_real_view(camera, transforms, None, frame_number=58)
+    assert found == tmp_path / "images" / "05.png"
+    assert intrinsics[0, 0] == pytest.approx(900.0)
+
+
+def test_homography_uses_the_frames_own_intrinsics():
+    camera = make_camera("04", 20.0, radius=4.0, focal=1300.0, size=1024)
+    shifted = camera["intrinsics"].copy()
+    shifted[1, 2] -= 249.0  # the measured per-frame principal-point drift
+
+    default = rps.homography_to_frustum(camera, camera["w2c"], 900.0, 512.0)
+    per_frame = rps.homography_to_frustum(camera, camera["w2c"], 900.0, 512.0, shifted)
+    assert not np.allclose(default, per_frame)
+    # the shift lands where a vertical principal-point move should, and only there
+    assert per_frame[1, 2] == pytest.approx(default[1, 2] - 249.0)
+    assert per_frame[0, 2] == pytest.approx(default[0, 2])
 
 
 # --------------------------------------------------------------------------
