@@ -327,6 +327,48 @@ candidate *and the raw render*: *a candidate below the raw render is destroying
 agreement with the real cameras*, however good it looks. Hold that camera out of
 training too.
 
+## First bakeoff result: Wan 2.2 adds nothing to an already-good render
+
+Run on `260529-171110` (tatum), 17 frames (58-74) swept `cam02` -> `cam06`, probe
+held out at `cam04`, scored on the subject region against that camera's real
+photo. Repair by `video_repair_views.py` with Wan2.2-Fun-Control-A14B (low-noise
+expert), no skeleton control.
+
+| candidate | PSNR | SSIM | LPIPS |
+| --- | --- | --- | --- |
+| raw render | 29.78 | 0.9439 | **0.0241** |
+| **VAE round trip only** | **36.15** | **0.9841** | 0.0294 |
+| Wan 2.2, denoise 0.06 | 33.89 | 0.9740 | 0.0395 |
+| Wan 2.2, denoise 0.15 | 32.77 | 0.9692 | 0.0469 |
+| Wan 2.2, denoise 0.30 | 31.70 | 0.9673 | 0.0548 |
+
+Every repair beats the raw render on PSNR, which looks like a win until the
+control is run. **The VAE round trip alone, with no sampling at all, beats every
+one of them.** Encoding the renders and decoding them straight back gains 6.4 dB,
+and each increment of denoise walks monotonically back down from that. So the
+gain is not the model repairing anything; it is a mild low-pass, and the splat
+render's error against a real photo is dominated by high-frequency speckle that
+any smoothing removes. Whatever the model contributes on top is negative at every
+setting tried.
+
+LPIPS tells the same story in the opposite direction: the render is the most
+perceptually faithful of the lot, and every candidate is worse, monotonically
+with denoise.
+
+**Read this narrowly.** The probe camera was in the per-frame splats' training
+set, so the render already scores ~30 dB there and there is little for a repair
+to add. That is the regime this run measures: *a repair model cannot improve a
+view the reconstruction already has*. The regime the whole approach targets, a
+direction the rig never covered where the render is bad, is NOT measured here,
+because ground truth only exists at real cameras and every real camera was
+trained on. Testing that needs per-frame splats retrained with the probe pair
+excluded, which is the confirmation step before believing any of this either way.
+
+Two things the run did establish. The geometry is sound: the raw render scores
+~30 dB / 0.94 SSIM against a real photo at the same centre, and the difference
+image is black outside the silhouette edge. And the harness works end to end, so
+adding LTX-2.5, MiniMax H3 or Diffuman4D is now just another `--candidate`.
+
 ## What the low-overlap literature says
 
 Hwang et al., "4D Human-Scene Reconstruction from Low-Overlap Captures"
