@@ -78,8 +78,18 @@ def resolve_image(transforms: Path, file_path: str) -> Path | None:
     return None
 
 
-def build(transforms: Path, frame: int, out_dir: Path, exclude: set, link: bool = False) -> dict:
-    """Write the single-frame dataset. Returns a summary of what it wrote."""
+def build(transforms: Path, frame: int, out_dir: Path, exclude: set, link: bool = False,
+          numeric_labels: bool = False) -> dict:
+    """Write the single-frame dataset. Returns a summary of what it wrote.
+
+    `numeric_labels` renames the cameras to this project's documented convention
+    (zero-padded `00`, `01`, ... in azimuth-independent sorted order of the
+    original labels, the width set by the camera count). Stages that read camera
+    labels back out of file or directory names assume that convention:
+    triangulate_and_project_keypoints.py's projection step builds a numeric label
+    and fails with "Camera label not found: 00" on a rig whose labels look like
+    `cam01`. The mapping is returned as `label_map` so a caller can trace a
+    numeric label back to the camera it came from."""
     entries = frame_entries(transforms, frame)
     if not entries:
         raise ValueError(f"{transforms} has no entry whose file_path ends in frame {frame}")
@@ -92,16 +102,21 @@ def build(transforms: Path, frame: int, out_dir: Path, exclude: set, link: bool 
     images_dir = out_dir / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
 
+    kept = [label for label in sorted(entries) if label not in exclude]
+    # width from the camera count, as build_flat_dataset.py does: 2 digits up to
+    # 100 cameras, 3 beyond, so labels are fixed width and sort in camera order
+    width_digits = max(2, len(str(max(len(kept) - 1, 0))))
+    label_map = {label: (f"{index:0{width_digits}d}" if numeric_labels else label)
+                 for index, label in enumerate(kept)}
+
     frames, skipped = [], []
-    for label in sorted(entries):
-        if label in exclude:
-            continue
+    for label in kept:
         entry = entries[label]
         source = resolve_image(transforms, str(entry["file_path"]))
         if source is None:
             skipped.append(label)
             continue
-        destination = images_dir / f"{label}{source.suffix}"
+        destination = images_dir / f"{label_map[label]}{source.suffix}"
         if destination.exists() or destination.is_symlink():
             destination.unlink()
         if link:
@@ -117,7 +132,7 @@ def build(transforms: Path, frame: int, out_dir: Path, exclude: set, link: bool 
             "fl_x": entry["fl_x"], "fl_y": entry["fl_y"],
             "cx": entry["cx"], "cy": entry["cy"],
             "w": width, "h": height,
-            "camera_label": label,
+            "camera_label": label_map[label],
         })
 
     if not frames:
@@ -127,7 +142,8 @@ def build(transforms: Path, frame: int, out_dir: Path, exclude: set, link: bool 
     (out_dir / "transforms.json").write_text(json.dumps({
         "camera_model": "OPENCV", "frames": frames,
     }, indent=1))
-    return {"frame": frame, "cameras": [f["camera_label"] for f in frames],
+    return {"frame": frame, "label_map": {label_map[k]: k for k in label_map if k not in skipped},
+            "cameras": [f["camera_label"] for f in frames],
             "excluded": sorted(exclude), "missing": skipped, "out_dir": str(out_dir)}
 
 
