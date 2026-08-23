@@ -79,11 +79,10 @@ HIGH_NOISE_DENOISE = 0.5  # above this, one expert is being asked to do both job
 # bakeoff's rows differ by model rather than by how carefully each was configured.
 BACKENDS = {
     "wan22": {"model": DEFAULT_MODEL, "clip": DEFAULT_CLIP, "vae": DEFAULT_VAE, "shift": 8.0},
-    # LTX 2.5 ships its transformer, VAE and text encoder separately, so it loads
-    # like Wan rather than as one checkpoint. All three must be the 2.5 files:
-    # substituting the 2.3 VAE and a Gemma-3 encoder loaded fine and then failed
-    # in the sampler with "Tensors must have same number of dimensions: got 4 and
-    # 3". The int8-convrot encoder matches the int8-convrot transformer.
+    # LTX 2.5 ships its transformer, text encoder and both VAEs separately, and
+    # all of them must be the 2.5 files. Substituting the 2.3 VAE and a Gemma-3
+    # encoder loads without complaint and then dies in the sampler with "Tensors
+    # must have same number of dimensions: got 4 and 3".
     "ltx": {"model": "LTX 2.5/diffusion_models/"
                      "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
             "clip": "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
@@ -92,6 +91,10 @@ BACKENDS = {
            "clip": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
            "vae": "vae/minimax_h3_video_vae_fp16.safetensors", "shift": 5.0},
 }
+
+# LTX 2.5 specifics, taken from ComfyUI's own LTX-2.5 template rather than guessed.
+LTX_AUDIO_VAE = "vae/ltx-2.5-audio-vae-bf16.safetensors"
+LTX_FRAME_RATE = 25  # the template's rate; LTXVConditioning stamps it onto the conditioning
 
 
 def valid_clip_length(count: int) -> bool:
@@ -165,32 +168,52 @@ def build_graph_ltx(render_dir: str, control_dir: str | None, width: int, height
                     prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
                     model_name: str, clip_name: str, vae_name: str, shift: float,
                     filename_prefix: str) -> dict:
-    """LTX 2.5, whose transformer, text encoder and VAE ship as separate files.
+    """LTX 2.5, wired to match ComfyUI's own LTX-2.5 template.
 
-    LTXVConditioning stamps the clip's frame rate onto the conditioning, which
-    LTX needs and which has no analogue in the other backends; without it the
-    model has no idea how fast the sweep is moving."""
-    graph = loader_and_encode(render_dir,
-                              {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}})
-    graph.update({
+    Three things this model needs that the others do not, all learned from that
+    template after guessing wrong twice:
+
+      * It denoises a PAIRED audio-video latent, exactly like MiniMax H3. A bare
+        video latent from VAEEncode is rejected. Unlike H3, LTX ships the nodes
+        to build the pair: LTXVEmptyLatentAudio makes a SILENT audio latent and
+        LTXVConcatAVLatent joins it to ours, so a video-only repair is
+        expressible without inventing audio.
+      * Its text encoder loads through CLIPLoader with type `ltxv`, but only the
+        Gemma-4-with-projection file; pointing it at a plain Gemma-3 gets as far
+        as CLIPTextEncode and dies with "not enough values to unpack".
+      * The video and audio VAEs are separate files, and the plain bf16 video VAE
+        is the right one.
+
+    The real endpoints are pinned with LTXVAddGuide rather than by substituting
+    frames, which is strictly better: the guide carries an explicit `strength`,
+    the adherence knob Wan-Fun-Control never exposed."""
+    graph = {
         "model": {"class_type": "UNETLoader",
                   "inputs": {"unet_name": model_name, "weight_dtype": "default"}},
-        # LTXAVTextEncoderLoader, not CLIPLoader: LTX 2.5's Gemma-4-with-projection
-        # encoder does not load through the generic path, which gets as far as
-        # CLIPTextEncode and dies with "not enough values to unpack (expected 4)".
-        # ckpt_name supplies the tokenizer/config side of the pair.
-        "clip": {"class_type": "LTXAVTextEncoderLoader",
-                 "inputs": {"text_encoder": clip_name, "ckpt_name": "ltx-2-19b-distilled-fp8.safetensors",
-                            "device": "default"}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "ltxv"}},
+        "vae": {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}},
+        "audio_vae": {"class_type": "VAELoader", "inputs": {"vae_name": LTX_AUDIO_VAE}},
+        "renders": {"class_type": "VHS_LoadImagesPath", "inputs": {"directory": render_dir}},
+        "video_latent": {"class_type": "VAEEncode",
+                         "inputs": {"pixels": ["renders", 0], "vae": ["vae", 0]}},
+        "silent_audio": {"class_type": "LTXVEmptyLatentAudio",
+                         "inputs": {"frames_number": length, "frame_rate": LTX_FRAME_RATE,
+                                    "batch_size": 1, "audio_vae": ["audio_vae", 0]}},
+        "base_latent": {"class_type": "LTXVConcatAVLatent",
+                        "inputs": {"video_latent": ["video_latent", 0],
+                                   "audio_latent": ["silent_audio", 0]}},
         "positive": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["clip", 0]}},
         "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["clip", 0]}},
         "cond": {"class_type": "LTXVConditioning",
                  "inputs": {"positive": ["positive", 0], "negative": ["negative", 0],
-                            "frame_rate": 29.97}},
-    })
+                            "frame_rate": LTX_FRAME_RATE}},
+    }
     graph.update(sampler_and_output(["model", 0], ["cond", 0], ["cond", 1], denoise=denoise,
                                     steps=steps, cfg=cfg, seed=seed, sampler_name="euler",
                                     scheduler="normal", filename_prefix=filename_prefix))
+    # the sampler returns an AV latent; only its video half can be decoded to frames
+    graph["split"] = {"class_type": "LTXVSeparateAVLatent", "inputs": {"av_latent": ["sampler", 0]}}
+    graph["decode"]["inputs"]["samples"] = ["split", 0]
     return graph
 
 
