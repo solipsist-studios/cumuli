@@ -373,3 +373,81 @@ def test_cli_reports_a_missing_sweep(tmp_path, monkeypatch, capsys):
                                      "--kp3d_dir", str(tmp_path)])
     assert psc.main() == 1
     assert "render_pair_sweep.py first" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# OpenPose-format drawing
+# --------------------------------------------------------------------------
+
+def test_openpose_synthesises_the_neck_from_the_shoulders():
+    # OpenPose-18 is COCO-17 plus a neck; a control model trained on that layout
+    # expects the joint to be there.
+    uv = np.zeros((17, 2))
+    uv[psc.LEFT_SHOULDER_COCO] = [100.0, 200.0]
+    uv[psc.RIGHT_SHOULDER_COCO] = [200.0, 220.0]
+    score = np.ones(17)
+
+    positions, scores = psc.openpose_joints(uv, score)
+    assert positions.shape == (18, 2)
+    assert positions[1].tolist() == pytest.approx([150.0, 210.0])
+    assert scores[1] == pytest.approx(1.0)
+
+
+def test_openpose_neck_takes_the_weaker_shoulder_score():
+    # A neck drawn confidently from one confident and one missing shoulder would
+    # anchor the whole torso on a guess.
+    uv = np.zeros((17, 2))
+    score = np.ones(17)
+    score[psc.RIGHT_SHOULDER_COCO] = 0.1
+    _, scores = psc.openpose_joints(uv, score)
+    assert scores[1] == pytest.approx(0.1)
+
+
+def standing_pose(res=512):
+    """A plausible COCO-17 standing figure filling most of the frame. A
+    degenerate pose (every joint on one vertical line) collapses the limbs onto
+    each other and measures almost no coverage, which would make the density
+    assertion below vacuous."""
+    cx, top = res * 0.5, res * 0.12
+    return np.array([
+        [cx, top],                      # 0 nose
+        [cx - 12, top - 8], [cx + 12, top - 8],       # 1,2 eyes
+        [cx - 26, top - 4], [cx + 26, top - 4],       # 3,4 ears
+        [cx - 70, top + 70], [cx + 70, top + 70],     # 5,6 shoulders
+        [cx - 105, top + 175], [cx + 105, top + 175],  # 7,8 elbows
+        [cx - 125, top + 280], [cx + 125, top + 280],  # 9,10 wrists
+        [cx - 50, top + 300], [cx + 50, top + 300],   # 11,12 hips
+        [cx - 55, top + 440], [cx + 55, top + 440],   # 13,14 knees
+        [cx - 58, top + 575], [cx + 58, top + 575],   # 15,16 ankles
+    ])
+
+
+def test_openpose_map_is_denser_than_a_hairline_skeleton():
+    # The whole point of this style: the goliath308 map covered ~0.7% of the
+    # frame, too sparse to act as a control signal for a model trained on dense
+    # ones. Measured on real data, this style reaches 2.4%.
+    image = psc.draw_openpose(standing_pose(), np.ones(17), res=512)
+    coverage = (np.asarray(image).sum(axis=2) > 20).mean()
+    assert coverage > 0.01
+
+
+def test_openpose_drops_limbs_below_the_score_threshold():
+    uv = np.array([[256.0, 100.0 + 20 * i] for i in range(17)])
+    drawn = np.asarray(psc.draw_openpose(uv, np.ones(17), res=512)).sum()
+    faded = np.asarray(psc.draw_openpose(uv, np.full(17, 0.2), res=512)).sum()
+    assert faded == 0
+    assert drawn > 0
+
+
+def test_openpose_uses_the_canonical_palette():
+    # The colours are the signal, not decoration: control models were trained
+    # against this exact palette.
+    assert len(psc.OPENPOSE_COLORS) >= len(psc.OPENPOSE_LIMBS)
+    assert psc.OPENPOSE_COLORS[0] == (255, 0, 0)
+    assert len(psc.OPENPOSE_LIMBS) == 17
+    assert len(psc.OPENPOSE_FROM_COCO) == 18
+
+
+def test_openpose_map_is_the_requested_size():
+    uv = np.array([[128.0, 60.0 + 10 * i] for i in range(17)])
+    assert psc.draw_openpose(uv, np.ones(17), res=256).size == (256, 256)

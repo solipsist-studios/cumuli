@@ -72,6 +72,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DIFFUMAN4D_ROOT = REPO_ROOT / "deps" / "Diffuman4D"
@@ -189,6 +190,80 @@ def project(keypoints: np.ndarray, intrinsics: np.ndarray, w2c: np.ndarray) -> t
     return uv, np.where(in_front, depth, INVALID)
 
 
+
+# --------------------------------------------------------------------------
+# OpenPose-format drawing
+# --------------------------------------------------------------------------
+
+# goliath308's first 17 keypoints are COCO-17, in COCO order. OpenPose-18 is
+# COCO-17 plus a "neck" joint at the shoulder midpoint, reordered. This maps
+# OpenPose index -> COCO index, with None marking the synthesised neck.
+OPENPOSE_FROM_COCO = [0, None, 6, 8, 10, 5, 7, 9, 12, 14, 16, 11, 13, 15, 2, 1, 4, 3]
+LEFT_SHOULDER_COCO, RIGHT_SHOULDER_COCO = 5, 6
+
+# The canonical 17 OpenPose limbs and their colours. Control models were trained
+# against exactly this palette, so the colours carry meaning and are not
+# decoration: swapping them makes a different signal.
+OPENPOSE_LIMBS = [
+    (1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9), (9, 10),
+    (1, 11), (11, 12), (12, 13), (1, 0), (0, 14), (14, 16), (0, 15), (15, 17),
+]
+OPENPOSE_COLORS = [
+    (255, 0, 0), (255, 85, 0), (255, 170, 0), (255, 255, 0), (170, 255, 0),
+    (85, 255, 0), (0, 255, 0), (0, 255, 85), (0, 255, 170), (0, 255, 255),
+    (0, 170, 255), (0, 85, 255), (0, 0, 255), (85, 0, 255), (170, 0, 255),
+    (255, 0, 255), (255, 0, 170), (255, 0, 85),
+]
+LIMB_WIDTH_FRACTION = 0.012   # stroke width as a fraction of the frame, OpenPose's own proportion
+JOINT_RADIUS_FRACTION = 0.008
+
+
+def openpose_joints(uv: np.ndarray, score: np.ndarray) -> tuple:
+    """(18x2 joint positions, 18 scores) in OpenPose order, from goliath308's
+    COCO-17 prefix. The neck is synthesised from the two shoulders and inherits
+    the weaker of their scores."""
+    positions = np.zeros((18, 2))
+    scores = np.zeros(18)
+    for index, coco in enumerate(OPENPOSE_FROM_COCO):
+        if coco is None:
+            left, right = uv[LEFT_SHOULDER_COCO], uv[RIGHT_SHOULDER_COCO]
+            positions[index] = (left + right) / 2.0
+            scores[index] = min(score[LEFT_SHOULDER_COCO], score[RIGHT_SHOULDER_COCO])
+        else:
+            positions[index] = uv[coco]
+            scores[index] = score[coco]
+    return positions, scores
+
+
+def draw_openpose(uv: np.ndarray, score: np.ndarray, res: int, threshold: float = 0.5) -> Image.Image:
+    """An OpenPose-format conditioning map: thick coloured limbs on black.
+
+    Drawn here rather than through Diffuman4D's drawer because that one renders
+    the full 308-point skeleton as hairline strokes, which is the sparsity this
+    style exists to fix."""
+    positions, scores = openpose_joints(uv, score)
+    canvas = Image.new("RGB", (res, res), (0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+
+    width = max(2, int(res * LIMB_WIDTH_FRACTION))
+    radius = max(2, int(res * JOINT_RADIUS_FRACTION))
+
+    for index, (a, b) in enumerate(OPENPOSE_LIMBS):
+        if min(scores[a], scores[b]) < threshold:
+            continue
+        if not (np.isfinite(positions[a]).all() and np.isfinite(positions[b]).all()):
+            continue
+        draw.line([tuple(positions[a]), tuple(positions[b])],
+                  fill=OPENPOSE_COLORS[index % len(OPENPOSE_COLORS)], width=width)
+
+    for index in range(18):
+        if scores[index] < threshold or not np.isfinite(positions[index]).all():
+            continue
+        x, y = positions[index]
+        draw.ellipse([x - radius, y - radius, x + radius, y + radius],
+                     fill=OPENPOSE_COLORS[index % len(OPENPOSE_COLORS)])
+    return canvas
+
 def write_kp2d(path: Path, uv: np.ndarray, depth: np.ndarray, score: np.ndarray) -> None:
     """Diffuman4D's exact kp2d format (see its triangulate_skeleton.write_kp2d),
     so draw_skeleton.py consumes these unchanged."""
@@ -216,7 +291,7 @@ def resolve_kp3d(kp3d_dir: Path, frame: int | None, index: int) -> Path | None:
 
 
 def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_dir: Path,
-                  reproj_tau: float = DEFAULT_REPROJ_TAU) -> dict:
+                  reproj_tau: float = DEFAULT_REPROJ_TAU, style: str = "goliath") -> dict:
     """Project every swept frame's keypoints. Returns a summary of what it wrote."""
     cameras_path = sweep_dir / "cameras.json"
     if not cameras_path.exists():
@@ -227,6 +302,9 @@ def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_dir: Path,
                            [0.0, meta["fl_y"], meta["cy"]],
                            [0.0, 0.0, 1.0]])
     kp2d_root = out_dir / "kp2d" / sweep_dir.name
+    # OpenPose maps are written straight out here rather than through
+    # Diffuman4D's drawer, which renders all 308 points as hairline strokes
+    openpose_root = out_dir / "kpmap_openpose" / sweep_dir.name
 
     written, missing, errors, faded_frames = 0, [], [], 0
     for record in meta["frames"]:
@@ -249,6 +327,9 @@ def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_dir: Path,
         faded_frames += normal is not None
 
         write_kp2d(kp2d_root / f"{index:04d}.json", uv, depth, score)
+        if style == "openpose":
+            openpose_root.mkdir(parents=True, exist_ok=True)
+            draw_openpose(uv, score, meta["res"]).save(openpose_root / f"{index:04d}.png")
         errors.extend(reproj[valid & np.isfinite(reproj)].tolist())
         written += 1
 
@@ -307,6 +388,11 @@ def main() -> int:
                     help="reprojection error, in SOURCE image pixels, at which a keypoint's "
                          "confidence reaches zero. The printed error distribution is the right "
                          "basis for this; the drawer drops links scoring below 0.5")
+    ap.add_argument("--style", default="goliath", choices=("goliath", "openpose"),
+                    help="conditioning map format. 'goliath' draws all 308 points through "
+                         "Diffuman4D's drawer (hairline strokes, ~0.7%% frame coverage). "
+                         "'openpose' draws the COCO-17 prefix as 18 joints and 17 thick "
+                         "canonical-coloured limbs, which is what control models expect")
     ap.add_argument("--draw", action="store_true",
                     help="also render the conditioning maps via Diffuman4D's draw_skeleton.py "
                          "(needs that submodule's deps: cv2, fire, easyvolcap)")
@@ -315,7 +401,7 @@ def main() -> int:
 
     try:
         summary = project_sweep(args.sweep_dir, args.out_dir, kp3d_dir=args.kp3d_dir,
-                                reproj_tau=args.reproj_tau)
+                                reproj_tau=args.reproj_tau, style=args.style)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
