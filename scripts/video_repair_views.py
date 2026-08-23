@@ -87,6 +87,11 @@ BACKENDS = {
                      "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
             "clip": "text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors",
             "vae": "vae/ltx-2.5-video-vae-bf16.safetensors", "shift": 1.0},
+    # VACE is the only control path with an explicit strength parameter. Q8_0
+    # low-noise expert only: low denoise never reaches the high-noise expert, and
+    # 18.65 GB fits a 32 GB card where the fp16 pair's 69 GB does not.
+    "vace": {"model": "Wan2.2-VACE/Wan2.2_T2V_Low_Noise_14B_VACE-Q8_0.gguf",
+             "clip": DEFAULT_CLIP, "vae": DEFAULT_VAE, "shift": 8.0},
     "h3": {"model": "Minimax H3/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
            "clip": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
            "vae": "vae/minimax_h3_video_vae_fp16.safetensors", "shift": 5.0},
@@ -269,6 +274,51 @@ def build_graph_h3(render_dir: str, control_dir: str | None, width: int, height:
     return graph
 
 
+
+def build_graph_vace(render_dir: str, control_dir: str | None, width: int, height: int, length: int, *,
+                     prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
+                     model_name: str, clip_name: str, vae_name: str, shift: float,
+                     filename_prefix: str, control_strength: float = 1.0) -> dict:
+    """Wan 2.2 VACE, the one control path that exposes an adherence knob.
+
+    Wan22FunControlToVideo takes a control video and gives no way to say how hard
+    to follow it; WanVaceToVideo takes `strength`. That is the lever the
+    skeleton-adherence problem needs, so this backend threads it through as
+    --control_strength.
+
+    The model ships as GGUF, so it loads through UnetLoaderGGUF. As with the
+    Fun-Control backend, VACE's own latent is discarded and the sampler starts
+    from our encoded renders instead: generating from scratch is the thing this
+    pass exists to avoid.
+
+    VACE prepends reference frames to its latent and reports how many in its
+    fourth output, so the decoded video is trimmed by that amount to keep the
+    output frame count equal to the input's."""
+    graph = loader_and_encode(render_dir,
+                              {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}})
+    graph.update({
+        "model": {"class_type": "UnetLoaderGGUF", "inputs": {"unet_name": model_name}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "wan"}},
+        "shift": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["model", 0], "shift": shift}},
+        "positive": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["clip", 0]}},
+        "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["clip", 0]}},
+        "control_frames": {"class_type": "VHS_LoadImagesPath",
+                           "inputs": {"directory": control_dir or render_dir}},
+        "vace": {"class_type": "WanVaceToVideo",
+                 "inputs": {"positive": ["positive", 0], "negative": ["negative", 0],
+                            "vae": ["vae", 0], "width": width, "height": height,
+                            "length": length, "batch_size": 1, "strength": control_strength,
+                            "control_video": ["control_frames", 0]}},
+    })
+    graph.update(sampler_and_output(["shift", 0], ["vace", 0], ["vace", 1], denoise=denoise,
+                                    steps=steps, cfg=cfg, seed=seed, sampler_name="uni_pc",
+                                    scheduler="simple", filename_prefix=filename_prefix))
+    graph["trim"] = {"class_type": "TrimVideoLatent",
+                     "inputs": {"samples": ["sampler", 0], "trim_amount": ["vace", 3]}}
+    graph["decode"]["inputs"]["samples"] = ["trim", 0]
+    return graph
+
+
 def build_graph(render_dir: str, control_dir: str | None, width: int, height: int, length: int, *,
                 prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
                 model_name: str, clip_name: str, vae_name: str, shift: float,
@@ -392,9 +442,10 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                  cfg: float = 1.0, seed: int = 0, model_name: str = DEFAULT_MODEL,
                  clip_name: str = DEFAULT_CLIP, vae_name: str = DEFAULT_VAE, shift: float = 8.0,
                  comfy_url: str = "http://127.0.0.1:8188", timeout: float = 1800.0,
-                 backend: str = "wan22") -> dict:
+                 backend: str = "wan22", control_strength: float = 1.0) -> dict:
     """Repair one sweep. Returns a summary of what it wrote."""
-    builder = {"wan22": build_graph, "ltx": build_graph_ltx, "h3": build_graph_h3}[backend]
+    builder = {"wan22": build_graph, "ltx": build_graph_ltx, "h3": build_graph_h3,
+               "vace": build_graph_vace}[backend]
     meta = json.loads((sweep_dir / "cameras.json").read_text())
     frames = meta["frames"]
     if not valid_clip_length(len(frames)):
@@ -441,7 +492,8 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                     meta["res"], meta["res"], len(frames),
                     prompt=prompt, negative=negative, denoise=denoise, steps=steps, cfg=cfg,
                     seed=seed, model_name=model_name, clip_name=clip_name, vae_name=vae_name,
-                    shift=shift, filename_prefix=prefix)
+                    shift=shift, filename_prefix=prefix,
+                    **({"control_strength": control_strength} if backend == "vace" else {}))
 
     pinned = sorted((meta.get("real_endpoints") or {}).get(n, {}).get("idx")
                     for n in ("real_first", "real_last")
@@ -490,6 +542,9 @@ def main() -> int:
     ap.add_argument("--backend", default="wan22", choices=sorted(BACKENDS),
                     help="which video model to repair with. Each carries its own model/clip/vae "
                          "defaults so the bakeoff's rows differ by model, not by configuration care")
+    ap.add_argument("--control_strength", type=float, default=1.0,
+                    help="VACE only: how hard to follow the control video. This is the "
+                         "adherence knob Fun-Control never exposed")
     ap.add_argument("--shift", type=float, default=None, help="sigma shift (default: per backend)")
     ap.add_argument("--model_name", default=None)
     ap.add_argument("--clip_name", default=None)
@@ -509,7 +564,8 @@ def main() -> int:
             clip_name=args.clip_name or defaults["clip"],
             vae_name=args.vae_name or defaults["vae"],
             shift=args.shift if args.shift is not None else defaults["shift"],
-            comfy_url=args.comfy_url, timeout=args.timeout, backend=args.backend)
+            comfy_url=args.comfy_url, timeout=args.timeout, backend=args.backend,
+            control_strength=args.control_strength)
     except (FileNotFoundError, ValueError, RuntimeError, TimeoutError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
