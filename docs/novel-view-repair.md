@@ -148,7 +148,48 @@ is snapped to that camera's exact centre, so its photo warps in as ground truth.
 below the raw render is destroying agreement with the real cameras, however good
 it looks.
 
-### Measured: skeleton control did not help, and hurt at high denoise
+### Measured on a genuinely held-out probe: skeleton control is worth 8 dB
+
+Everything in the section below this one was measured at a probe camera the
+model had trained on, where the render already scored ~27 dB and there was
+nothing for a repair to add. Retraining with `cam03` and `cam04` excluded
+(`split_4d_dataset.py`) changes the answer completely.
+
+Held-out model: 899 training views from 10 cameras, 27 minutes to 30k
+iterations, train PSNR 31.25 and held-out test PSNR 20.90. Rendering the same
+`cam02` -> `cam06` sweep from it scores **13.37 dB** at the probe, against 27.36
+from the model that trained on cam04, and the scored region nearly triples
+(419k px vs 167k) because the model fills the unseen direction with floaters.
+That is the deficit this whole approach exists to close.
+
+| candidate | PSNR | SSIM | LPIPS |
+| --- | --- | --- | --- |
+| raw render | 13.37 | 0.4578 | 0.3294 |
+| VAE round trip only | 17.24 | 0.7003 | 0.3176 |
+| no control, denoise 0.15 | 17.42 | 0.7147 | 0.3076 |
+| OpenPose control, denoise 0.15 | 17.57 | 0.7176 | 0.3016 |
+| no control, denoise 0.60 | 17.54 | 0.7207 | 0.3028 |
+| OpenPose control, denoise 0.60 | 18.06 | 0.7620 | 0.3296 |
+| no control, denoise 0.80 | 17.54 | 0.7238 | 0.2955 |
+| **OpenPose control, denoise 0.80** | **25.50** | 0.7598 | **0.1822** |
+
+**The denoise curve inverts, and only with control.** Without a control signal,
+denoise plateaus: 17.42 at 0.15, 17.54 at 0.60, 17.54 at 0.80. With OpenPose
+control it climbs to 25.50. The paired comparison at identical denoise isolates
+the cause: **+7.96 dB at 0.80 attributable to the control signal alone.**
+
+The output is real content, not a blank that games the metric: 22.7% of the
+frame is non-black against the real photo's 14.5%, the floaters are gone, and
+the figure is coherent with the right silhouette and pose. LPIPS agrees, nearly
+halving from the render's 0.3294 to 0.1822, so this is not the smoothing that
+flattered every earlier result.
+
+Two things this reframes. The VAE round trip still accounts for a large share of
+the naive gain (13.37 -> 17.24 by low-pass alone), so it stays mandatory as a
+control. And every negative result below was an artifact of measuring where
+there was nothing to fix; the regime matters more than any knob.
+
+### Measured on a trained-on probe: skeleton control did not help
 
 Run on `tatum_jump.sogst`, 17 frames (58-74) swept `cam02` -> `cam06`, probe held
 out at `cam04`, scored on the subject region against that camera's real photo.
