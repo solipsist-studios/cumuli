@@ -142,6 +142,10 @@ def lpips_network():
         try:
             return network.cuda(), "cuda"
         except RuntimeError:
+            # A .cuda() that fails partway leaves the module with some buffers
+            # already moved, which then raises "found at least two devices".
+            # Force the whole thing back before handing it out.
+            network = network.cpu()
             print("  note: GPU busy or full; computing LPIPS on the CPU", file=sys.stderr)
     return network, "cpu"
 
