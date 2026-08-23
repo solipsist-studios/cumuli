@@ -341,6 +341,29 @@ expert), no skeleton control.
 | Wan 2.2, denoise 0.06 | 33.89 | 0.9740 | 0.0395 |
 | Wan 2.2, denoise 0.15 | 32.77 | 0.9692 | 0.0469 |
 | Wan 2.2, denoise 0.30 | 31.70 | 0.9673 | 0.0548 |
+| MiniMax H3, generated tween | 21.23 | 0.8113 | 0.2292 |
+
+### Generating the tween loses by 8.5 dB
+
+The H3 row is a different experiment from the others and the most useful one
+here. H3 cannot run the low-denoise repair at all: it denoises a PAIRED
+audio-video latent (its transformer reads `audio_src = x[1]`) delivered as a
+NestedTensor, and no installed node can splice an external video latent into it
+(`ReplaceVideoLatentFrames` fails with `'NestedTensor' object has no attribute
+'clone'`). What it can do is its native first/last-frame job: generate the
+in-between views from the two real endpoint photos.
+
+That is exactly the "let a video model invent the tween views" proposal that
+render-and-repair exists to replace, and with both endpoints pinned to real
+pixels it gets the most favourable setup available. It lands **8.5 dB below
+simply rendering the splat**, with LPIPS almost ten times worse. The output is
+not garbage; it is a clean, plausible child in a navy blazer whose silhouette,
+bulk and arm position are all wrong, because the model interpolated along a path
+it imagined rather than along the true camera arc.
+
+So the render anchor is not a stylistic preference. Removing it costs 8.5 dB on
+this rig, which is the same order as the 18.0 -> 13.3 dB the image-model attempt
+lost, measured a second time by a different route.
 
 Every repair beats the raw render on PSNR, which looks like a win until the
 control is run. **The VAE round trip alone, with no sampling at all, beats every
@@ -367,7 +390,23 @@ excluded, which is the confirmation step before believing any of this either way
 Two things the run did establish. The geometry is sound: the raw render scores
 ~30 dB / 0.94 SSIM against a real photo at the same centre, and the difference
 image is black outside the silhouette edge. And the harness works end to end, so
-adding LTX-2.5, MiniMax H3 or Diffuman4D is now just another `--candidate`.
+adding another model is one `--backend`.
+
+**LTX 2.5 has not been run.** Its transformer is installed
+(`LTX 2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors`)
+but its two companions are not, and substituting the 2.3 VAE and a Gemma-3
+encoder fails in the sampler with a 4-dim/3-dim mismatch. Per ComfyUI's LTX-2.5
+documentation it needs, from `huggingface.co/Lightricks/LTX-2.5`:
+
+- `text_encoders/gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors`
+- `vae/ltx-2.5-video-vae-bf16.safetensors`
+
+**These numbers were produced on a stale branch.** The per-frame splats come from
+brush, which `feature/brush-removal` took out of the pipeline; this work sits 143
+commits behind main, which now trains one 4D model per window through OMG4 and
+evaluates with `eval_render.py`. The model-versus-model ranking transfers, since
+every candidate repaired the identical renders, but the rendering stage has to be
+rebuilt on main's foundation before any of this is mergeable.
 
 ## What the low-overlap literature says
 

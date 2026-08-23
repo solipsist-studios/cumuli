@@ -79,7 +79,16 @@ HIGH_NOISE_DENOISE = 0.5  # above this, one expert is being asked to do both job
 # bakeoff's rows differ by model rather than by how carefully each was configured.
 BACKENDS = {
     "wan22": {"model": DEFAULT_MODEL, "clip": DEFAULT_CLIP, "vae": DEFAULT_VAE, "shift": 8.0},
-    "ltx": {"model": "ltx-2-19b-distilled-fp8.safetensors", "clip": "", "vae": "", "shift": 1.0},
+    # LTX 2.5 ships its transformer, VAE and text encoder separately, so it loads
+    # like Wan rather than as one checkpoint. No 2.5 VAE is published to this
+    # install; the 2.3 distilled VAE is the stand-in, on the reasoning that both
+    # releases are the same 22B distilled family and VAEs rarely change within
+    # one. If the latent geometry disagrees the sampler says so immediately, and
+    # the fix is the vae/ directory of huggingface.co/Lightricks/LTX-2.5.
+    "ltx": {"model": "LTX 2.5/diffusion_models/"
+                     "ltx-2.5-22b-distilled-transformer-comfy-int8-convrot.safetensors",
+            "clip": "gemma_3_12B_it.safetensors",
+            "vae": "ltx-2.3-22b-distilled_video_vae.safetensors", "shift": 1.0},
     "h3": {"model": "Minimax H3/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
            "clip": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
            "vae": "vae/minimax_h3_video_vae_fp16.safetensors", "shift": 5.0},
@@ -157,24 +166,26 @@ def build_graph_ltx(render_dir: str, control_dir: str | None, width: int, height
                     prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
                     model_name: str, clip_name: str, vae_name: str, shift: float,
                     filename_prefix: str) -> dict:
-    """LTX-2, loaded as a checkpoint so its matched model, CLIP and VAE arrive
-    together. LTXVConditioning stamps the clip's frame rate onto the conditioning,
-    which LTX needs and which has no analogue in the other backends."""
-    graph = {
-        "ckpt": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": model_name}},
-        "renders": {"class_type": "VHS_LoadImagesPath", "inputs": {"directory": render_dir}},
-        "base_latent": {"class_type": "VAEEncode",
-                        "inputs": {"pixels": ["renders", 0], "vae": ["ckpt", 2]}},
-        "positive": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["ckpt", 1]}},
-        "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["ckpt", 1]}},
+    """LTX 2.5, whose transformer, text encoder and VAE ship as separate files.
+
+    LTXVConditioning stamps the clip's frame rate onto the conditioning, which
+    LTX needs and which has no analogue in the other backends; without it the
+    model has no idea how fast the sweep is moving."""
+    graph = loader_and_encode(render_dir,
+                              {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}})
+    graph.update({
+        "model": {"class_type": "UNETLoader",
+                  "inputs": {"unet_name": model_name, "weight_dtype": "default"}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "ltxv"}},
+        "positive": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["clip", 0]}},
+        "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["clip", 0]}},
         "cond": {"class_type": "LTXVConditioning",
                  "inputs": {"positive": ["positive", 0], "negative": ["negative", 0],
                             "frame_rate": 29.97}},
-    }
-    graph.update(sampler_and_output(["ckpt", 0], ["cond", 0], ["cond", 1], denoise=denoise,
+    })
+    graph.update(sampler_and_output(["model", 0], ["cond", 0], ["cond", 1], denoise=denoise,
                                     steps=steps, cfg=cfg, seed=seed, sampler_name="euler",
                                     scheduler="normal", filename_prefix=filename_prefix))
-    graph["decode"]["inputs"]["vae"] = ["ckpt", 2]
     return graph
 
 
@@ -182,10 +193,20 @@ def build_graph_h3(render_dir: str, control_dir: str | None, width: int, height:
                    prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
                    model_name: str, clip_name: str, vae_name: str, shift: float,
                    filename_prefix: str) -> dict:
-    """MiniMax H3. Its conditioner emits ONE conditioning rather than a pair, so
-    the negative is that same conditioning zeroed out, which is how ComfyUI
-    expresses "no guidance from this branch" for models that carry no separate
-    negative."""
+    """MiniMax H3, which generates video and audio jointly.
+
+    Two consequences for a repair pass. Its conditioner emits ONE conditioning
+    rather than a pair, so the negative is that conditioning zeroed out, which is
+    how ComfyUI expresses "no guidance from this branch" for a model carrying no
+    separate negative. And its denoising target is a PAIRED audio-video latent:
+    the transformer reads `audio_src = x[1]`, so handing it a bare video latent
+    from VAEEncode fails with "list index out of range".
+
+    So the starting latent is built in two steps: MiniMaxH3ImageToVideo makes a
+    well-formed AV latent, then ReplaceVideoLatentFrames swaps our encoded
+    renders into its video half and leaves the audio half intact. That keeps the
+    renders as what gets denoised, which is the whole point of the pass, without
+    having to synthesize an audio latent we have no source for."""
     graph = loader_and_encode(render_dir,
                               {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}})
     graph.update({
@@ -198,10 +219,25 @@ def build_graph_h3(render_dir: str, control_dir: str | None, width: int, height:
                  "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "prompt": prompt,
                             "width": width, "height": height, "length": length}},
         "zero": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["cond", 0]}},
+        "first": {"class_type": "VHS_LoadImagesPath", "inputs": {"directory": f"{render_dir}_first"}},
+        "last": {"class_type": "VHS_LoadImagesPath", "inputs": {"directory": f"{render_dir}_last"}},
     })
+    graph["cond"]["inputs"]["first_frame"] = ["first", 0]
+    graph["cond"]["inputs"]["last_frame"] = ["last", 0]
     graph.update(sampler_and_output(["shift", 0], ["cond", 0], ["zero", 0], denoise=denoise,
                                     steps=steps, cfg=cfg, seed=seed, sampler_name="euler",
                                     scheduler="normal", filename_prefix=filename_prefix))
+    # H3 denoises a PAIRED audio-video latent (its transformer reads
+    # `audio_src = x[1]`), and that pair arrives as a NestedTensor which no
+    # installed node can splice an external video latent into --
+    # ReplaceVideoLatentFrames fails with "'NestedTensor' object has no attribute
+    # 'clone'". So H3 cannot run the low-denoise repair the other backends run.
+    # What it CAN do is its native first/last-frame job: generate the tween
+    # between the two real endpoint photos. That is a different experiment, and a
+    # worthwhile one, because it is the "let the model invent the in-between
+    # views" proposal that render-and-repair was built to replace. Scored at the
+    # same probe, it measures that proposal directly.
+    graph["sampler"]["inputs"]["latent_image"] = ["cond", 1]
     return graph
 
 
@@ -347,6 +383,18 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
 
     staging = comfy_input_dir / f"sweep_{sweep_dir.name}"
     staged = stage_frames(sweep_dir, staging, meta)
+
+    # H3 generates between two endpoint frames rather than denoising the clip, so
+    # it needs each endpoint on its own. One image per directory, because
+    # VHS_LoadImagesPath batches a directory and there is no single-image loader
+    # that reads an arbitrary path.
+    if backend == "h3":
+        for name, index in (("first", staged[0][0]), ("last", staged[-1][0])):
+            single = Path(f"{staging}_{name}")
+            if single.exists():
+                shutil.rmtree(single)
+            single.mkdir(parents=True)
+            shutil.copyfile(staging / f"{index:04d}.png", single / "0000.png")
     control_staging = None
     if control_dir is not None:
         maps = sorted(p for p in control_dir.iterdir() if p.suffix.lower() in (".png", ".jpg", ".webp"))
