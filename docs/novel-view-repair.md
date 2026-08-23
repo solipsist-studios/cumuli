@@ -148,6 +148,45 @@ is snapped to that camera's exact centre, so its photo warps in as ground truth.
 below the raw render is destroying agreement with the real cameras, however good
 it looks.
 
+### Measured: skeleton control did not help, and hurt at high denoise
+
+Run on `tatum_jump.sogst`, 17 frames (58-74) swept `cam02` -> `cam06`, probe held
+out at `cam04`, scored on the subject region against that camera's real photo.
+Repair by Wan2.2-Fun-Control-A14B (low-noise expert).
+
+| candidate | PSNR | SSIM | LPIPS |
+| --- | --- | --- | --- |
+| raw render | 27.36 | 0.8957 | **0.0756** |
+| **VAE round trip only** | **35.06** | **0.9764** | 0.0775 |
+| no control, denoise 0.15 | 33.54 | 0.9679 | 0.0907 |
+| skeleton control, denoise 0.15 | 33.06 | 0.9677 | 0.0907 |
+| no control, denoise 0.40 | 31.61 | 0.9623 | 0.0986 |
+| skeleton control, denoise 0.40 | 27.74 | 0.9434 | 0.1218 |
+
+Three things this settles, and one it does not.
+
+**The VAE round trip still beats everything**, reproducing on this pipeline what
+the per-frame branch measured: encode-and-decode with no sampling at all gains
+7.7 dB over the raw render, and every sampled setting falls below it. The gain
+is a low-pass on render speckle, not repair.
+
+**Skeleton control did not help at low denoise** (33.06 vs 33.54, LPIPS
+identical) and **cost 3.9 dB at denoise 0.40** (27.74 vs 31.61).
+
+**The denoise curve did not invert.** The hypothesis worth testing was that
+pinning geometry with a control channel would make higher denoise pay off. It did
+not: more denoise is monotonically worse, with control and without, and control
+makes the decline steeper.
+
+What this does NOT settle is whether skeleton control can work at all here. The
+drawn skeleton covers about 0.7% of the frame (7,797 non-black pixels at
+1024x1024), so as a control *video* it is almost entirely black, and
+Wan-Fun-Control was trained on dense control signals. A near-empty control plausibly
+pushes the output toward empty, which matches the extra smoothing visible at
+denoise 0.40. Before concluding that body geometry cannot help, try a denser
+control signal: thicker strokes (`draw_one_skeleton`'s `radius`/`thickness`), or
+a filled body rather than a stick figure.
+
 Two rules the first bakeoff earned:
 
 - **Run the VAE round trip as a control.** On the first run every Wan setting

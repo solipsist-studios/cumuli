@@ -253,29 +253,20 @@ def test_write_kp2d_matches_diffuman4d_format(tmp_path):
 # Locating the 3D keypoints
 # --------------------------------------------------------------------------
 
-def test_resolve_kp3d_finds_the_per_frame_layout(tmp_path):
-    frame = tmp_path / "frame_0000"
-    (frame / "poses_3d").mkdir(parents=True)
-    (frame / "poses_3d" / "000000.json").write_text("{}")
-    assert psc.resolve_kp3d(frame, "poses_3d", "000000", None, 0) == frame / "poses_3d" / "000000.json"
+def test_resolve_kp3d_keys_on_the_capture_frame(tmp_path):
+    # A sweep can start anywhere in a take, so frame 58 is 000058.json whether it
+    # is the clip's first frame or its tenth.
+    (tmp_path / "000058.json").write_text("{}")
+    assert psc.resolve_kp3d(tmp_path, 58, 0) == tmp_path / "000058.json"
 
 
-def test_resolve_kp3d_falls_back_to_the_frame_index(tmp_path):
-    frame = tmp_path / "frame_0007"
-    (frame / "poses_3d").mkdir(parents=True)
-    (frame / "poses_3d" / "000007.json").write_text("{}")
-    assert psc.resolve_kp3d(frame, "poses_3d", "000000", None, 7) == frame / "poses_3d" / "000007.json"
-
-
-def test_resolve_kp3d_honours_a_flat_directory(tmp_path):
-    flat = tmp_path / "poses_3d"
-    flat.mkdir()
-    (flat / "000003.json").write_text("{}")
-    assert psc.resolve_kp3d(tmp_path / "unused", "poses_3d", "000000", flat, 3) == flat / "000003.json"
+def test_resolve_kp3d_falls_back_to_the_index_without_capture_numbering(tmp_path):
+    (tmp_path / "000003.json").write_text("{}")
+    assert psc.resolve_kp3d(tmp_path, None, 3) == tmp_path / "000003.json"
 
 
 def test_resolve_kp3d_returns_none_when_absent(tmp_path):
-    assert psc.resolve_kp3d(tmp_path, "poses_3d", "000000", None, 0) is None
+    assert psc.resolve_kp3d(tmp_path, 58, 0) is None
 
 
 # --------------------------------------------------------------------------
@@ -286,27 +277,27 @@ def make_sweep(tmp_path, n_frames=3, reproj=0.5, with_keypoints=True):
     """A minimal render_pair_sweep.py output plus matching per-frame keypoints."""
     sweep = tmp_path / "03_to_07"
     sweep.mkdir(exist_ok=True)
+    kp3d_dir = tmp_path / "poses_3d"
     frames = []
     for index in range(n_frames):
-        frame_dir = tmp_path / f"frame_{index:04d}"
-        frame_dir.mkdir(exist_ok=True)
+        capture = 58 + index
         if with_keypoints:
             keypoints = face_keypoints(n=100, facing=(0.0, 0.0, -1.0))
             keypoints[:, 2] += 4.0  # push the whole body in front of the camera
-            write_kp3d_file(frame_dir / "poses_3d" / "000000.json", keypoints, [reproj] * 100)
-        frames.append({"idx": index, "frame_dir": str(frame_dir), "time": index / 30.0,
+            write_kp3d_file(kp3d_dir / f"{capture:06d}.json", keypoints, [reproj] * 100)
+        frames.append({"idx": index, "frame": capture, "time": index / 30.0,
                        "w2c": np.eye(4).tolist()})
     (sweep / "cameras.json").write_text(json.dumps(
         {"pair": ["03", "07"], "res": 1024, "fl_x": 800.0, "fl_y": 800.0,
          "cx": 512.0, "cy": 512.0, "up": UP.tolist(), "frames": frames}))
-    return sweep
+    return sweep, kp3d_dir
 
 
 def test_project_sweep_writes_one_file_per_frame(tmp_path):
-    sweep = make_sweep(tmp_path, n_frames=4)
+    sweep, kp3d_dir = make_sweep(tmp_path, n_frames=4)
     out = tmp_path / "skeletons"
 
-    summary = psc.project_sweep(sweep, out)
+    summary = psc.project_sweep(sweep, out, kp3d_dir=kp3d_dir)
     assert summary["frames"] == 4
     assert sorted(p.name for p in (out / "kp2d" / "03_to_07").glob("*.json")) == \
         ["0000.json", "0001.json", "0002.json", "0003.json"]
@@ -315,39 +306,39 @@ def test_project_sweep_writes_one_file_per_frame(tmp_path):
 def test_project_sweep_reports_the_error_distribution(tmp_path):
     # The distribution is how you calibrate --reproj_tau; a default guess at the
     # wrong capture resolution silently empties every map.
-    sweep = make_sweep(tmp_path, reproj=3.0)
-    summary = psc.project_sweep(sweep, tmp_path / "skeletons")
+    sweep, kp3d_dir = make_sweep(tmp_path, reproj=3.0)
+    summary = psc.project_sweep(sweep, tmp_path / "skeletons", kp3d_dir=kp3d_dir)
     assert summary["reproj_px"]["median"] == pytest.approx(3.0)
 
 
 def test_project_sweep_scores_reflect_the_error(tmp_path):
-    sweep = make_sweep(tmp_path, n_frames=1, reproj=5.0)
+    sweep, kp3d_dir = make_sweep(tmp_path, n_frames=1, reproj=5.0)
     out = tmp_path / "skeletons"
-    psc.project_sweep(sweep, out, reproj_tau=10.0)
+    psc.project_sweep(sweep, out, kp3d_dir=kp3d_dir, reproj_tau=10.0)
 
     instance = json.loads((out / "kp2d" / "03_to_07" / "0000.json").read_text())["instance_info"][0]
     assert instance["keypoint_scores"][50] == pytest.approx(0.5)
 
 
 def test_project_sweep_records_missing_frames_without_failing(tmp_path):
-    sweep = make_sweep(tmp_path, n_frames=3)
-    (tmp_path / "frame_0001" / "poses_3d" / "000000.json").unlink()
+    sweep, kp3d_dir = make_sweep(tmp_path, n_frames=3)
+    (kp3d_dir / "000059.json").unlink()
 
-    summary = psc.project_sweep(sweep, tmp_path / "skeletons")
+    summary = psc.project_sweep(sweep, tmp_path / "skeletons", kp3d_dir=kp3d_dir)
     assert summary["frames"] == 2
     assert summary["missing_frames"] == [1]
 
 
 def test_project_sweep_fails_when_no_frame_has_keypoints(tmp_path):
-    sweep = make_sweep(tmp_path, with_keypoints=False)
-    with pytest.raises(FileNotFoundError, match="triangulate_and_project_keypoints.py"):
-        psc.project_sweep(sweep, tmp_path / "skeletons")
+    sweep, kp3d_dir = make_sweep(tmp_path, with_keypoints=False)
+    with pytest.raises(FileNotFoundError, match="window_keypoints_3d.py"):
+        psc.project_sweep(sweep, tmp_path / "skeletons", kp3d_dir=kp3d_dir)
 
 
 def test_project_sweep_needs_a_rendered_sweep(tmp_path):
     (tmp_path / "empty").mkdir()
     with pytest.raises(FileNotFoundError, match="render_pair_sweep.py first"):
-        psc.project_sweep(tmp_path / "empty", tmp_path / "skeletons")
+        psc.project_sweep(tmp_path / "empty", tmp_path / "skeletons", kp3d_dir=tmp_path)
 
 
 # --------------------------------------------------------------------------
@@ -355,19 +346,21 @@ def test_project_sweep_needs_a_rendered_sweep(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_cli_projects_and_reports(tmp_path, monkeypatch, capsys):
-    sweep = make_sweep(tmp_path)
+    sweep, kp3d_dir = make_sweep(tmp_path)
     monkeypatch.setattr("sys.argv", ["project_skeleton_conditioning.py",
                                      "--sweep_dir", str(sweep),
-                                     "--out_dir", str(tmp_path / "skeletons")])
+                                     "--out_dir", str(tmp_path / "skeletons"),
+                                     "--kp3d_dir", str(kp3d_dir)])
     assert psc.main() == 0
     assert "projected 3 frames" in capsys.readouterr().out
 
 
 def test_cli_warns_when_tau_would_empty_the_maps(tmp_path, monkeypatch, capsys):
-    sweep = make_sweep(tmp_path, reproj=20.0)
+    sweep, kp3d_dir = make_sweep(tmp_path, reproj=20.0)
     monkeypatch.setattr("sys.argv", ["project_skeleton_conditioning.py",
                                      "--sweep_dir", str(sweep),
                                      "--out_dir", str(tmp_path / "skeletons"),
+                                     "--kp3d_dir", str(kp3d_dir),
                                      "--reproj_tau", "5.0"])
     assert psc.main() == 0
     assert "MEDIAN error is at or past" in capsys.readouterr().err
@@ -376,6 +369,7 @@ def test_cli_warns_when_tau_would_empty_the_maps(tmp_path, monkeypatch, capsys):
 def test_cli_reports_a_missing_sweep(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("sys.argv", ["project_skeleton_conditioning.py",
                                      "--sweep_dir", str(tmp_path / "absent"),
-                                     "--out_dir", str(tmp_path / "skeletons")])
+                                     "--out_dir", str(tmp_path / "skeletons"),
+                                     "--kp3d_dir", str(tmp_path)])
     assert psc.main() == 1
     assert "render_pair_sweep.py first" in capsys.readouterr().err

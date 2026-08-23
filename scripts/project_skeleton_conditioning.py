@@ -56,7 +56,7 @@ Usage:
     python3 project_skeleton_conditioning.py \\
         --sweep_dir /path/to/sweeps/03_to_07 \\
         --out_dir /path/to/skeletons/03_to_07 \\
-        [--kp3d_subdir poses_3d] [--tem_label 000000] \\
+        --kp3d_dir /path/to/window_kp/poses_3d \\
         [--reproj_tau 10.0] [--draw]
 
 Output:
@@ -200,24 +200,22 @@ def write_kp2d(path: Path, uv: np.ndarray, depth: np.ndarray, score: np.ndarray)
     }]}, indent=1))
 
 
-def resolve_kp3d(frame_dir: Path, kp3d_subdir: str, tem_label: str, kp3d_dir: Path | None,
-                 index: int) -> Path | None:
-    """That frame's 3D keypoints: normally <frame_dir>/poses_3d/<tem_label>.json,
-    matching the one-directory-per-frame layout. With an
-    explicit --kp3d_dir the sweep index selects the file instead, for sequences
-    kept in one flat directory."""
-    candidates = [kp3d_dir / f"{index:06d}.json"] if kp3d_dir is not None \
-        else [frame_dir / kp3d_subdir / f"{tem_label}.json"]
-    if kp3d_dir is None:
-        candidates.append(frame_dir / kp3d_subdir / f"{index:06d}.json")
-    for candidate in candidates:
+def resolve_kp3d(kp3d_dir: Path, frame: int | None, index: int) -> Path | None:
+    """That swept frame's 3D keypoints from a flat directory.
+
+    Keyed by CAPTURE frame number rather than by position in the clip, because a
+    sweep can start anywhere in a take: frame 58 is `000058.json` whether it is
+    the clip's first frame or its tenth. Falls back to the sweep index only when
+    the sweep records no capture numbering (a single-instant rig)."""
+    keys = [frame, index] if frame is not None else [index]
+    for key in keys:
+        candidate = kp3d_dir / f"{key:06d}.json"
         if candidate.exists():
             return candidate
     return None
 
 
-def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_subdir: str = "poses_3d",
-                  tem_label: str = "000000", kp3d_dir: Path | None = None,
+def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_dir: Path,
                   reproj_tau: float = DEFAULT_REPROJ_TAU) -> dict:
     """Project every swept frame's keypoints. Returns a summary of what it wrote."""
     cameras_path = sweep_dir / "cameras.json"
@@ -233,8 +231,7 @@ def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_subdir: str = "poses_3
     written, missing, errors, faded_frames = 0, [], [], 0
     for record in meta["frames"]:
         index = record["idx"]
-        frame_dir = Path(record["frame_dir"])
-        kp3d_path = resolve_kp3d(frame_dir, kp3d_subdir, tem_label, kp3d_dir, index)
+        kp3d_path = resolve_kp3d(kp3d_dir, record.get("frame"), index)
         if kp3d_path is None:
             missing.append(index)
             continue
@@ -257,9 +254,8 @@ def project_sweep(sweep_dir: Path, out_dir: Path, *, kp3d_subdir: str = "poses_3
 
     if written == 0:
         raise FileNotFoundError(
-            f"no 3D keypoints found for any frame of {sweep_dir.name}. Looked for "
-            f"<frame_dir>/{kp3d_subdir}/{tem_label}.json -- run "
-            "triangulate_and_project_keypoints.py for this sequence first")
+            f"no 3D keypoints found for any frame of {sweep_dir.name}. Looked in {kp3d_dir} for "
+            "<capture frame>.json -- run window_keypoints_3d.py over this frame range first")
 
     summary = {"sweep": sweep_dir.name, "frames": written, "kp2d_dir": str(kp2d_root),
                "res": meta["res"], "missing_frames": missing,
@@ -281,6 +277,11 @@ def draw_maps(out_dir: Path, sweep_name: str, res: int, image_ext: str = ".png")
         print(f"ERROR: {DRAW_SCRIPT} not found -- is the Diffuman4D submodule checked out?",
               file=sys.stderr)
         return 1
+    # --spa_labels is deliberately NOT passed: draw_skeleton formats it as
+    # f"{label:02d}", which assumes numeric camera labels and dies with "Unknown
+    # format code 'd' for object of type 'str'" on a sweep directory name.
+    # Omitting it makes the drawer list the directory instead, which is what we
+    # want anyway since kp2d holds exactly this one sweep.
     command = [
         sys.executable, str(DRAW_SCRIPT),
         "--kp2d_dir", str(out_dir / "kp2d"),
@@ -288,7 +289,6 @@ def draw_maps(out_dir: Path, sweep_name: str, res: int, image_ext: str = ".png")
         f"--kp2d_canvas_shape=({res},{res})",
         f"--out_kpmap_shape=({res},{res})",
         "--image_ext", image_ext,
-        "--spa_labels", f"['{sweep_name}']",
     ]
     print("Running:", " ".join(command))
     return subprocess.run(command, cwd=str(DIFFUMAN4D_ROOT)).returncode
@@ -300,13 +300,9 @@ def main() -> int:
                     help="render_pair_sweep.py output directory, holding cameras.json")
     ap.add_argument("--out_dir", required=True, type=Path,
                     help="destination for kp2d/ and, with --draw, kpmap/")
-    ap.add_argument("--kp3d_subdir", default="poses_3d",
-                    help="subdirectory inside each frame dir holding its triangulated keypoints")
-    ap.add_argument("--tem_label", default="000000",
-                    help="keypoint file stem within each frame's kp3d subdirectory")
-    ap.add_argument("--kp3d_dir", type=Path, default=None,
-                    help="flat directory of <index>.json keypoints, for sequences not stored "
-                         "one directory per frame; overrides --kp3d_subdir/--tem_label")
+    ap.add_argument("--kp3d_dir", required=True, type=Path,
+                    help="directory of <capture frame>.json triangulated keypoints, as "
+                         "window_keypoints_3d.py writes")
     ap.add_argument("--reproj_tau", type=float, default=DEFAULT_REPROJ_TAU,
                     help="reprojection error, in SOURCE image pixels, at which a keypoint's "
                          "confidence reaches zero. The printed error distribution is the right "
@@ -318,8 +314,7 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        summary = project_sweep(args.sweep_dir, args.out_dir, kp3d_subdir=args.kp3d_subdir,
-                                tem_label=args.tem_label, kp3d_dir=args.kp3d_dir,
+        summary = project_sweep(args.sweep_dir, args.out_dir, kp3d_dir=args.kp3d_dir,
                                 reproj_tau=args.reproj_tau)
     except (FileNotFoundError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
