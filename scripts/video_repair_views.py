@@ -275,6 +275,35 @@ def build_graph_h3(render_dir: str, control_dir: str | None, width: int, height:
 
 
 
+
+def apply_lora(graph: dict, lora_name: str | None, strength: float) -> dict:
+    """Insert a LoRA between the model loader and its consumer.
+
+    Model-only: these LoRAs are trained with train_text_encoder false, so there
+    is no text-encoder side to apply. Every consumer of ["model", 0] is
+    repointed at the LoRA's output, which keeps this independent of which
+    backend built the graph.
+
+    A LoRA trained on a base checkpoint and applied to a fine-tune of it (here,
+    base Wan 2.2 -> Fun-Control or VACE) usually transfers, but when it does not
+    it fails SILENTLY rather than erroring: the graph runs and the weights simply
+    do not move. Compare against the same run without --lora before believing a
+    number."""
+    if not lora_name or "model" not in graph:
+        return graph
+
+    graph["lora"] = {"class_type": "LoraLoaderModelOnly",
+                     "inputs": {"model": ["model", 0], "lora_name": lora_name,
+                                "strength_model": strength}}
+    for key, node in graph.items():
+        if key in ("lora", "model"):
+            continue
+        for input_name, value in node.get("inputs", {}).items():
+            if isinstance(value, list) and len(value) == 2 and value[0] == "model":
+                node["inputs"][input_name] = ["lora", value[1]]
+    return graph
+
+
 def build_graph_vace(render_dir: str, control_dir: str | None, width: int, height: int, length: int, *,
                      prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
                      model_name: str, clip_name: str, vae_name: str, shift: float,
@@ -442,7 +471,8 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                  cfg: float = 1.0, seed: int = 0, model_name: str = DEFAULT_MODEL,
                  clip_name: str = DEFAULT_CLIP, vae_name: str = DEFAULT_VAE, shift: float = 8.0,
                  comfy_url: str = "http://127.0.0.1:8188", timeout: float = 1800.0,
-                 backend: str = "wan22", control_strength: float = 1.0) -> dict:
+                 backend: str = "wan22", control_strength: float = 1.0,
+                 lora: str | None = None, lora_strength: float = 1.0) -> dict:
     """Repair one sweep. Returns a summary of what it wrote."""
     builder = {"wan22": build_graph, "ltx": build_graph_ltx, "h3": build_graph_h3,
                "vace": build_graph_vace}[backend]
@@ -494,12 +524,14 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                     seed=seed, model_name=model_name, clip_name=clip_name, vae_name=vae_name,
                     shift=shift, filename_prefix=prefix,
                     **({"control_strength": control_strength} if backend == "vace" else {}))
+    graph = apply_lora(graph, lora, lora_strength)
 
     pinned = sorted((meta.get("real_endpoints") or {}).get(n, {}).get("idx")
                     for n in ("real_first", "real_last")
                     if (meta.get("real_endpoints") or {}).get(n))
     print(f"{sweep_dir.name} [{backend}]: {len(frames)} frames at {meta['res']}px, "
           f"denoise {denoise}, {'skeleton control' if control_dir else 'no control signal'}, "
+          f"{'LoRA ' + lora if lora else 'no LoRA'}, "
           f"real pins at {pinned or 'NONE'}")
 
     produced = submit(comfy_url, graph, timeout)
@@ -542,6 +574,9 @@ def main() -> int:
     ap.add_argument("--backend", default="wan22", choices=sorted(BACKENDS),
                     help="which video model to repair with. Each carries its own model/clip/vae "
                          "defaults so the bakeoff's rows differ by model, not by configuration care")
+    ap.add_argument("--lora", default=None,
+                    help="character LoRA to apply to the model, by ComfyUI loras/ name. Trained\n                         model-only, so the text encoder is untouched")
+    ap.add_argument("--lora_strength", type=float, default=1.0)
     ap.add_argument("--control_strength", type=float, default=1.0,
                     help="VACE only: how hard to follow the control video. This is the "
                          "adherence knob Fun-Control never exposed")
@@ -565,7 +600,8 @@ def main() -> int:
             vae_name=args.vae_name or defaults["vae"],
             shift=args.shift if args.shift is not None else defaults["shift"],
             comfy_url=args.comfy_url, timeout=args.timeout, backend=args.backend,
-            control_strength=args.control_strength)
+            control_strength=args.control_strength,
+            lora=args.lora, lora_strength=args.lora_strength)
     except (FileNotFoundError, ValueError, RuntimeError, TimeoutError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
