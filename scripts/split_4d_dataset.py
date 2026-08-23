@@ -47,6 +47,9 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+
 from rig_geometry import camera_label_from_path, trailing_number
 
 
@@ -68,8 +71,28 @@ def label_of(entry: dict) -> str:
         str(entry.get("file_path", "")))
 
 
+def write_rgba(source: Path, destination: Path, background_level: int = 8) -> None:
+    """Copy an image with its subject silhouette in the alpha channel.
+
+    bake_sogst's lifetime mask-consistency filter reads its masks from the
+    training frames' alpha, so a dataset of RGB-on-black frames gives it nothing
+    to test against. Captures whose background is already removed carry the
+    silhouette implicitly, and this makes it explicit. The threshold is small but
+    non-zero because JPEG ringing leaves the background a few levels above pure
+    black, and a `> 0` test would mark the whole frame as subject."""
+    with Image.open(source) as opened:
+        if opened.mode == "RGBA":
+            opened.save(destination)
+            return
+        rgb = opened.convert("RGB")
+        array = np.asarray(rgb, dtype=np.int32)
+        alpha = (array.sum(axis=2) > background_level).astype(np.uint8) * 255
+        Image.fromarray(np.dstack([np.asarray(rgb, dtype=np.uint8), alpha]),
+                        mode="RGBA").save(destination)
+
+
 def split(transforms: Path, out_dir: Path, exclude: set, test_cameras: set,
-          frame_range: str | None = None) -> dict:
+          frame_range: str | None = None, rgba: bool = False) -> dict:
     """Write the split. Returns a summary of what it wrote."""
     data = json.loads(transforms.read_text())
     entries = data["frames"]
@@ -138,7 +161,10 @@ def split(transforms: Path, out_dir: Path, exclude: set, test_cameras: set,
         destination.parent.mkdir(parents=True, exist_ok=True)
         if destination.is_symlink() or destination.exists():
             destination.unlink()
-        os.symlink(source, destination)
+        if rgba:
+            write_rgba(source, destination)
+        else:
+            os.symlink(source, destination)
         linked.add(label)
     if unresolved:
         raise FileNotFoundError(
@@ -161,13 +187,16 @@ def main() -> int:
                          "stereo pair, since its twin sits under a degree away")
     ap.add_argument("--test_camera", action="append", default=[], metavar="LABEL",
                     help="camera to score against; must also be excluded from training")
+    ap.add_argument("--rgba", action="store_true",
+                    help="write RGBA frames with the subject silhouette in alpha, which is "
+                         "where bake_sogst's lifetime mask-consistency filter reads its masks")
     ap.add_argument("--frames", default=None, metavar="LO-HI",
                     help="limit both splits to a capture-frame range")
     args = ap.parse_args()
 
     try:
         summary = split(args.transforms, args.out_dir, set(args.exclude), set(args.test_camera),
-                        args.frames)
+                        args.frames, rgba=args.rgba)
     except (ValueError, KeyError, OSError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

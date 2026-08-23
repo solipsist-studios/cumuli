@@ -479,7 +479,16 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
         lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
         cams.setdefault(lab, {'meta': fr, 'frames': {}})['frames'][round(fr['time'], 4)] = fr['file_path']
     labels = sorted(cams)
-    times = sorted(cams[labels[0]]['frames'])[::max(1, time_stride)]
+    # Intersect the timestamps across every camera rather than trusting the
+    # first one's. Rigs do not always end up with equal frame counts (one
+    # measured capture has 145 frames on one camera and 146 on the rest), and
+    # indexing another camera by a time it lacks raised KeyError deep in the
+    # bake. Only instants every camera resolves can be tested anyway.
+    common = set.intersection(*(set(cams[lab]['frames']) for lab in labels))
+    if not common:
+        raise ValueError(f'{root}: no timestamp is present on all {len(labels)} cameras, '
+                         'so no multi-view silhouette test can be run')
+    times = sorted(common)[::max(1, time_stride)]
 
     masks = {}
     for lab in labels:
