@@ -131,9 +131,19 @@ def lpips_network():
             import lpips
             import torch
             network = lpips.LPIPS(net="alex", verbose=False)
-        return network.cuda() if torch.cuda.is_available() else network
     except ImportError:
         return None
+
+    # CPU when the GPU is unavailable OR full. Scoring routinely runs while a
+    # trainer holds most of the card, and a metric that dies with CUDA OOM is
+    # worse than a metric that takes a few seconds longer.
+    # torch.AcceleratorError subclasses RuntimeError, so one clause covers both.
+    if torch.cuda.is_available():
+        try:
+            return network.cuda(), "cuda"
+        except RuntimeError:
+            print("  note: GPU busy or full; computing LPIPS on the CPU", file=sys.stderr)
+    return network, "cpu"
 
 
 def lpips_distance(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float | None:
@@ -141,18 +151,25 @@ def lpips_distance(a: np.ndarray, b: np.ndarray, mask: np.ndarray) -> float | No
     package is absent. Zeroing rather than cropping keeps the comparison at the
     network's expected scale; both images get the identical treatment, so the
     blacked-out region contributes equally to each candidate."""
-    network = lpips_network()
-    if network is None:
+    loaded = lpips_network()
+    if loaded is None:
         return None
+    network, device = loaded
     import torch
 
     def to_tensor(image):
         masked = np.where(mask[..., None], image, 0.0)
         tensor = torch.from_numpy(masked.transpose(2, 0, 1)[None]).float() / 127.5 - 1.0
-        return tensor.cuda() if torch.cuda.is_available() else tensor
+        return tensor.to(device)
 
-    with torch.no_grad():
-        return float(network(to_tensor(a), to_tensor(b)).item())
+    try:
+        with torch.no_grad():
+            return float(network(to_tensor(a), to_tensor(b)).item())
+    except RuntimeError as exc:
+        if "out of memory" not in str(exc).lower():
+            raise
+        print("  note: GPU ran out of memory mid-LPIPS; skipping that column", file=sys.stderr)
+        return None
 
 
 def score_pair(candidate_path: Path, reference: np.ndarray, coverage: np.ndarray,

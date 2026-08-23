@@ -75,6 +75,16 @@ DEFAULT_VAE = "wan_2.1_vae.safetensors"
 POLL_SECONDS = 3.0
 HIGH_NOISE_DENOISE = 0.5  # above this, one expert is being asked to do both jobs
 
+# Per-backend defaults, so --backend alone names a runnable configuration and the
+# bakeoff's rows differ by model rather than by how carefully each was configured.
+BACKENDS = {
+    "wan22": {"model": DEFAULT_MODEL, "clip": DEFAULT_CLIP, "vae": DEFAULT_VAE, "shift": 8.0},
+    "ltx": {"model": "ltx-2-19b-distilled-fp8.safetensors", "clip": "", "vae": "", "shift": 1.0},
+    "h3": {"model": "Minimax H3/MiniMax_H3_FL2VA_pruned_nvfp4.safetensors",
+           "clip": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+           "vae": "vae/minimax_h3_video_vae_fp16.safetensors", "shift": 5.0},
+}
+
 
 def valid_clip_length(count: int) -> bool:
     """Wan compresses time in blocks of four, so a clip needs 4k+1 frames."""
@@ -106,11 +116,100 @@ def stage_frames(sweep_dir: Path, staging: Path, meta: dict) -> list:
     return staged
 
 
+def sampler_and_output(model_ref: list, positive: list, negative: list, *,
+                       denoise: float, steps: int, cfg: float, seed: int,
+                       sampler_name: str, scheduler: str, filename_prefix: str) -> dict:
+    """The tail every backend shares: denoise the encoded renders, decode, save.
+
+    Keeping this identical across backends is what makes the bakeoff a
+    comparison. If one model were sampled differently from another, the score
+    would be measuring the harness rather than the model."""
+    return {
+        "sampler": {"class_type": "KSampler",
+                    "inputs": {"model": model_ref, "seed": seed, "steps": steps, "cfg": cfg,
+                               "sampler_name": sampler_name, "scheduler": scheduler,
+                               "positive": positive, "negative": negative,
+                               "latent_image": ["base_latent", 0], "denoise": denoise}},
+        "decode": {"class_type": "VAEDecode",
+                   "inputs": {"samples": ["sampler", 0], "vae": ["vae", 0]}},
+        "save": {"class_type": "SaveImage",
+                 "inputs": {"images": ["decode", 0], "filename_prefix": filename_prefix}},
+    }
+
+
+def loader_and_encode(render_dir: str, vae_node: dict) -> dict:
+    """The head every backend shares: the renders, loaded as one batch and
+    VAE-encoded into the starting latent.
+
+    VHS_LoadImagesPath, not ImageBatchPath: the latter declares output_is_list,
+    so ComfyUI maps every downstream node over one image at a time. VAEEncode
+    then produced 17 single-frame latents instead of one 17-frame clip, and the
+    sampler died concatenating a temporal size of 1 against the conditioning's 5."""
+    return {
+        "vae": vae_node,
+        "renders": {"class_type": "VHS_LoadImagesPath", "inputs": {"directory": render_dir}},
+        "base_latent": {"class_type": "VAEEncode",
+                        "inputs": {"pixels": ["renders", 0], "vae": ["vae", 0]}},
+    }
+
+
+def build_graph_ltx(render_dir: str, control_dir: str | None, width: int, height: int, length: int, *,
+                    prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
+                    model_name: str, clip_name: str, vae_name: str, shift: float,
+                    filename_prefix: str) -> dict:
+    """LTX-2, loaded as a checkpoint so its matched model, CLIP and VAE arrive
+    together. LTXVConditioning stamps the clip's frame rate onto the conditioning,
+    which LTX needs and which has no analogue in the other backends."""
+    graph = {
+        "ckpt": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": model_name}},
+        "renders": {"class_type": "VHS_LoadImagesPath", "inputs": {"directory": render_dir}},
+        "base_latent": {"class_type": "VAEEncode",
+                        "inputs": {"pixels": ["renders", 0], "vae": ["ckpt", 2]}},
+        "positive": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["ckpt", 1]}},
+        "negative": {"class_type": "CLIPTextEncode", "inputs": {"text": negative, "clip": ["ckpt", 1]}},
+        "cond": {"class_type": "LTXVConditioning",
+                 "inputs": {"positive": ["positive", 0], "negative": ["negative", 0],
+                            "frame_rate": 29.97}},
+    }
+    graph.update(sampler_and_output(["ckpt", 0], ["cond", 0], ["cond", 1], denoise=denoise,
+                                    steps=steps, cfg=cfg, seed=seed, sampler_name="euler",
+                                    scheduler="normal", filename_prefix=filename_prefix))
+    graph["decode"]["inputs"]["vae"] = ["ckpt", 2]
+    return graph
+
+
+def build_graph_h3(render_dir: str, control_dir: str | None, width: int, height: int, length: int, *,
+                   prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
+                   model_name: str, clip_name: str, vae_name: str, shift: float,
+                   filename_prefix: str) -> dict:
+    """MiniMax H3. Its conditioner emits ONE conditioning rather than a pair, so
+    the negative is that same conditioning zeroed out, which is how ComfyUI
+    expresses "no guidance from this branch" for models that carry no separate
+    negative."""
+    graph = loader_and_encode(render_dir,
+                              {"class_type": "VAELoader", "inputs": {"vae_name": vae_name}})
+    graph.update({
+        "model": {"class_type": "UNETLoader",
+                  "inputs": {"unet_name": model_name, "weight_dtype": "default"}},
+        "clip": {"class_type": "CLIPLoader", "inputs": {"clip_name": clip_name, "type": "minimax"}},
+        "shift": {"class_type": "MiniMaxH3SigmaShift",
+                  "inputs": {"model": ["model", 0], "shift_video": shift, "shift_audio": shift}},
+        "cond": {"class_type": "MiniMaxH3ImageToVideo",
+                 "inputs": {"clip": ["clip", 0], "vae": ["vae", 0], "prompt": prompt,
+                            "width": width, "height": height, "length": length}},
+        "zero": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["cond", 0]}},
+    })
+    graph.update(sampler_and_output(["shift", 0], ["cond", 0], ["zero", 0], denoise=denoise,
+                                    steps=steps, cfg=cfg, seed=seed, sampler_name="euler",
+                                    scheduler="normal", filename_prefix=filename_prefix))
+    return graph
+
+
 def build_graph(render_dir: str, control_dir: str | None, width: int, height: int, length: int, *,
                 prompt: str, negative: str, denoise: float, steps: int, cfg: float, seed: int,
                 model_name: str, clip_name: str, vae_name: str, shift: float,
                 filename_prefix: str) -> dict:
-    """The ComfyUI API graph.
+    """The Wan 2.2 graph.
 
     Shape: the renders are VAE-encoded and handed to the sampler as the starting
     latent, so a low denoise preserves them. Wan22FunControlToVideo is used for
@@ -228,8 +327,10 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                  negative: str = DEFAULT_NEGATIVE, denoise: float = 0.15, steps: int = 20,
                  cfg: float = 1.0, seed: int = 0, model_name: str = DEFAULT_MODEL,
                  clip_name: str = DEFAULT_CLIP, vae_name: str = DEFAULT_VAE, shift: float = 8.0,
-                 comfy_url: str = "http://127.0.0.1:8188", timeout: float = 1800.0) -> dict:
+                 comfy_url: str = "http://127.0.0.1:8188", timeout: float = 1800.0,
+                 backend: str = "wan22") -> dict:
     """Repair one sweep. Returns a summary of what it wrote."""
+    builder = {"wan22": build_graph, "ltx": build_graph_ltx, "h3": build_graph_h3}[backend]
     meta = json.loads((sweep_dir / "cameras.json").read_text())
     frames = meta["frames"]
     if not valid_clip_length(len(frames)):
@@ -259,18 +360,18 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
         for index, source in enumerate(maps):
             shutil.copyfile(source, control_staging / f"{index:04d}.png")
 
-    prefix = f"videorepair_{sweep_dir.name}"
-    graph = build_graph(str(staging), str(control_staging) if control_staging else None,
-                        meta["res"], meta["res"], len(frames),
-                        prompt=prompt, negative=negative, denoise=denoise, steps=steps, cfg=cfg,
-                        seed=seed, model_name=model_name, clip_name=clip_name, vae_name=vae_name,
-                        shift=shift, filename_prefix=prefix)
+    prefix = f"videorepair_{backend}_{sweep_dir.name}"
+    graph = builder(str(staging), str(control_staging) if control_staging else None,
+                    meta["res"], meta["res"], len(frames),
+                    prompt=prompt, negative=negative, denoise=denoise, steps=steps, cfg=cfg,
+                    seed=seed, model_name=model_name, clip_name=clip_name, vae_name=vae_name,
+                    shift=shift, filename_prefix=prefix)
 
     pinned = sorted((meta.get("real_endpoints") or {}).get(n, {}).get("idx")
                     for n in ("real_first", "real_last")
                     if (meta.get("real_endpoints") or {}).get(n))
-    print(f"{sweep_dir.name}: {len(frames)} frames at {meta['res']}px, denoise {denoise}, "
-          f"{'skeleton control' if control_dir else 'no control signal'}, "
+    print(f"{sweep_dir.name} [{backend}]: {len(frames)} frames at {meta['res']}px, "
+          f"denoise {denoise}, {'skeleton control' if control_dir else 'no control signal'}, "
           f"real pins at {pinned or 'NONE'}")
 
     produced = submit(comfy_url, graph, timeout)
@@ -310,22 +411,29 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--cfg", type=float, default=1.0)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--shift", type=float, default=8.0, help="ModelSamplingSD3 sigma shift")
-    ap.add_argument("--model_name", default=DEFAULT_MODEL)
-    ap.add_argument("--clip_name", default=DEFAULT_CLIP)
-    ap.add_argument("--vae_name", default=DEFAULT_VAE)
+    ap.add_argument("--backend", default="wan22", choices=sorted(BACKENDS),
+                    help="which video model to repair with. Each carries its own model/clip/vae "
+                         "defaults so the bakeoff's rows differ by model, not by configuration care")
+    ap.add_argument("--shift", type=float, default=None, help="sigma shift (default: per backend)")
+    ap.add_argument("--model_name", default=None)
+    ap.add_argument("--clip_name", default=None)
+    ap.add_argument("--vae_name", default=None)
     ap.add_argument("--comfy_url", default="http://127.0.0.1:8188")
     ap.add_argument("--timeout", type=float, default=1800.0,
                     help="seconds to wait; a 14B model's first load alone can take minutes")
     args = ap.parse_args()
 
+    defaults = BACKENDS[args.backend]
     try:
         summary = repair_sweep(
             args.sweep_dir, args.out_dir, args.comfy_input_dir, args.comfy_output_dir,
             control_dir=args.control_dir, prompt=args.prompt, negative=args.negative_prompt,
             denoise=args.denoise, steps=args.steps, cfg=args.cfg, seed=args.seed,
-            model_name=args.model_name, clip_name=args.clip_name, vae_name=args.vae_name,
-            shift=args.shift, comfy_url=args.comfy_url, timeout=args.timeout)
+            model_name=args.model_name or defaults["model"],
+            clip_name=args.clip_name or defaults["clip"],
+            vae_name=args.vae_name or defaults["vae"],
+            shift=args.shift if args.shift is not None else defaults["shift"],
+            comfy_url=args.comfy_url, timeout=args.timeout, backend=args.backend)
     except (FileNotFoundError, ValueError, RuntimeError, TimeoutError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
