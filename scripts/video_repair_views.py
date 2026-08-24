@@ -309,7 +309,8 @@ UNI3C_PATCH = "Wan21_Uni3C_controlnet_fp16.safetensors"
 
 
 def apply_uni3c(graph: dict, enabled: bool, strength: float,
-                start_percent: float = 0.0, end_percent: float = 1.0) -> dict:
+                start_percent: float = 0.0, end_percent: float = 1.0,
+                guide_dir: str | None = None) -> dict:
     """Patch MODEL with the Uni3C camera controlnet, guided by our own renders.
 
     Uni3C conditions on a point-cloud render along the target trajectory. The
@@ -325,18 +326,27 @@ def apply_uni3c(graph: dict, enabled: bool, strength: float,
         return graph
 
     source = "lora" if "lora" in graph else "model"
+    # Uni3C was trained on POINT-CLOUD renders, which stipple; our splat
+    # renders are continuous surfaces. Same geometry, different style, and the
+    # style is what its encoder saw in training -- so a dedicated guide
+    # directory can carry render_pair_sweep --point_render output instead.
+    guide = ["renders", 0]
+    if guide_dir:
+        graph["uni3c_guide"] = {"class_type": "VHS_LoadImagesPath",
+                                "inputs": {"directory": guide_dir}}
+        guide = ["uni3c_guide", 0]
     graph["uni3c_patch"] = {"class_type": "ModelPatchLoader",
                             "inputs": {"name": UNI3C_PATCH}}
     graph["uni3c"] = {"class_type": "WanUni3CControlnetApply",
                       "inputs": {"model": [source, 0],
                                  "model_patch": ["uni3c_patch", 0],
                                  "vae": ["vae", 0],
-                                 "render_video": ["renders", 0],
+                                 "render_video": guide,
                                  "strength": strength,
                                  "start_percent": start_percent,
                                  "end_percent": end_percent}}
     for key, node in graph.items():
-        if key in ("uni3c", "uni3c_patch", "model", "lora", "uni3c_patch"):
+        if key in ("uni3c", "uni3c_patch", "uni3c_guide", "model", "lora"):
             continue
         for input_name, value in node.get("inputs", {}).items():
             if isinstance(value, list) and len(value) == 2 and value[0] == source:
@@ -513,7 +523,8 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                  comfy_url: str = "http://127.0.0.1:8188", timeout: float = 1800.0,
                  backend: str = "wan22", control_strength: float = 1.0,
                  lora: str | None = None, lora_strength: float = 1.0,
-                 uni3c: bool = False, uni3c_strength: float = 1.0) -> dict:
+                 uni3c: bool = False, uni3c_strength: float = 1.0,
+                 uni3c_guide_dir: str | None = None) -> dict:
     """Repair one sweep. Returns a summary of what it wrote."""
     builder = {"wan22": build_graph, "ltx": build_graph_ltx, "h3": build_graph_h3,
                "vace": build_graph_vace}[backend]
@@ -566,7 +577,7 @@ def repair_sweep(sweep_dir: Path, out_dir: Path, comfy_input_dir: Path, comfy_ou
                     shift=shift, filename_prefix=prefix,
                     **({"control_strength": control_strength} if backend == "vace" else {}))
     graph = apply_lora(graph, lora, lora_strength)
-    graph = apply_uni3c(graph, uni3c, uni3c_strength)
+    graph = apply_uni3c(graph, uni3c, uni3c_strength, guide_dir=uni3c_guide_dir)
 
     pinned = sorted((meta.get("real_endpoints") or {}).get(n, {}).get("idx")
                     for n in ("real_first", "real_last")
@@ -625,6 +636,10 @@ def main() -> int:
                          "the sweep renders themselves rather than an estimated depth "
                          "unprojection")
     ap.add_argument("--uni3c_strength", type=float, default=1.0)
+    ap.add_argument("--uni3c_guide_dir", default=None,
+                    help="directory of point-cloud renders to guide Uni3C with "
+                         "(render_pair_sweep --point_render). Defaults to the splat "
+                         "renders, which are the right geometry in the wrong style")
     ap.add_argument("--control_strength", type=float, default=1.0,
                     help="VACE only: how hard to follow the control video. This is the "
                          "adherence knob Fun-Control never exposed")
@@ -650,7 +665,8 @@ def main() -> int:
             comfy_url=args.comfy_url, timeout=args.timeout, backend=args.backend,
             control_strength=args.control_strength,
             lora=args.lora, lora_strength=args.lora_strength,
-            uni3c=args.uni3c, uni3c_strength=args.uni3c_strength)
+            uni3c=args.uni3c, uni3c_strength=args.uni3c_strength,
+            uni3c_guide_dir=args.uni3c_guide_dir)
     except (FileNotFoundError, ValueError, RuntimeError, TimeoutError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1

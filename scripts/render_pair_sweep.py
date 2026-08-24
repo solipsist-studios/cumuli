@@ -309,7 +309,8 @@ def render_pair_sweep(model: Path, transforms: Path, out_dir: Path, *,
                       pair: tuple, frame_range: str | None = None, fps: float = 29.97,
                       res: int = 1024, zoom: float = 1.6,
                       holdout_label: str | None = None, images_dir: Path | None = None,
-                      lambda_gt: float = LAMBDA_GT, time_scale: float | None = None) -> dict:
+                      lambda_gt: float = LAMBDA_GT, time_scale: float | None = None,
+                      point_render: float = 0.0) -> dict:
     """Render one pair's sweep. Returns the cameras.json metadata it wrote."""
     import torch
     from gsplat import rasterization
@@ -341,6 +342,12 @@ def render_pair_sweep(model: Path, transforms: Path, out_dir: Path, *,
         if "ax" in fields else None
     quats = to_gpu(np.stack([fields[f"rot_{i}"] for i in range(4)], axis=1))
     scales = torch.exp(to_gpu(np.stack([fields[f"scale_{i}"] for i in range(3)], axis=1)))
+    if point_render > 0:
+        # Collapse every Gaussian to a near-isotropic dot: the same geometry
+        # rendered as a POINT CLOUD rather than a continuous surface, which is
+        # the style Uni3C was trained to consume. A world-size around
+        # radius/focal covers about one pixel at our frustum.
+        scales = torch.full_like(scales, float(point_render))
     op_logit = to_gpu(fields["opacity"])
     t_center = to_gpu(fields["t_center"])
     t_sigma = to_gpu(np.maximum(np.abs(fields["t_sigma"]), 1e-6))
@@ -440,7 +447,8 @@ def render_pair_sweep(model: Path, transforms: Path, out_dir: Path, *,
                          "render": f"sweep_{probe_index:04d}.png"}
 
     (out_dir / "cameras.json").write_text(json.dumps(meta, indent=1))
-    print(f"{out_dir.name}: {len(records)} frames, cameras {pair[0]}->{pair[1]}, "
+    print(f"{out_dir.name}: {len(records)} frames"
+          f"{' POINT-RENDER' if point_render > 0 else ''}, cameras {pair[0]}->{pair[1]}, "
           f"azimuth {parameters[0][0]:.1f} -> {parameters[-1][0]:.1f} deg at {res}px, "
           f"t {records[0]['time']:.3f}-{records[-1]['time']:.3f}s"
           + (f", probe {holdout_label!r} at index {probe_index}" if probe_index is not None else "")
@@ -480,6 +488,10 @@ def main() -> int:
                     help="angular loss-weight strength written into cameras.json: a frame on a real "
                          "camera is worth (1 + lambda_gt) times one at the arc's midpoint. 0 gives "
                          "every frame equal weight")
+    ap.add_argument("--point_render", type=float, default=0.0,
+                    help="render as a POINT CLOUD instead of splats, collapsing every Gaussian "
+                         "to a dot of this world size (try 0.002 at our scale). This is the "
+                         "style Uni3C expects for its guidance video")
     ap.add_argument("--images_dir", type=Path, default=None,
                     help="override directory holding the real photos, when transforms.json's "
                          "file_path entries no longer resolve")
@@ -508,7 +520,8 @@ def main() -> int:
             args.model, args.transforms, args.out_dir / f"{pair[0]}_to_{pair[1]}",
             pair=pair, frame_range=args.frames, fps=args.fps, res=args.res, zoom=args.zoom,
             holdout_label=args.holdout_label, images_dir=args.images_dir,
-            lambda_gt=args.lambda_gt, time_scale=args.time_scale)
+            lambda_gt=args.lambda_gt, time_scale=args.time_scale,
+            point_render=args.point_render)
     return 0
 
 
