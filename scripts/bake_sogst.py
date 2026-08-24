@@ -645,6 +645,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
                             include_sh=True, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
                             top_k_fraction=1.0, extra_keep_mask_path=None,
                             filter_black_floaters=False, mask_filter_root=None,
+                            mask_filter_time_stride=1,
                             mask_filter_outside_frac=0.5):
     """Export directly from an OMG4 train_scratch.py checkpoint (chkpntNNNN.pth),
     bypassing OMG4's SVQ+MLP compression (train.py) entirely.
@@ -752,7 +753,8 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
     if mask_filter_root:
         mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
                                           t_sigma, opacity_logit,
-                                          outside_frac=mask_filter_outside_frac)
+                                          outside_frac=mask_filter_outside_frac,
+                                          time_stride=mask_filter_time_stride)
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
@@ -996,6 +998,12 @@ if __name__ == '__main__':
                              'subject silhouette in most (time, camera) tests across their visible '
                              'lifetime, not just at t_center. Removes splats that drift off the '
                              'body. Does NOT fix wrong-depth splats inside the silhouette.')
+    parser.add_argument('--mask_filter_time_stride', type=int, default=1,
+                        help='Test every Nth capture frame in the lifetime mask filter. The old\n'
+                             'default of 4 left most splats untested: measured on one capture,\n'
+                             'median t_sigma is 0.0235 s while stride 4 samples every 0.129 s, so\n'
+                             '63%% of splats live and die between samples and are kept by default.\n'
+                             'Stride 1 costs more mask loads and catches them.')
     parser.add_argument('--mask_filter_outside_frac', type=float, default=0.5,
                         help='Drop a Gaussian when it lands outside the mask in more than this '
                              'fraction of the tests that resolve it (default 0.5)')
@@ -1056,6 +1064,7 @@ if __name__ == '__main__':
                                 extra_keep_mask_path=args.extra_keep_mask,
                                 filter_black_floaters=args.filter_black_floaters,
                                 mask_filter_root=args.mask_filter_root,
+                                mask_filter_time_stride=args.mask_filter_time_stride,
                                 mask_filter_outside_frac=args.mask_filter_outside_frac)
     else:
         convert(args.input, args.output, args.time_min, args.time_max, args.fps,
