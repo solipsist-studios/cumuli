@@ -17,6 +17,14 @@ script's own `--help` / docstring has the full flag reference. This doc
 is the narrative walkthrough, and it names the conda envs each stage
 needs.
 
+There is a second entry point for synthetic captures. Rendering a
+character in Blender instead of shooting one produces the same flipbook
+layout this pipeline consumes, with exact camera poses and exact subject
+mattes, which makes it the way to compare camera configurations and to
+produce splats of an authored character. See
+[synthetic-datasets.md](synthetic-datasets.md) and
+`scripts/run_synthetic_pipeline.py`.
+
 Only the direct branch (training on the real cameras) is part of this
 build. The Diffuman4D 48-camera dense-ring branch is a planned
 addition (hallucinating extra ring views via Diffuman4D, then training
