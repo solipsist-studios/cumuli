@@ -25,17 +25,34 @@ Output (--out) mirrors the per-frame refit dataset layout:
         deliberately NO global intrinsics block: the cameras differ)
     points3d.ply                     per-frame visual-hull init points
                                      with colour and per-point `time`
-    eval_gt_flat/frame_NNNNN.png     held-out cam's frames composited to
-        RGB over black at output resolution, byte-consistent with what
-        the masked trainer renders, so eval_render.py scores are honest
-        (an earlier eval GT was mis-framed against the renders. This
-        writes GT and transforms from the same pixels + numbers)
+    eval_gt_flat/<name>.png          scored frames composited to RGB over
+        black at output resolution, byte-consistent with what the masked
+        trainer renders, so eval_render.py scores are honest (an earlier
+        eval GT was mis-framed against the renders. This writes GT and
+        transforms from the same pixels + numbers)
+    evalcams/cam<label>/...          only with --eval_root, below
+
+Two ways to obtain scored views:
+
+  --test_cameras   holds a rig camera out of training and scores it. The
+      viewpoint is wherever that camera happens to sit, so scores from two
+      different rigs measure different things and cannot be compared.
+  --eval_root      a second flipbook of cameras that never train. Every rig
+      can be scored against the same fixed novel views, which is what makes
+      a camera-configuration comparison meaningful. Rendered rigs use this
+      (see run_synthetic_pipeline.py); real captures cannot, since the views
+      would have to be physically shot without joining the reconstruction.
 
 Usage:
     python build_flipbook_4dgs_dataset.py \
         --flipbook_root <flipbook_root> \
         --out <out> \
         --fps 30 --downscale 4 --test_cameras 05
+
+    python build_flipbook_4dgs_dataset.py \
+        --flipbook_root <run>/flipbook_src --eval_root <run>/eval_src \
+        --out <run>/dataset_4dgs --fps 24 --downscale 2 \
+        --init_bbox "-0.5,0.0,-0.3,0.5,1.8,0.4"
 """
 
 import argparse
@@ -59,7 +76,8 @@ def load_flipbook_rig(frame_dirs):
     the last frame. Returns {label: {c2w_gl, w2c, intr=(fl_x,fl_y,cx,cy),
     w, h}}."""
     def read(frame_dir):
-        t = json.load(open(frame_dir / 'transforms.json'))
+        with open(frame_dir / 'transforms.json') as f:
+            t = json.load(f)
         cams = {}
         for fr in t['frames']:
             for k in ('k1', 'k2', 'p1', 'p2'):
@@ -159,6 +177,40 @@ def carve_frame(frame_dir, rig, masks_dir, bbox, n_target, min_views,
     return pts.astype(np.float32), rgb.astype(np.uint8)
 
 
+def eval_basename(label, frame_index):
+    """Name for one eval-camera view.
+
+    eval_render.py finds ground truth by the basename of an entry's
+    file_path, so the name has to be unique across cameras as well as
+    frames. Held-out rig cameras keep their historical frame_NNNNN naming
+    (only one is ever scored at a time); eval cameras carry their label."""
+    return f'cam{label}_frame_{frame_index + 1:05d}'
+
+
+def load_eval_root(eval_root, n_source_frames, frame_idx):
+    """Rig and frame dirs for the separate eval cameras, or ({}, []).
+
+    The eval root is a flipbook laid out exactly like the training one, so
+    the same loader validates it: static rig, undistorted, per-camera
+    intrinsics. It is indexed by the ORIGINAL frame indices the training
+    side kept, so --dedupe drops the same instants from both and eval views
+    stay aligned with the timestamps they are scored at."""
+    if not eval_root:
+        return {}, []
+    root = Path(eval_root).expanduser()
+    dirs = sorted(d for d in root.iterdir()
+                  if d.is_dir() and d.name.startswith('frame_'))
+    if not dirs:
+        sys.exit(f'ERROR: no frame_* directories under {root}')
+    if len(dirs) != n_source_frames:
+        sys.exit(f'ERROR: --eval_root has {len(dirs)} frame directories but '
+                 f'the training flipbook has {n_source_frames}. The two are '
+                 'rendered from the same clip and must line up frame for '
+                 'frame.')
+    kept = [dirs[i] for i in frame_idx]
+    return load_flipbook_rig(kept), kept
+
+
 def flatten_gt(rgba_path, dst):
     """RGBA -> RGB composited over black (what a masked trainer renders)."""
     with Image.open(rgba_path) as im:
@@ -187,6 +239,21 @@ def main():
                              'training is not a novel-view test at all (pairs on the '
                              'capture this was built against: 00/10, 01/02, 04/05, '
                              '06/07, 08/09). Hold out the mate too.')
+    parser.add_argument('--init_bbox',
+                        help='"x0,y0,z0,x1,y1,z1" subject bounds in the '
+                             'dataset world frame, used instead of searching '
+                             'for them. Rejection sampling over the whole rig '
+                             'extent finds very few hull points when the '
+                             'subject is small next to the camera spread.')
+    parser.add_argument('--eval_root',
+                        help='a SECOND flipbook root whose cameras are scored '
+                             'but never trained on. Written to evalcams/ and '
+                             'appended to transforms_test.json + eval_gt_flat '
+                             'with per-camera basenames. Use it to score every '
+                             'camera configuration against one fixed set of '
+                             'novel views: holding out a rig camera instead '
+                             'moves the test viewpoint with the rig, so two '
+                             'rigs cannot be compared.')
     parser.add_argument('--masks_dir', default='fmasks_clean',
                         help='per-frame mask subdirectory (default: fmasks_clean)')
     parser.add_argument('--dedupe', action='store_true',
@@ -216,6 +283,7 @@ def main():
     # traceable to source frames and times stay physically correct when
     # --dedupe removes holds.
     frame_idx = list(range(len(frame_dirs)))
+    n_source_frames = len(frame_dirs)
     if args.dedupe:
         n_before = len(frame_dirs)
         frame_dirs, frame_idx = drop_duplicate_frames(frame_dirs, labels[0])
@@ -234,22 +302,49 @@ def main():
           f'{" | holdout: " + ",".join(args.holdout_cameras) if args.holdout_cameras else ""} | '
           f'duration {frame_idx[-1] / args.fps:.3f}s @ {args.fps} fps')
 
-    # ── visual-hull bbox discovery on the middle frame ─────────────────────
+    # ── visual-hull bbox: given, or discovered on the middle frame ─────────
     rng = np.random.default_rng(0)
     mid_dir = frame_dirs[len(frame_dirs) // 2]
     masks = load_frame_masks(mid_dir, labels, args.masks_dir)
-    positions = [np.linalg.inv(rig[c]['w2c'])[:3, 3] for c in labels]
-    centroid = np.mean(positions, axis=0)
-    span = max(np.ptp(positions, axis=0)) or 4.0
-    cand = rng.uniform(centroid - span, centroid + span, size=(500_000, 3))
-    good = cand[hull_votes(rig, masks, cand) >= args.hull_min_views]
-    if len(good) < 100:
-        sys.exit(f'ERROR: bbox discovery found only {len(good)} hull points — '
-                 'check mask/pose consistency (or lower --hull_min_views)')
-    pad = 0.15 * (good.max(0) - good.min(0)) + 0.05
-    bbox = (good.min(0) - pad, good.max(0) + pad)
-    print(f'  hull bbox ({mid_dir.name}): {np.round(bbox[0], 2)} .. '
-          f'{np.round(bbox[1], 2)} ({len(good):,} seed points)')
+    if args.init_bbox:
+        vals = [float(v) for v in args.init_bbox.replace(',', ' ').split()]
+        if len(vals) != 6:
+            sys.exit('ERROR: --init_bbox needs 6 numbers '
+                     '(x0 y0 z0 x1 y1 z1) in the dataset world frame')
+        lo, hi = np.array(vals[:3]), np.array(vals[3:])
+        pad = 0.15 * (hi - lo) + 0.05
+        bbox = (lo - pad, hi + pad)
+        print(f'  hull bbox (given): {np.round(bbox[0], 2)} .. '
+              f'{np.round(bbox[1], 2)}')
+    else:
+        # Rejection sampling over the rig's own extent. A subject that is
+        # small next to the camera spread makes hits rare, so widen the
+        # sample count before giving up rather than failing on a dataset
+        # that is perfectly fine.
+        positions = [np.linalg.inv(rig[c]['w2c'])[:3, 3] for c in labels]
+        centroid = np.mean(positions, axis=0)
+        span = max(np.ptp(positions, axis=0)) or 4.0
+        good = np.zeros((0, 3))
+        n_cand = 500_000
+        for attempt in range(4):
+            cand = rng.uniform(centroid - span, centroid + span, size=(n_cand, 3))
+            good = cand[hull_votes(rig, masks, cand) >= args.hull_min_views]
+            if len(good) >= 100:
+                break
+            print(f'  bbox discovery: {len(good)} points from {n_cand:,} '
+                  'candidates, widening the search')
+            n_cand *= 4
+        if len(good) < 100:
+            sys.exit(
+                f'ERROR: bbox discovery found only {len(good)} hull points '
+                f'from {n_cand // 4:,} candidates. Check mask/pose '
+                'consistency, lower --hull_min_views, or pass --init_bbox '
+                'when the subject extent is already known (the synthetic '
+                'pipeline passes it from the scene manifest).')
+        pad = 0.15 * (good.max(0) - good.min(0)) + 0.05
+        bbox = (good.min(0) - pad, good.max(0) + pad)
+        print(f'  hull bbox ({mid_dir.name}): {np.round(bbox[0], 2)} .. '
+              f'{np.round(bbox[1], 2)} ({len(good):,} seed points)')
 
     # ── per-frame hull carving (parallel) ──────────────────────────────────
     per_frame = max(args.hull_points // len(frame_dirs), 200)
@@ -290,17 +385,43 @@ def main():
             if n_done % 100 == 0 or n_done == len(jobs):
                 print(f'  images: {n_done}/{len(jobs)}', flush=True)
 
+    # ── separate eval-camera views (synthetic rigs) ────────────────────────
+    # Cameras that never train and exist only to be scored. Holding out a rig
+    # camera instead scores a different viewpoint for every rig, so numbers
+    # from two camera configurations are not comparable; a fixed eval set is.
+    eval_rig, eval_frame_dirs = load_eval_root(
+        args.eval_root, n_source_frames, frame_idx)
+    if eval_rig:
+        eval_labels = sorted(eval_rig)
+        jobs = []
+        for label in eval_labels:
+            (out / 'evalcams' / f'cam{label}').mkdir(parents=True, exist_ok=True)
+            for i, d in enumerate(eval_frame_dirs):
+                jobs.append((d / 'images_flat' / f'{label}.png',
+                             d / args.masks_dir / f'{label}.png',
+                             out / 'evalcams' / f'cam{label}' /
+                             f'{eval_basename(label, frame_idx[i])}.png'))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            futs = [pool.submit(convert_image, s, m, d, args.downscale)
+                    for s, m, d in jobs]
+            for fut in concurrent.futures.as_completed(futs):
+                fut.result()
+        print(f'  eval cameras: {len(eval_labels)} x {len(eval_frame_dirs)} '
+              f'frames from {args.eval_root}')
+
     # ── transforms jsons (per-frame intrinsics, cameras differ) ────────────
     ds = args.downscale
 
-    def entries(cam_labels):
+    def entries(cam_labels, source_rig=None, subdir='realcams', namer=None):
+        source_rig = rig if source_rig is None else source_rig
         rows = []
         for label in cam_labels:
-            cam = rig[label]
+            cam = source_rig[label]
             fl_x, fl_y, cx, cy = cam['intr']
             for i in frame_idx:
+                name = namer(label, i) if namer else f'frame_{i + 1:05d}'
                 rows.append({
-                    'file_path': f'realcams/cam{label}/frame_{i + 1:05d}',
+                    'file_path': f'{subdir}/cam{label}/{name}',
                     'camera_label': label,
                     'time': i / args.fps,
                     'fl_x': fl_x / ds, 'fl_y': fl_y / ds,
@@ -312,23 +433,46 @@ def main():
 
     excluded = set(args.test_cameras) | set(args.holdout_cameras)
     train_labels = [c for c in labels if c not in excluded]
-    json.dump({'camera_model': 'OPENCV', 'frames': entries(train_labels)},
-              open(out / 'transforms_train.json', 'w'), indent=1)
-    json.dump({'camera_model': 'OPENCV',
-               'frames': entries(args.test_cameras or train_labels[:1])},
-              open(out / 'transforms_test.json', 'w'), indent=1)
+    with open(out / 'transforms_train.json', 'w') as f:
+        json.dump({'camera_model': 'OPENCV', 'frames': entries(train_labels)},
+                  f, indent=1)
 
-    # ── flat GT for eval_render (held-out cams only) ───────────────────────
+    test_rows = []
+    if eval_rig:
+        test_rows += entries(sorted(eval_rig), source_rig=eval_rig,
+                             subdir='evalcams', namer=eval_basename)
     if args.test_cameras:
+        test_rows += entries(args.test_cameras)
+    if not test_rows:
+        # The trainer's eval loop needs at least one view. A training camera
+        # stands in, and its score is a training-view monitor, not a
+        # held-out measurement.
+        test_rows = entries(train_labels[:1])
+    with open(out / 'transforms_test.json', 'w') as f:
+        json.dump({'camera_model': 'OPENCV', 'frames': test_rows}, f, indent=1)
+
+    # ── flat GT for eval_render (scored cameras only) ──────────────────────
+    # eval_render.py looks ground truth up by the basename of file_path, so
+    # every scored view needs a name unique across cameras as well as frames.
+    if args.test_cameras or eval_rig:
         (out / 'eval_gt_flat').mkdir(exist_ok=True)
+        n_gt = 0
         for label in args.test_cameras:
             for i in frame_idx:
                 flatten_gt(out / 'realcams' / f'cam{label}' / f'frame_{i + 1:05d}.png',
                            out / 'eval_gt_flat' / f'frame_{i + 1:05d}.png')
-        print(f'  eval_gt_flat: {len(frame_dirs)} black-composited GT frames')
+                n_gt += 1
+        for label in sorted(eval_rig):
+            for i in frame_idx:
+                name = f'{eval_basename(label, i)}.png'
+                flatten_gt(out / 'evalcams' / f'cam{label}' / name,
+                           out / 'eval_gt_flat' / name)
+                n_gt += 1
+        print(f'  eval_gt_flat: {n_gt} black-composited GT frames')
 
     print(f'  transforms: {len(train_labels)} train cams, '
-          f'{len(args.test_cameras) or 1} test cams, done -> {out}')
+          f'{len(args.test_cameras) + len(eval_rig)} scored cams '
+          f'({len(test_rows)} test views), done -> {out}')
 
 
 if __name__ == '__main__':
