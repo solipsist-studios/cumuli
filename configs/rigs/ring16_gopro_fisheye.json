@@ -1,0 +1,36 @@
+{
+  "name": "ring16_gopro_fisheye",
+  "description": "ring16 geometry with the real GoPro fisheye calibration, so renders carry the distortion the physical rig produces and the localization path sees the same undistortion step a real capture does. Lighting comes from the scene, not from this spec: a rig spec describes CAMERAS. An earlier version carried a lights block that deleted the scene's own ring and substituted 12x150 W at 3.72 m, which is 5.85x the irradiance of the authored 8x100 W at 6.00 m and rendered the subject 2.55 stops hot.",
+  "layout": "rings",
+  "target": "subject_center",
+  "rings": [
+    {
+      "count": 8,
+      "radius": {
+        "subject_heights": 1.7
+      },
+      "height": {
+        "subject_fraction": 0.55
+      }
+    },
+    {
+      "count": 8,
+      "radius": {
+        "subject_heights": 1.7
+      },
+      "height": {
+        "subject_fraction": 1.15
+      },
+      "azimuth_offset_deg": 22.5
+    }
+  ],
+  "resolution": [
+    1920,
+    1680
+  ],
+  "camera_model": "OPENCV_FISHEYE",
+  "calibration_pkl": "configs/rigs/gopro_16cam_distorted.pkl",
+  "eval": {
+    "count": 4
+  }
+}

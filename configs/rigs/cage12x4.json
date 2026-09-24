@@ -1,0 +1,39 @@
+{
+  "name": "cage12x4",
+  "description": "Truncated spherical cage, 12 azimuth columns by 4 elevation rows with the per-row stagger. Ported from camera_cage.py. Scored on the shared eval ring every rig in this directory uses: four cameras at 18.5 degrees offset and 0.85 of subject height, chosen so that the nearest training camera is 10 to 15 degrees away in EVERY rig here. Identical eval views are what make two runs comparable; equal novelty is what stops one rig being flattered by an eval view that happens to sit next to one of its own cameras. Lighting comes from the scene, not from this spec: a rig spec describes CAMERAS. An earlier version carried a lights block that deleted the scene's own ring and substituted 12x150 W at 3.72 m, which is 5.85x the irradiance of the authored 8x100 W at 6.00 m and rendered the subject 2.55 stops hot.",
+  "layout": "cage",
+  "target": "subject_center",
+  "cage": {
+    "theta": 12,
+    "phi": 4,
+    "radius": {
+      "subject_heights": 1.7
+    },
+    "min_height": {
+      "subject_fraction": 0.1
+    },
+    "max_height": {
+      "subject_fraction": 1.6
+    },
+    "stagger": true
+  },
+  "resolution": [
+    1920,
+    1680
+  ],
+  "camera_model": "PINHOLE",
+  "intrinsics": {
+    "lens_mm": 32,
+    "sensor_width_mm": 36
+  },
+  "eval": {
+    "count": 4,
+    "radius": {
+      "subject_heights": 1.7
+    },
+    "height": {
+      "subject_fraction": 0.85
+    },
+    "azimuth_offset_deg": 18.5
+  }
+}
