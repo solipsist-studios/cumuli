@@ -99,3 +99,10 @@ dependencies:
       - accelerate
       - prettytable
       - tabulate
+      # fit_rig_motion.py / fdanyone_to_omg4.py (rig-gap-fill 4DAnyone
+      # pipeline): SMPL-X body fitting and safetensors I/O. Neither is a
+      # compiled CUDA extension bound to torch's ABI the way diff-gaussian-
+      # rasterization/simple-knn/pointops2 are, so folding them into this
+      # single env rather than a separate one is expected to be low-risk.
+      - smplx==0.1.28
+      - safetensors==0.8.0  # already resolves in this env transitively (huggingface_hub/diffusers); pinned explicitly since fit_rig_motion.py/fdanyone_to_omg4.py import it directly
