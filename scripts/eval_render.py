@@ -18,14 +18,16 @@ directory of frames named after each entry's file_path basename.
 Run under an environment with gsplat + lpips + torchmetrics + CUDA:
 
     python scripts/eval_render.py \
-        --model coffee_martini.sogst \
-        --transforms <dataset>/coffee_martini/transforms_test.json \
-        --gt-dir <dataset>/coffee_martini/eval_gt_half \
-        --downscale 2 --every 10
+        --model splat_4d.sogst \
+        --transforms <run>/dataset_4dgs/transforms_test.json \
+        --gt-dir <run>/dataset_4dgs/eval_gt_flat --every 10
 
-Numbers are directly comparable to the OMG4 trainer's eval (same test
-cameras, same resolution convention: `--downscale 2` matches the trainer's
-`resolution: 2`).
+--downscale defaults to 1, for build_flipbook_4dgs_dataset.py output, whose
+transforms already carry output-resolution intrinsics. n3v-style datasets
+(for example coffee_martini with eval_gt_half) carry full-resolution
+intrinsics beside half-resolution ground truth and need `--downscale 2`,
+which matches the trainer's `resolution: 2`. Numbers are directly
+comparable to the OMG4 trainer's eval on the same test cameras.
 """
 
 import argparse
@@ -186,7 +188,8 @@ def load_model(path):
 # ---------------------------------------------------------------------------
 
 def load_cameras(transforms_path, downscale, every):
-    t = json.load(open(transforms_path))
+    with open(transforms_path) as f:
+        t = json.load(f)
     cams = []
     for i, f in enumerate(t['frames']):
         if i % every:
@@ -196,8 +199,14 @@ def load_cameras(transforms_path, downscale, every):
         fy = f.get('fl_y', t.get('fl_y')) / downscale
         cx = f.get('cx', t.get('cx')) / downscale
         cy = f.get('cy', t.get('cy')) / downscale
-        w = t.get('w') and int(round(t['w'] / downscale))
-        h = t.get('h') and int(round(t['h'] / downscale))
+        # Per-frame first, exactly like the intrinsics above. Reading these
+        # only from the top level left them None for a dataset with
+        # per-camera intrinsics, so the size check below could not fire and
+        # a wrong --downscale silently rendered at the wrong scale.
+        w = f.get('w', t.get('w'))
+        h = f.get('h', t.get('h'))
+        w = w and int(round(w / downscale))
+        h = h and int(round(h / downscale))
         c2w = np.asarray(f['transform_matrix'], dtype=np.float64)
         # OpenGL c2w (nerfstudio/blender) -> OpenCV: flip the y/z axes
         c2w = c2w.copy()
@@ -220,8 +229,15 @@ def main():
     ap.add_argument('--transforms', required=True, help='transforms_test.json (OpenGL c2w + time)')
     ap.add_argument('--gt-dir', required=True,
                     help='directory of ground-truth frames named <file_path basename>.png')
-    ap.add_argument('--downscale', type=float, default=2.0,
-                    help='intrinsics downscale (2 matches the trainer resolution: 2)')
+    ap.add_argument('--downscale', type=float, default=1.0,
+                    # 1 for build_flipbook_4dgs_dataset.py output, the
+                    # standard dataset, whose intrinsics are already at the
+                    # output resolution. The n3v-style datasets this was
+                    # first written against carry FULL-resolution intrinsics
+                    # beside half-resolution ground truth and need 2.
+                    help='intrinsics downscale (default 1, for flipbook-built '
+                         'datasets; 2 for n3v-style datasets, matching the '
+                         'trainer resolution: 2)')
     ap.add_argument('--every', type=int, default=10, help='evaluate every Nth test frame')
     ap.add_argument('--time-scale', type=float, default=None,
                     help='multiply camera times by this to reach model time units '
@@ -241,14 +257,22 @@ def main():
     print(f'model: {args.model}  splats: {n}  time: [{header["time_min"]:.3f}, '
           f'{header["time_max"]:.3f}]  cams: {len(cams)}')
 
-    max_cam_t = max(c['time'] for c in cams) or 1.0
+    times = [c['time'] for c in cams]
+    cam_span = max(times) - min(times)
     duration = header['time_max'] - header['time_min']
     tscale = args.time_scale
     if tscale is None:
-        # camera times and model times usually share units.  Only rescale when
+        # Camera times and model times usually share units. Only rescale when
         # the ranges clearly disagree (for example normalized training time).
-        ratio = duration / max_cam_t if max_cam_t > 0 else 1.0
-        tscale = ratio if not (0.8 < ratio < 1.25) else 1.0
+        # Compare SPANS, not maxima: with --every large enough that every
+        # sampled view lands on the same instant, the maximum carries no
+        # information about the units and the old test invented a scale from
+        # it.
+        if cam_span <= 0.0 or duration <= 0.0:
+            tscale = 1.0
+        else:
+            ratio = duration / cam_span
+            tscale = ratio if not (0.8 < ratio < 1.25) else 1.0
         if tscale != 1.0:
             print(f'note: rescaling camera time by {tscale:.4f} to match model range')
 
@@ -300,7 +324,14 @@ def main():
         if cam['w'] is None:
             cam['h'], cam['w'] = int(gt.shape[0]), int(gt.shape[1])
         if gt.shape[:2] != (cam['h'], cam['w']):
-            raise SystemExit(f'GT size {tuple(gt.shape[:2])} != render {(cam["h"], cam["w"])}')
+            raise SystemExit(
+                f'GT size {tuple(gt.shape[:2])} != render '
+                f'{(cam["h"], cam["w"])} for {cam["name"]}. --downscale is '
+                f'{args.downscale}. A dataset whose transforms already carry '
+                'output-resolution intrinsics (anything from '
+                'build_flipbook_4dgs_dataset.py) needs --downscale 1; an '
+                'n3v-style dataset with full-resolution intrinsics beside '
+                'half-resolution ground truth needs --downscale 2.')
 
         vm = to(cam['w2c'])[None]
         K = to(cam['K'])[None]

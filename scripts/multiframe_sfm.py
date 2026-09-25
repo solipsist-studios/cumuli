@@ -284,6 +284,16 @@ def parse_args():
                         help='Refine focal length + distortion during BA (shared per camera; well-posed with many timestamps).')
     parser.add_argument('--refine_principal_point', action='store_true')
     parser.add_argument('--filter_max_reproj_error', type=float, default=4.0)
+    parser.add_argument('--init_min_tri_angle', type=float, default=16.0,
+                        help="COLMAP's incremental-mapper minimum triangulation angle (degrees) for "
+                             "accepting an initial image pair (pycolmap default: 16.0). A rig whose "
+                             "cameras share mostly distant background (e.g. two cameras facing each "
+                             "other across open space, where the matched content is far buildings/"
+                             "treelines rather than anything close to the cameras) can have plenty of "
+                             "high-inlier CALIBRATED two-view matches yet still fail with 'No good "
+                             "initial image pair found', because triangulation angle depends on "
+                             "baseline-to-depth ratio, not baseline alone. Lower this (e.g. 2-4) in "
+                             "that case; the separate init_min_num_inliers floor (100) still applies.")
     parser.add_argument('--undistorted_calibration_dir',
                         help='Optional dir of per-camera undistorted pinhole pkls; if given, the output transforms uses those intrinsics.')
     parser.add_argument('--file_path_format', default='images/undistorted_{label}.png')
@@ -404,7 +414,10 @@ def run_sfm_reconstruction(args, frames_dir, outputs_dir, image_names_by_camera,
         'ba_refine_principal_point': False,
         'multiple_models': False,
         'max_num_models': 1,
-        'mapper': {'filter_max_reproj_error': args.filter_max_reproj_error},
+        'mapper': {
+            'filter_max_reproj_error': args.filter_max_reproj_error,
+            'init_min_tri_angle': args.init_min_tri_angle,
+        },
         'triangulation': {
             'merge_max_reproj_error': args.filter_max_reproj_error,
             'complete_max_reproj_error': args.filter_max_reproj_error,

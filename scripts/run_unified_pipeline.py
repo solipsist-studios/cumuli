@@ -701,13 +701,31 @@ def stage_train4d(args, L):
     run_script("bake_sogst.py", bake_args, conda_env=CONDA_ENV,
                label="bake_sogst.py (bake checkpoint to .sogst)")
 
-    if args.skip_eval or not args.eval_camera:
-        info("eval skipped (no --eval_camera or --skip_eval given)")
+    # Score when a rig camera was held out, OR when ground-truth frames
+    # exist for some other reason. The second case is the rendered-rig path:
+    # build_flipbook_4dgs_dataset.py --eval_root writes eval_gt_flat for a
+    # separate ring of cameras that never train, so there is something to
+    # score without holding a rig camera out. Purely additive, so a real
+    # capture behaves exactly as before.
+    gt_dir = L["dataset4d"] / "eval_gt_flat"
+    has_gt = gt_dir.is_dir() and any(gt_dir.glob("*.png"))
+    if args.skip_eval or not (args.eval_camera or has_gt):
+        reason = "--skip_eval given" if args.skip_eval else \
+            f"no --eval_camera and no ground-truth frames under {gt_dir}"
+        info(f"eval skipped ({reason})")
         return
     run_script("eval_render.py", [
         "--model", L["sogst_out"],
         "--transforms", L["dataset4d"] / "transforms_test.json",
         "--gt-dir", L["dataset4d"] / "eval_gt_flat",
+        # build_flipbook_4dgs_dataset.py writes intrinsics already divided by
+        # its own --downscale, beside ground truth at that same size, so no
+        # further scaling applies. eval_render.py now defaults to 1 as well,
+        # but it used to default to 2 for the n3v-style layout it was
+        # written against, which rendered every view at half scale against
+        # full-size ground truth, cost about 20 dB, and looked like a bad
+        # model. Passed explicitly so the stage cannot drift with the default.
+        "--downscale", "1",
         "--every", str(args.eval_every),
         "--report_json", L["eval4d_report"],
     ], conda_env=CONDA_ENV, label="eval_render.py (held-out scoring)")
@@ -720,6 +738,83 @@ CONFIGURABLE_DEFAULTS = {
     "trainer_repo",
 }
 
+
+def add_keypoint_args(parser):
+    """Sapiens2 keypoint flags, shared with run_synthetic_pipeline.py."""
+    parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
+                        help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
+                             "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
+    parser.add_argument("--sapiens_model_size", default="1b", choices=["0.4b", "0.8b", "1b", "5b"],
+                        help="Sapiens2 pose checkpoint size (default 1b, production quality baseline). "
+                             "Smaller sizes use dramatically less RAM at some accuracy cost -- see "
+                             "predict_keypoints_2d.py's own --sapiens_model_size help.")
+    return parser
+
+def add_hloc_args(parser):
+    """HLOC pose-solve flags, shared with run_synthetic_pipeline.py."""
+    parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
+                        help="Path to multiframe_sfm.py (override to test local changes to it)")
+    parser.add_argument("--hloc_feature_type", default="superpoint", choices=["superpoint", "aliked"],
+                        help="Feature detector for HLOC's SfM pose solve (passed through to "
+                             "multiframe_sfm.py, matched with LightGlue either way).")
+    parser.add_argument("--hloc_resize_max", type=int, default=4096,
+                        help="Long-edge resize before HLOC feature extraction. multiframe_sfm.py's own "
+                             "default is 2048, which is low relative to this rig's ~5312px native media "
+                             "-- raised to 4096 by default here to preserve more detail for keypoint "
+                             "localization / camera pose accuracy (higher GPU memory + runtime cost "
+                             "during the HLOC stage; has headroom to coexist with a concurrent training "
+                             "training job on a 24GB GPU, but not with two).")
+    parser.add_argument("--hloc_max_keypoints", type=int, default=8192,
+                        help="Max keypoints per image for HLOC feature extraction.")
+    return parser
+
+def add_train4d_args(parser):
+    """Dataset-build and 4D trainer flags, shared with
+    run_synthetic_pipeline.py so both entry points expose one definition of
+    the trainer contract rather than two that drift apart."""
+    parser.add_argument("--total_train_iters", type=int, default=30000,
+                        help="4D trainer iterations (also the checkpoint name: chkpnt<iters>.pth).")
+
+    # ---- 4D training path (stage_dataset4d / stage_train4d) ----
+    parser.add_argument("--train_window", type=int, default=48,
+                        help="Frame count of the 4D training sequence, extracted at --target_time. "
+                             "Clip duration is (window - 1) / --train_fps seconds.")
+    parser.add_argument("--train_fps", type=float, default=30.0,
+                        help="Frame rate the training sequence is extracted and trained at. "
+                             "Must match the capture's real frame stepping.")
+    parser.add_argument("--dataset_downscale", type=int, default=1,
+                        help="build_flipbook_4dgs_dataset.py --downscale for the 4D dataset.")
+    parser.add_argument("--dataset_jobs", type=int, default=8)
+    parser.add_argument("--hull_min_views", type=int, default=9,
+                        help="Minimum mask-consistent views for a visual-hull init point. "
+                             "Clamped to the rig's camera count at run time.")
+    parser.add_argument("--eval_camera", default=None,
+                        help="2-digit camera label held out for eval_render.py scoring. "
+                             "Omit to train on every camera and skip eval.")
+    parser.add_argument("--holdout_cameras", nargs="*", default=[],
+                        help="Additional 2-digit labels excluded from training WITHOUT being "
+                             "scored -- the eval camera's stereo mates. A held-out camera whose "
+                             "near-duplicate mate keeps training measures leakage, not quality.")
+    parser.add_argument("--num_pts", type=int, default=100000,
+                        help="Initial gaussian count for the 4D trainer (production default).")
+    parser.add_argument("--batch_size4d", type=int, default=2)
+    parser.add_argument("--densify_until_iter", type=int, default=25000)
+    parser.add_argument("--densify_until_num_points", type=int, default=3000000)
+    parser.add_argument("--t_init_div", type=int, default=100,
+                        help="GS4D_T_INIT_DIV for the trainer: initial temporal sigma is "
+                             "sqrt(duration / div). 0 leaves the env var unset (upstream div = 5, "
+                             "which bakes several frames of motion smear into the initial sigma).")
+    parser.add_argument("--trainer_config", type=Path, default=None,
+                        help="Pre-written trainer yaml. Bypasses template generation entirely; "
+                             "the template's source_path/model_path substitutions become the "
+                             "caller's responsibility.")
+    parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
+                        help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
+                             "deps/OMG4 submodule).")
+    parser.add_argument("--eval_every", type=int, default=10,
+                        help="eval_render.py --every: score every Nth held-out frame.")
+    parser.add_argument("--skip_eval", action="store_true")
+    return parser
 
 def build_parser():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -763,69 +858,9 @@ def build_parser():
 
     parser.add_argument("--sync_window", type=int, default=5,
                         help="Number of candidate frames for pose refinement, stage 'poses' (default 5)")
-    parser.add_argument("--sapiens_checkpoint_root", type=Path, default=None,
-                        help="Overrides SAPIENS_CHECKPOINT_ROOT for predict_keypoints_2d.py. If omitted, "
-                             "falls back to whatever SAPIENS_CHECKPOINT_ROOT is set to in this shell.")
-    parser.add_argument("--sapiens_model_size", default="1b", choices=["0.4b", "0.8b", "1b", "5b"],
-                        help="Sapiens2 pose checkpoint size (default 1b, production quality baseline). "
-                             "Smaller sizes use dramatically less RAM at some accuracy cost -- see "
-                             "predict_keypoints_2d.py's own --sapiens_model_size help.")
-    parser.add_argument("--multiframe_sfm_script", type=Path, default=DEFAULT_MULTIFRAME_SFM_SCRIPT,
-                        help="Path to multiframe_sfm.py (override to test local changes to it)")
-    parser.add_argument("--hloc_feature_type", default="superpoint", choices=["superpoint", "aliked"],
-                        help="Feature detector for HLOC's SfM pose solve (passed through to "
-                             "multiframe_sfm.py, matched with LightGlue either way).")
-    parser.add_argument("--hloc_resize_max", type=int, default=4096,
-                        help="Long-edge resize before HLOC feature extraction. multiframe_sfm.py's own "
-                             "default is 2048, which is low relative to this rig's ~5312px native media "
-                             "-- raised to 4096 by default here to preserve more detail for keypoint "
-                             "localization / camera pose accuracy (higher GPU memory + runtime cost "
-                             "during the HLOC stage; has headroom to coexist with a concurrent training "
-                             "training job on a 24GB GPU, but not with two).")
-    parser.add_argument("--hloc_max_keypoints", type=int, default=8192,
-                        help="Max keypoints per image for HLOC feature extraction.")
-    parser.add_argument("--total_train_iters", type=int, default=30000,
-                        help="4D trainer iterations (also the checkpoint name: chkpnt<iters>.pth).")
-
-    # ---- 4D training path (stage_dataset4d / stage_train4d) ----
-    parser.add_argument("--train_window", type=int, default=48,
-                        help="Frame count of the 4D training sequence, extracted at --target_time. "
-                             "Clip duration is (window - 1) / --train_fps seconds.")
-    parser.add_argument("--train_fps", type=float, default=30.0,
-                        help="Frame rate the training sequence is extracted and trained at. "
-                             "Must match the capture's real frame stepping.")
-    parser.add_argument("--dataset_downscale", type=int, default=1,
-                        help="build_flipbook_4dgs_dataset.py --downscale for the 4D dataset.")
-    parser.add_argument("--dataset_jobs", type=int, default=8)
-    parser.add_argument("--hull_min_views", type=int, default=9,
-                        help="Minimum mask-consistent views for a visual-hull init point. "
-                             "Clamped to the rig's camera count at run time.")
-    parser.add_argument("--eval_camera", default=None,
-                        help="2-digit camera label held out for eval_render.py scoring. "
-                             "Omit to train on every camera and skip eval.")
-    parser.add_argument("--holdout_cameras", nargs="*", default=[],
-                        help="Additional 2-digit labels excluded from training WITHOUT being "
-                             "scored -- the eval camera's stereo mates. A held-out camera whose "
-                             "near-duplicate mate keeps training measures leakage, not quality.")
-    parser.add_argument("--num_pts", type=int, default=100000,
-                        help="Initial gaussian count for the 4D trainer (production default).")
-    parser.add_argument("--batch_size4d", type=int, default=2)
-    parser.add_argument("--densify_until_iter", type=int, default=25000)
-    parser.add_argument("--densify_until_num_points", type=int, default=3000000)
-    parser.add_argument("--t_init_div", type=int, default=100,
-                        help="GS4D_T_INIT_DIV for the trainer: initial temporal sigma is "
-                             "sqrt(duration / div). 0 leaves the env var unset (upstream div = 5, "
-                             "which bakes several frames of motion smear into the initial sigma).")
-    parser.add_argument("--trainer_config", type=Path, default=None,
-                        help="Pre-written trainer yaml. Bypasses template generation entirely; "
-                             "the template's source_path/model_path substitutions become the "
-                             "caller's responsibility.")
-    parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
-                        help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
-                             "deps/OMG4 submodule).")
-    parser.add_argument("--eval_every", type=int, default=10,
-                        help="eval_render.py --every: score every Nth held-out frame.")
-    parser.add_argument("--skip_eval", action="store_true")
+    add_keypoint_args(parser)
+    add_hloc_args(parser)
+    add_train4d_args(parser)
     parser.add_argument("--run_name", default=None, help="Label used in output filenames (default: out_dir's name)")
     return parser
 
