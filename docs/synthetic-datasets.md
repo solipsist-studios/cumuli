@@ -213,6 +213,44 @@ pixels no camera configuration affects and compresses the differences worth
 seeing. PSNR is still reported, because it is directly comparable with the
 trainer's own eval numbers.
 
+```bash
+python3 scripts/compare_experiments.py ~/runs/ariana_*
+```
+
+Rows sort by LPIPS, best first. Runs whose PSNR ranking contradicts their
+LPIPS ranking are called out rather than averaged away, and runs that scored
+a different number of views or frames are flagged rather than ranked against
+each other.
+
+## Measuring Localization Error
+
+`--poses gt` trains on Blender's own camera poses, which isolates what the
+rig geometry alone costs. `--poses hloc` or `--poses refined` instead runs
+the real pose chain on composited frames, scores it against the truth, and
+trains on the estimate:
+
+```bash
+python3 scripts/run_synthetic_pipeline.py ... --poses refined
+```
+
+The `localize` stage runs `run_hloc.py`, Sapiens keypoints over several
+instants, and `run_pose_refinement.py`, then `score_poses_vs_gt.py` reports
+position error in metres, rotation error in degrees, the recovered metric
+scale, and the reprojection error of known armature joints. Structure from
+motion recovers geometry only up to a similarity, so the scorer fits the
+best rotation, translation, and uniform scale first and reports what
+remains.
+
+Training then uses the same pixels as the ground-truth run and differs only
+in the poses, so the gap between the two runs' scores is what the pose error
+costs.
+
+This path needs a backdrop: a subject alone on transparency gives feature
+matching nothing static to work with. The render step writes background
+plates and composites automatically whenever poses are estimated. One known
+simplification is that composites carry no contact shadow from the subject
+onto the backdrop.
+
 ## Performance
 
 Measured on an RTX 5090, 1920x1680, Cycles with OptiX denoising, on the
@@ -674,4 +712,6 @@ it, so the failure is loud.
 | `scripts/plan_temporal_windows.py` | Cut a clip into windows: uniform by default, `--cut adaptive` for the motion planner |
 | `scripts/seed_window_init.py` | Seed a window from the previous window's model |
 | `scripts/run_window_plan.py` | Train a plan, stitch it, score it |
+| `scripts/score_poses_vs_gt.py` | Pose error against the rendering truth |
+| `scripts/compare_experiments.py` | Tabulate runs, LPIPS first |
 | `configs/rigs/` | Rig specs and the reference GoPro calibration |
