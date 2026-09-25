@@ -226,3 +226,28 @@ def test_coverage_check_tolerates_metadata_listing_extra_frames(tmp_path):
     (render / "subject" / "frame_0000").mkdir(parents=True)
     resolved = {"frames": [{"index": i, "scene_frame": 100 + i} for i in range(9)]}
     rbr.check_frame_coverage(render, resolved)
+
+
+# ---------------------------------------------------------- spec calibration
+def test_spec_calibration_resolves_a_repo_relative_pkl(tmp_path):
+    """The shipped fisheye spec names its pkl relative to the repo root, and
+    the driver hands Blender that calibration as JSON."""
+    spec = rbr.SCRIPT_DIR.parent / "configs" / "rigs" / "ring16_gopro_fisheye.json"
+    out = rbr.resolve_spec_calibration(spec, tmp_path / "render")
+    payload = json.loads(out.read_text())
+    assert payload["model"] == "OPENCV_FISHEYE"
+    assert payload["image_size"] == [3840, 3360]
+    assert len(payload["distortion_coefficients"]) == 4
+
+
+def test_spec_calibration_is_skipped_for_a_pinhole_spec(tmp_path):
+    spec = tmp_path / "rig.json"
+    spec.write_text(json.dumps({"intrinsics": {"lens_mm": 35}}))
+    assert rbr.resolve_spec_calibration(spec, tmp_path / "render") is None
+
+
+def test_a_missing_spec_calibration_is_one_clear_error(tmp_path):
+    spec = tmp_path / "rig.json"
+    spec.write_text(json.dumps({"calibration_pkl": "nope.pkl"}))
+    with pytest.raises(SystemExit, match="nope.pkl"):
+        rbr.resolve_spec_calibration(spec, tmp_path / "render")

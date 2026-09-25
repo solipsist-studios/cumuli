@@ -3,7 +3,7 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 """
-render_blender_rig.py - drive blender_render_rig.py and lay out its output.
+render_blender_rig.py - drive render_rig_in_blender.py and lay out its output.
 
 Runs the render inside Blender, then does the CPU work in the `cumuli` env
 where PIL and OpenCV live. Splitting it this way keeps the mask policy and
@@ -53,9 +53,10 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
+import camera_rig_spec as rig_spec  # noqa: E402
 from blender_launch import relaunch_in_blender  # noqa: E402
 
-RENDER_SCRIPT = SCRIPT_DIR / "blender_render_rig.py"
+RENDER_SCRIPT = SCRIPT_DIR / "render_rig_in_blender.py"
 
 
 def build_parser():
@@ -102,33 +103,26 @@ def resolve_spec_calibration(rig_spec_path, render_dir):
     pkl = spec.get("calibration_pkl")
     if not pkl:
         return None
-    candidates = [Path(pkl).expanduser()]
-    if not candidates[0].is_absolute():
-        candidates = [Path(rig_spec_path).expanduser().resolve().parent / pkl,
-                      SCRIPT_DIR.parent / pkl]
-    for cand in candidates:
-        if cand.is_file():
-            with open(cand, "rb") as f:
-                calib = pickle.load(f)
-            payload = {
-                "camera_matrix": np.asarray(calib["camera_matrix"],
-                                            dtype=np.float64).tolist(),
-                "distortion_coefficients": np.asarray(
-                    calib.get("distortion_coefficients", []),
-                    dtype=np.float64).reshape(-1).tolist(),
-                "image_size": [int(v) for v in calib["image_size"]],
-                "model": calib.get("model", "OPENCV_FISHEYE"),
-            }
-            if "sensor_width_mm" in spec.get("intrinsics", {}):
-                payload["sensor_width_mm"] = spec["intrinsics"]["sensor_width_mm"]
-            render_dir.mkdir(parents=True, exist_ok=True)
-            out = render_dir / "spec_calibration.json"
-            out.write_text(json.dumps(payload, indent=2))
-            print(f"  calibration {cand.name} -> {out}")
-            return out
-    raise SystemExit(
-        f"calibration_pkl {pkl!r} from {rig_spec_path} not found. Tried: "
-        f"{[str(c) for c in candidates]}")
+    try:
+        calib = rig_spec.pickle_calib_loader(rig_spec_path)(pkl)
+    except rig_spec.RigSpecError as e:
+        raise SystemExit(f"{rig_spec_path}: {e}")
+    payload = {
+        "camera_matrix": np.asarray(calib["camera_matrix"],
+                                    dtype=np.float64).tolist(),
+        "distortion_coefficients": np.asarray(
+            calib.get("distortion_coefficients", []),
+            dtype=np.float64).reshape(-1).tolist(),
+        "image_size": [int(v) for v in calib["image_size"]],
+        "model": calib.get("model", "OPENCV_FISHEYE"),
+    }
+    if "sensor_width_mm" in spec.get("intrinsics", {}):
+        payload["sensor_width_mm"] = spec["intrinsics"]["sensor_width_mm"]
+    render_dir.mkdir(parents=True, exist_ok=True)
+    out = render_dir / "spec_calibration.json"
+    out.write_text(json.dumps(payload, indent=2))
+    print(f"  calibration {pkl} -> {out}")
+    return out
 
 
 def forward_args(args, render_dir, calibration_json=None):
@@ -310,7 +304,7 @@ def check_frame_coverage(render_dir, resolved):
             "clip rendered in concurrent shards looks like: each instance "
             "overwrote the others' metadata. Regenerate it over the whole "
             "range, then post-process:\n"
-            "    blender -b <scene.blend> --python scripts/blender_render_rig.py -- \\\n"
+            "    blender -b <scene.blend> --python scripts/render_rig_in_blender.py -- \\\n"
             "        --rig_spec <spec> --out_dir <run>/render --rig_only \\\n"
             "        --frame_start <first> --frame_count <total>\n"
             "    python3 scripts/render_blender_rig.py ... --skip_render")

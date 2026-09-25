@@ -7,7 +7,7 @@ blender_camera_intrinsics.py - convert OpenCV camera calibrations to Blender
 camera settings and back.
 
 This module is pure Python plus numpy. It imports no bpy, so it runs both
-inside Blender's bundled interpreter (blender_render_rig.py) and in the
+inside Blender's bundled interpreter (render_rig_in_blender.py) and in the
 `cumuli` env (tests, the render driver, verify_blender_intrinsics.py).
 
 Three camera models are supported, named exactly as the calibration pkls

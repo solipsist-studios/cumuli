@@ -3,7 +3,7 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 """
-blender_render_rig.py - render a camera rig over an animation, inside Blender.
+render_rig_in_blender.py - render a camera rig over an animation, inside Blender.
 
 Takes a normalised scene (prepare_blender_scene.py) and a rig spec
 (camera_rig_spec.py), builds the cameras, and renders three things:
@@ -36,7 +36,7 @@ Ground truth written alongside:
 Run through render_blender_rig.py, which adds the CPU post step. To run it
 directly:
 
-    blender -b scene.blend --python scripts/blender_render_rig.py -- \\
+    blender -b scene.blend --python scripts/render_rig_in_blender.py -- \\
         --rig_spec configs/rigs/ring16.json --out_dir /tmp/run/render \\
         --manifest scene_manifest.json --frame_start 100 --frame_count 48
 """
@@ -93,7 +93,8 @@ def build_parser():
                         "scene's own, which is recorded in rig_resolved.json "
                         "either way so a comparison is reproducible.")
     p.add_argument("--background_plates", action="store_true",
-                   help="Also render the backdrop alone, one image per camera")
+                   help="Also render the backdrop alone, one image per rig "
+                        "camera")
     p.add_argument("--skip_existing", action="store_true",
                    help="Leave images that are already on disk, for resuming")
     p.add_argument("--rig_only", action="store_true",
@@ -453,17 +454,18 @@ def main_in_blender(args):
             scene.render.image_settings.color_mode = "RGB"
             collection_visibility(subject_visible=False, background_visible=True)
             scene.frame_set(int(frames[0]))
-            for role, sub in (("train", "plates"), ("eval", "plates_eval")):
-                for cam in rig[role]:
-                    obj, _ = cam_objects[cam.name]
-                    path = out_dir / sub / f"{cam.label}.png"
-                    if render_one(scene, obj, cam.resolution, path,
-                                  args.skip_existing):
-                        stats["rendered"] += 1
-                    else:
-                        stats["skipped"] += 1
-            print(f"  wrote background plates for "
-                  f"{len(rig['train']) + len(rig['eval'])} cameras")
+            # Rig cameras only: plates exist to composite the subject over
+            # for the localization path, and eval cameras are scored against
+            # the subject alone.
+            for cam in rig["train"]:
+                obj, _ = cam_objects[cam.name]
+                path = out_dir / "plates" / f"{cam.label}.png"
+                if render_one(scene, obj, cam.resolution, path,
+                              args.skip_existing):
+                    stats["rendered"] += 1
+                else:
+                    stats["skipped"] += 1
+            print(f"  wrote background plates for {len(rig['train'])} cameras")
 
     collection_visibility(subject_visible=True, background_visible=True)
     stats["seconds"] = time.time() - started
