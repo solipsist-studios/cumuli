@@ -285,8 +285,20 @@ def build_observations(points, face_keypoint_ids, face_weight):
             if w_mult != 1.0:
                 n_face_obs += 1
     print(f'Applying {face_weight}x weight to {n_face_obs} face/head keypoint observations.')
-    obs_p = np.array([o[0] for o in obs_flat])
-    obs_c = np.array([o[1] for o in obs_flat])
+    if not obs_flat:
+        # np.array([]) defaults to float64, which the caller then uses to
+        # index `pts[obs_p]` -- an unrelated-looking IndexError ("arrays
+        # used as indices must be of integer type") that hides the real
+        # problem: every candidate point failed the outlier filter, so
+        # there is nothing left to bundle-adjust. Surface that directly.
+        raise SystemExit(
+            'ERROR: 0 observations survived outlier filtering -- nothing to refine. '
+            'This means every candidate 3D point reprojected more than --outlier_px '
+            'away from its keypoint in every camera that should see it, which points '
+            'at the INITIAL poses (before refinement), not at this script.'
+        )
+    obs_p = np.array([o[0] for o in obs_flat], dtype=np.int64)
+    obs_c = np.array([o[1] for o in obs_flat], dtype=np.int64)
     obs_uv = np.array([[o[2], o[3]] for o in obs_flat])
     obs_w = np.array([o[4] for o in obs_flat])
     return obs_flat, obs_p, obs_c, obs_uv, obs_w
