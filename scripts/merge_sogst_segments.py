@@ -182,8 +182,9 @@ def gate_tails(fields, lo, hi, k, floor, cap_abs=0.0):
     seam: sigma <= max(distance, floor) / k. A splat deep inside its slot
     keeps a long life; one near a seam is capped at floor/k, dimming into
     the seam while the neighbouring window's splats dim out of it, which is
-    the crossfade the seam wants anyway. With k=3 a splat's alpha at its own
-    slot edge is under 1.1% of peak.
+    the crossfade the seam wants anyway. At the default k=2 a splat's alpha
+    at its own slot edge is under 14% of peak (exp(-k^2 / 2)); k=3 takes that
+    under 1.1%.
     """
     if k <= 0 and cap_abs <= 0:
         return fields

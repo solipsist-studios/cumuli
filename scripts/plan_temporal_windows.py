@@ -6,39 +6,27 @@
 plan_temporal_windows.py - choose where to cut a long clip into 4DGS windows.
 
 A long take reconstructs better as several short models than as one wide
-fit, and merge_sogst_segments.py stitches them back. Cutting at uniform
-frame intervals is the fixed-GOP of video coding, so the obvious question is
-whether content should choose the cuts instead. Measured on a 5.00 s take
-from a 12-camera ring, the answer is more specific than "yes":
+fit, and merge_sogst_segments.py stitches them back. Two things are worth
+choosing: how many windows, which trades quality against storage, and where
+the seams fall, which is where the residual error lives.
 
-  Quality follows window LENGTH, not window content. Across nine runs,
-  LPIPS = 0.00641 + 2.214e-5 * frames at R2 0.980; adding a motion term
-  takes R2 to 0.9805 with a NEGATIVE coefficient. The four windows settle
-  it: at a fixed ~30 frames their motion content varies 6.3x while their
-  scores stay inside 0.00691 to 0.00721, the busiest window scoring best.
+The model behind the plan, with coefficients in DEFAULT_COEFFICIENTS:
 
-  Total cost does not depend on the boundaries at all. Splats per window fit
-  341k + 508k * that window's share of clip motion at R2 0.950, and motion
-  shares sum to one however the clip is cut, so the total is N * 341k + 508k:
-  set by the window COUNT alone.
+    LPIPS_pooled(N)   = intercept + per_frame * (frames / N)
+    LPIPS_stitched(N) = LPIPS_pooled(N) + seam cost per seam * (N - 1)
+    splats(N)         = N * splats_fixed + splats_per_motion
 
-  Seam cost DOES depend on placement. The LPIPS bump within +-3 frames of
-  each seam was +13.4%, +7.3% and +3.6% over the clip median, against motion
-  at those seams at the 95th, 54th and 24th percentile. The uniform split
-  put its first seam at the busiest instant in the clip.
+On the material measured so far quality follows window LENGTH rather than
+content, total splats depend on the window COUNT alone, and only seam cost
+depends on placement, so the plan comes out near-equal in length with the
+seams pulled onto quiet instants. The measurements, and how the
+coefficients were fitted, are in docs/synthetic-datasets.md ("Choosing
+Where to Cut").
 
-So the useful reframing is that the interesting question is not where
-prediction breaks down, it is where the cut is invisible. Two things are
-worth choosing: how many windows, which trades quality against storage on a
-closed-form curve with a real optimum, and where the seams fall, which is
-where the residual error lives.
-
-This script is written as the general form rather than as those conclusions.
-It fits its coefficients (--fit_from) and solves a dynamic program over
-boundaries. On material where motion DOES drive per-window quality the fit
-picks that up and the plan moves the boundaries; on the material measured so
-far the same program returns near-equal lengths with the seams pulled onto
-quiet instants. The reduction is a result, not a hard-coded rule.
+This script is written as the general form rather than as those
+conclusions. It fits its coefficients (--fit_from) and solves a dynamic
+program over boundaries, so on material where motion DOES drive per-window
+quality the fit picks that up and the plan moves the boundaries.
 
 Usage:
     python3 scripts/plan_temporal_windows.py --run ~/runs/ring12_5s --report
@@ -458,7 +446,7 @@ def choose_window_count(signal, coef=None, min_frames=8, max_frames=None,
     With no target, the best stitched score wins, which is where shorter
     windows stop paying for the seams they add. With a target, the cheapest
     plan that reaches it wins, because past that point extra windows buy
-    quality nobody asked for at 341k splats each."""
+    quality nobody asked for at coef.splats_fixed splats each."""
     coef = coef or Coefficients.defaults()
     total_frames = len(signal) + 1
     plans = {}
