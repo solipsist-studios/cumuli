@@ -1,0 +1,25 @@
+{
+  "name": "ring24",
+  "description": "Twenty-four cameras in one ring, evenly spaced 15 degrees apart. Literal (non-subject-relative) radius/height since this targets a real-world scene capture, not an authored character -- for plan_ring_gaps.py, only the azimuth structure matters; radius/height are placeholders.",
+  "layout": "rings",
+  "target": [0.0, 0.0, 0.0],
+  "rings": [
+    {
+      "count": 24,
+      "radius": 5.0,
+      "height": 1.5
+    }
+  ],
+  "resolution": [
+    1920,
+    1080
+  ],
+  "camera_model": "PINHOLE",
+  "intrinsics": {
+    "lens_mm": 32,
+    "sensor_width_mm": 36
+  },
+  "eval": {
+    "count": 0
+  }
+}

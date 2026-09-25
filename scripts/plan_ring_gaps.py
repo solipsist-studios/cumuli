@@ -239,10 +239,60 @@ def find_gap_arcs(target_entries, real_az_deg: dict, front_azimuth_deg: float,
 
 
 def choose_anchor_camera(gap: GapArc, real_az_deg: dict) -> str:
-    """The real camera whose azimuth is closest to the gap's centre -- the
-    real camera bordering this gap, not literally one run per real camera.
-    A real camera bordering no gap gets no companion run."""
+    """The real camera whose azimuth is closest to the gap's centre.
+
+    Called on a gap already split by split_gap_by_nearest_camera, so this
+    just confirms/re-derives the camera that split already assigned every
+    target azimuth in the (sub-)gap to. Calling it on an UNSPLIT gap that
+    borders several real cameras picks only the one nearest the centroid,
+    silently dropping the others -- that was the bug split_gap_by_nearest_camera
+    exists to fix (Jeff, 2026-09-25: "run 4DAnyone from each camera with
+    its own piece of the arc")."""
     return min(real_az_deg, key=lambda label: abs(rg.shortest_arc(gap.center_deg, real_az_deg[label])))
+
+
+def split_gap_by_nearest_camera(gap: GapArc, real_az_deg: dict) -> list[GapArc]:
+    """Split a gap into one sub-arc per real camera nearest to each target
+    azimuth within it, so a gap bordered by several real cameras (e.g. two
+    cameras of a stereo pair sitting close together at one edge of the gap)
+    is shared between them -- each gets its own piece -- rather than the
+    whole gap being claimed by whichever single camera is nearest the
+    gap's centroid.
+
+    Splits only where the nearest-camera assignment actually changes along
+    the gap (walked in the gap's own azimuth order), so a gap with one
+    bordering camera on each side becomes two sub-arcs, not one per target."""
+    if not real_az_deg or len(real_az_deg) < 2:
+        return [gap]
+    nearest = [min(real_az_deg, key=lambda label: abs(rg.shortest_arc(az, real_az_deg[label])))
+              for az in gap.target_azimuths_deg]
+    if len(set(nearest)) <= 1:
+        return [gap]
+
+    sub_arcs = []
+    run_idx: list[int] = []
+    for i, cam in enumerate(nearest):
+        if run_idx and cam != nearest[run_idx[-1]]:
+            sub_arcs.append(run_idx)
+            run_idx = []
+        run_idx.append(i)
+    if run_idx:
+        sub_arcs.append(run_idx)
+
+    out = []
+    for idxs in sub_arcs:
+        azs = [gap.target_azimuths_deg[i] for i in idxs]
+        unwrapped = [azs[0]]
+        for a in azs[1:]:
+            unwrapped.append(unwrapped[-1] + rg.shortest_arc(unwrapped[-1], a))
+        out.append(GapArc(
+            start_deg=unwrapped[0], end_deg=unwrapped[-1],
+            center_deg=(unwrapped[0] + unwrapped[-1]) / 2.0,
+            span_deg=abs(unwrapped[-1] - unwrapped[0]),
+            target_azimuths_deg=tuple(azs),
+            pitch_deg=gap.pitch_deg,
+        ))
+    return out
 
 
 def round_views_per_layer(n_targets: int) -> int:
@@ -267,7 +317,8 @@ def plan_generation_runs(real_transforms: Path, rig_spec: Path, *,
     out_of_range = []
     for ring_index, entries in sorted(by_ring.items(), key=lambda kv: (kv[0] is None, kv[0])):
         gaps = find_gap_arcs(entries, real_az, front_azimuth_deg, min_separation_deg)
-        for gap in gaps:
+        split_gaps = [sub for gap in gaps for sub in split_gap_by_nearest_camera(gap, real_az)]
+        for gap in split_gaps:
             if not (PITCH_MIN_DEG <= gap.pitch_deg <= PITCH_MAX_DEG):
                 out_of_range.append((ring_index, gap))
                 continue

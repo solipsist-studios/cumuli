@@ -158,6 +158,60 @@ def test_front_azimuth_deg_shifts_the_whole_comparison():
     assert prg.find_gap_arcs(targets, real_az, front_azimuth_deg=-90.0, min_separation_deg=5.0) == []
 
 
+# -------------------------------------------------------- split_gap_by_nearest_camera
+def test_split_gap_shares_a_gap_between_two_bordering_cameras():
+    """The motivating case: two real cameras close together at one edge of
+    a wide gap (e.g. a stereo pair) must each get their own piece, not have
+    the whole gap claimed by whichever one is nearest the centroid. Only
+    one pair exists in this fixture, so there is no competing cluster on
+    the gap's far side to confound the split."""
+    real_az = {"5564": -145.0, "1959": -135.0}
+    targets = [(f"t{i}", az, 16.7) for i, az in enumerate(
+        [-170, -160, -150, -140, -130, -120, -110, -100])]
+    gaps = prg.find_gap_arcs(targets, real_az, front_azimuth_deg=0.0, min_separation_deg=5.0)
+    assert len(gaps) == 1  # one contiguous gap before splitting
+    split = prg.split_gap_by_nearest_camera(gaps[0], real_az)
+    anchors = {prg.choose_anchor_camera(g, real_az) for g in split}
+    assert anchors == {"5564", "1959"}, anchors
+    # Every original target azimuth is still covered, exactly once.
+    covered = sorted(a for g in split for a in g.target_azimuths_deg)
+    assert covered == sorted(t[1] for t in targets)
+
+
+def test_split_gap_is_a_noop_with_one_bordering_camera():
+    real_az = {"only": 0.0}
+    gap = prg.GapArc(start_deg=90.0, end_deg=150.0, center_deg=120.0, span_deg=60.0,
+                     target_azimuths_deg=(90.0, 120.0, 150.0), pitch_deg=10.0)
+    split = prg.split_gap_by_nearest_camera(gap, real_az)
+    assert split == [gap]
+
+
+def test_split_gap_partitions_every_target_exactly_once():
+    hypothesis = pytest.importorskip("hypothesis")
+    from hypothesis import strategies as st
+
+    @hypothesis.given(
+        n_real=st.integers(min_value=1, max_value=6),
+        n_target=st.integers(min_value=1, max_value=20),
+        seed=st.integers(min_value=0, max_value=10_000),
+    )
+    @hypothesis.settings(max_examples=150, deadline=None)
+    def check(n_real, n_target, seed):
+        rng = np.random.default_rng(seed)
+        real_az = {f"r{i}": float(rng.uniform(-180, 180)) for i in range(n_real)}
+        gap = prg.GapArc(
+            start_deg=0.0, end_deg=0.0, center_deg=0.0, span_deg=0.0,
+            target_azimuths_deg=tuple(float(rng.uniform(-180, 180)) for _ in range(n_target)),
+            pitch_deg=10.0,
+        )
+        split = prg.split_gap_by_nearest_camera(gap, real_az)
+        covered = sorted(round(a, 9) for g in split for a in g.target_azimuths_deg)
+        expected = sorted(round(a, 9) for a in gap.target_azimuths_deg)
+        assert covered == expected
+
+    check()
+
+
 # ------------------------------------------------------------ choose_anchor_camera
 def test_choose_anchor_camera_returns_a_real_label():
     hypothesis = pytest.importorskip("hypothesis")
