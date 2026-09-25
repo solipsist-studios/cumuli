@@ -18,14 +18,16 @@ directory of frames named after each entry's file_path basename.
 Run under an environment with gsplat + lpips + torchmetrics + CUDA:
 
     python scripts/eval_render.py \
-        --model coffee_martini.sogst \
-        --transforms <dataset>/coffee_martini/transforms_test.json \
-        --gt-dir <dataset>/coffee_martini/eval_gt_half \
-        --downscale 2 --every 10
+        --model splat_4d.sogst \
+        --transforms <run>/dataset_4dgs/transforms_test.json \
+        --gt-dir <run>/dataset_4dgs/eval_gt_flat --every 10
 
-Numbers are directly comparable to the OMG4 trainer's eval (same test
-cameras, same resolution convention: `--downscale 2` matches the trainer's
-`resolution: 2`).
+--downscale defaults to 1, for build_flipbook_4dgs_dataset.py output, whose
+transforms already carry output-resolution intrinsics. n3v-style datasets
+(for example coffee_martini with eval_gt_half) carry full-resolution
+intrinsics beside half-resolution ground truth and need `--downscale 2`,
+which matches the trainer's `resolution: 2`. Numbers are directly
+comparable to the OMG4 trainer's eval on the same test cameras.
 """
 
 import argparse
@@ -227,14 +229,15 @@ def main():
     ap.add_argument('--transforms', required=True, help='transforms_test.json (OpenGL c2w + time)')
     ap.add_argument('--gt-dir', required=True,
                     help='directory of ground-truth frames named <file_path basename>.png')
-    ap.add_argument('--downscale', type=float, default=2.0,
-                    # Kept at 2 for the n3v-style datasets this was written
-                    # against, whose transforms carry FULL-resolution
-                    # intrinsics beside half-resolution ground truth. Pass 1
-                    # for build_flipbook_4dgs_dataset.py output, whose
-                    # intrinsics are already at the output resolution.
-
-                    help='intrinsics downscale (2 matches the trainer resolution: 2)')
+    ap.add_argument('--downscale', type=float, default=1.0,
+                    # 1 for build_flipbook_4dgs_dataset.py output, the
+                    # standard dataset, whose intrinsics are already at the
+                    # output resolution. The n3v-style datasets this was
+                    # first written against carry FULL-resolution intrinsics
+                    # beside half-resolution ground truth and need 2.
+                    help='intrinsics downscale (default 1, for flipbook-built '
+                         'datasets; 2 for n3v-style datasets, matching the '
+                         'trainer resolution: 2)')
     ap.add_argument('--every', type=int, default=10, help='evaluate every Nth test frame')
     ap.add_argument('--time-scale', type=float, default=None,
                     help='multiply camera times by this to reach model time units '
@@ -324,9 +327,11 @@ def main():
             raise SystemExit(
                 f'GT size {tuple(gt.shape[:2])} != render '
                 f'{(cam["h"], cam["w"])} for {cam["name"]}. --downscale is '
-                f'{args.downscale}; a dataset whose transforms already carry '
+                f'{args.downscale}. A dataset whose transforms already carry '
                 'output-resolution intrinsics (anything from '
-                'build_flipbook_4dgs_dataset.py) needs --downscale 1.')
+                'build_flipbook_4dgs_dataset.py) needs --downscale 1; an '
+                'n3v-style dataset with full-resolution intrinsics beside '
+                'half-resolution ground truth needs --downscale 2.')
 
         vm = to(cam['w2c'])[None]
         K = to(cam['K'])[None]

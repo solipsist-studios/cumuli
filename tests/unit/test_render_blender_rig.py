@@ -187,11 +187,16 @@ def test_forwarded_render_args_are_rebuilt_from_the_namespace(tmp_path):
         rig_spec="rig.json", frame_start=100, frame_count=48, frame_step=1,
         samples=64, engine="CYCLES", device="OPTIX", manifest=None,
         action="--samples", no_denoise=True, view_transform=None,
-        background_plates=True, skip_existing=False, index_offset=61)
-    out = rbr.forward_args(args, tmp_path / "render")
+        background_plates=True, skip_existing=False, index_offset=61,
+        rig_only=True)
+    out = rbr.forward_args(args, tmp_path)
     assert out[out.index("--action") + 1] == "--samples"
     assert "--no_denoise" in out and "--background_plates" in out
     assert "--skip_existing" not in out
+    assert "--rig_only" in out
+    # One meaning in both modes: the run directory, which the Blender half
+    # writes render/ under.
+    assert out[out.index("--out_dir") + 1] == str(tmp_path)
     # Concurrent shards each need their own base index or they overwrite
     # each other's frame_NNNN directories.
     assert out[out.index("--index_offset") + 1] == "61" 

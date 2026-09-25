@@ -258,8 +258,7 @@ leaves a file describing only its shard. Regenerate it over the whole range
 and then post-process once:
 
 ```bash
-blender -b <scene.blend> --python scripts/render_rig_in_blender.py -- \
-    --rig_spec <spec> --out_dir <run>/render --rig_only \
+python3 scripts/render_blender_rig.py ... --rig_only \
     --frame_start 100 --frame_count 121
 python3 scripts/render_blender_rig.py ... --skip_render
 ```
@@ -283,18 +282,18 @@ was trained.
 
 ## A Trap in the Eval Numbers
 
-`eval_render.py --downscale` defaults to 2, because it was written for
-n3v-style datasets whose transforms carry FULL-resolution intrinsics beside
-half-resolution ground truth. Anything from `build_flipbook_4dgs_dataset.py`
-is different: its transforms already carry output-resolution intrinsics, so
-it needs `--downscale 1`.
+`eval_render.py --downscale` used to default to 2, because it was written
+for n3v-style datasets whose transforms carry FULL-resolution intrinsics
+beside half-resolution ground truth. Anything from
+`build_flipbook_4dgs_dataset.py` is different: its transforms already carry
+output-resolution intrinsics, so it needs `--downscale 1`, which is now the
+default. Pass `--downscale 2` only for an n3v-style dataset.
 
 Getting this wrong renders every view at half scale against correctly sized
 ground truth and costs about 22 dB, which reads as a badly trained model
-rather than a measurement error. Both orchestrators now pass `--downscale 1`
-explicitly, and `eval_render.py` refuses the mismatch instead of scoring it,
-so the failure is loud. If you invoke `eval_render.py` by hand on a
-flipbook-built dataset, pass it yourself.
+rather than a measurement error. Both orchestrators also pass `--downscale
+1` explicitly, and `eval_render.py` refuses the mismatch instead of scoring
+it, so the failure is loud.
 
 ## Files
 
@@ -303,8 +302,7 @@ flipbook-built dataset, pass it yourself.
 | `scripts/prepare_blender_scene.py` | Normalise a character scene, write the manifest |
 | `scripts/camera_rig_spec.py` | Resolve a rig spec into cameras (pure, no bpy) |
 | `scripts/blender_camera_intrinsics.py` | Calibration to Blender camera and back (pure) |
-| `scripts/render_rig_in_blender.py` | The render loop, inside Blender |
-| `scripts/render_blender_rig.py` | Drives the render, lays out the flipbook |
+| `scripts/render_blender_rig.py` | Renders the rig inside Blender, then lays out the flipbook |
 | `scripts/verify_blender_intrinsics.py` | Projection gate for a rig's camera model |
 | `scripts/run_synthetic_pipeline.py` | The orchestrator |
 | `configs/rigs/` | Rig specs and the reference GoPro calibration |

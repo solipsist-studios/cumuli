@@ -720,10 +720,11 @@ def stage_train4d(args, L):
         "--gt-dir", L["dataset4d"] / "eval_gt_flat",
         # build_flipbook_4dgs_dataset.py writes intrinsics already divided by
         # its own --downscale, beside ground truth at that same size, so no
-        # further scaling applies. eval_render.py defaults to 2 for the
-        # n3v-style layout it was written against; leaving that default in
-        # place rendered every view at half scale against full-size ground
-        # truth, which cost about 20 dB and looked like a bad model.
+        # further scaling applies. eval_render.py now defaults to 1 as well,
+        # but it used to default to 2 for the n3v-style layout it was
+        # written against, which rendered every view at half scale against
+        # full-size ground truth, cost about 20 dB, and looked like a bad
+        # model. Passed explicitly so the stage cannot drift with the default.
         "--downscale", "1",
         "--every", str(args.eval_every),
         "--report_json", L["eval4d_report"],

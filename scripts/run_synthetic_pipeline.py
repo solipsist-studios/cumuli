@@ -22,7 +22,7 @@ It serves two jobs that share almost all of their machinery:
 --------------------------------------------------------------------------
 STAGES
 --------------------------------------------------------------------------
-  render     render_rig_in_blender.py through render_blender_rig.py: rig and
+  render     render_blender_rig.py, inside Blender and then in the env: rig and
              eval cameras over the frame window, subject mattes from the
              render's own alpha, optional backdrop plates and composites.
   dataset4d  build_flipbook_4dgs_dataset.py over the rendered flipbook,
