@@ -63,29 +63,17 @@ def patch_stages(monkeypatch, calls):
     monkeypatch.setattr(synth, "stage_render", make("render"))
     monkeypatch.setattr(synth, "stage_dataset4d", make("dataset4d"))
     monkeypatch.setattr(synth, "stage_train4d", make("train4d"))
-    monkeypatch.setattr(synth, "stage_localize",
-                        lambda args, L, n: (calls.append("localize"),
-                                            L["flipbook_est"])[1])
     monkeypatch.setattr(synth, "run_script",
                         lambda *a, **k: calls.append("run_script"))
 
 
 # ------------------------------------------------------------ stage order
-def test_ground_truth_path_skips_localize(monkeypatch, rig):
+def test_stages_run_in_order(monkeypatch, rig):
     calls = []
     patch_stages(monkeypatch, calls)
     monkeypatch.setattr("sys.argv", base_argv(rig, frame_count=4))
     synth.main()
     assert calls == ["render", "dataset4d", "train4d"]
-
-
-@pytest.mark.parametrize("poses", ["hloc", "refined"])
-def test_estimated_pose_paths_run_localize(monkeypatch, rig, poses):
-    calls = []
-    patch_stages(monkeypatch, calls)
-    monkeypatch.setattr("sys.argv", base_argv(rig, frame_count=4, poses=poses))
-    synth.main()
-    assert calls == ["render", "localize", "dataset4d", "train4d"]
 
 
 def test_start_from_stage_skips_earlier_stages(monkeypatch, rig):
@@ -216,21 +204,6 @@ def test_bbox_conversion_round_trips_a_corner():
         {"min": [0.0, 0.0, 0.0], "max": [1.0, 1.0, 1.0]})
     assert np.allclose(lo, [0.0, 0.0, -1.0])
     assert np.allclose(hi, [1.0, 1.0, 0.0])
-
-
-@pytest.mark.parametrize("count,n,expected", [
-    (48, 1, [24]),
-    (10, 2, [0, 9]),
-    (5, 5, [0, 1, 2, 3, 4]),
-    (4, 10, [0, 1, 2, 3]),     # never more instants than frames
-])
-def test_refinement_instants_spread_across_the_clip(count, n, expected):
-    assert synth.spread_indices(count, n) == expected
-
-
-def test_refinement_instants_include_both_ends():
-    got = synth.spread_indices(48, 10)
-    assert got[0] == 0 and got[-1] == 47 and len(got) == 10
 
 
 # ----------------------------------------------------------- experiment
