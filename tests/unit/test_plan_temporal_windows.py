@@ -258,3 +258,95 @@ def test_seam_fit_refuses_a_clip_with_no_bumps(tmp_path):
     with pytest.raises(SystemExit, match="nothing to attribute"):
         planner.fit_seam_coefficients(report, 0.006, [10, 20],
                                       np.ones(29), fps=24.0)
+
+
+# ---------------------------------------------------------------- uniform default
+
+def test_uniform_split_matches_the_measured_arm():
+    # Arm A of the window matrix: 121 frames, four windows, 31/30/30/30.
+    boundaries = planner.uniform_boundaries(121, 4)
+    assert boundaries == [0, 31, 61, 91, 121]
+
+
+def test_uniform_split_covers_every_frame_once():
+    for frames in (8, 25, 121):
+        for n in range(1, 8):
+            b = planner.uniform_boundaries(frames, n)
+            lengths = [y - x for x, y in itertools.pairwise(b)]
+            assert b[0] == 0 and b[-1] == frames
+            assert max(lengths) - min(lengths) <= 1
+
+
+def test_uniform_window_count_from_seconds():
+    assert planner.uniform_window_count(121, 24.0, 1.25) == 4
+    assert planner.uniform_window_count(10, 24.0, 1.25) == 1
+
+
+def _fake_run(tmp_path, frames=121):
+    run = tmp_path / "run"
+    for i in range(frames):
+        (run / "flipbook_src" / f"frame_{i:04d}").mkdir(parents=True)
+    (run / "experiment.json").write_text(json.dumps(
+        {"frames": {"start": 100, "count": frames, "fps": 24}}))
+    return run
+
+
+def _run_main(monkeypatch, argv):
+    monkeypatch.setattr("sys.argv", ["plan_temporal_windows.py", *argv])
+    planner.main()
+
+
+def test_default_is_a_uniform_cut_that_reads_no_images(tmp_path, monkeypatch):
+    run = _fake_run(tmp_path)
+
+    def no_signal(*a, **k):
+        raise AssertionError("uniform mode computed a motion signal")
+    monkeypatch.setattr(planner, "image_motion_signal", no_signal)
+    out = tmp_path / "plan.json"
+    _run_main(monkeypatch, ["--run", str(run), "--out", str(out)])
+
+    plan = json.loads(out.read_text())
+    assert plan["cut"] == "uniform"
+    assert plan["signal"] == "none"
+    assert [w["frame_count"] for w in plan["windows"]] == [31, 30, 30, 30]
+    assert plan["windows"][0]["frame_start"] == 100
+
+
+def test_windows_overrides_the_uniform_length(tmp_path, monkeypatch):
+    run = _fake_run(tmp_path)
+    out = tmp_path / "plan.json"
+    _run_main(monkeypatch, ["--run", str(run), "--windows", "3",
+                            "--out", str(out)])
+    plan = json.loads(out.read_text())
+    assert [w["frame_count"] for w in plan["windows"]] == [41, 40, 40]
+
+
+@pytest.mark.parametrize("flag", [
+    ["--signal", "joints"], ["--target_lpips", "0.008"],
+    ["--fit_from", "somewhere"], ["--min_frames", "4"],
+    ["--seam_smoothing", "3"], ["--splat_budget", "2e6"],
+])
+def test_planner_flags_need_adaptive(tmp_path, monkeypatch, flag):
+    run = _fake_run(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, ["--run", str(run), *flag])
+
+
+def test_window_seconds_is_refused_with_adaptive(tmp_path, monkeypatch):
+    run = _fake_run(tmp_path)
+    with pytest.raises(SystemExit):
+        _run_main(monkeypatch, ["--run", str(run), "--cut", "adaptive",
+                                "--window_seconds", "1.0"])
+
+
+def test_adaptive_runs_the_planner(tmp_path, monkeypatch):
+    run = _fake_run(tmp_path, frames=25)
+    monkeypatch.setattr(planner, "image_motion_signal",
+                        lambda *a, **k: spiky_signal())
+    out = tmp_path / "plan.json"
+    _run_main(monkeypatch, ["--run", str(run), "--cut", "adaptive",
+                            "--windows", "2", "--out", str(out)])
+    plan = json.loads(out.read_text())
+    assert plan["cut"] == "adaptive"
+    assert plan["signal"] == "images"
+    assert sum(w["frame_count"] for w in plan["windows"]) == 25

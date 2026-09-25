@@ -370,6 +370,31 @@ PSNR rewards and LPIPS punishes. The default takes the LPIPS side.
 
 ### Choosing Where to Cut
 
+**The default is a uniform cut.** `scripts/plan_temporal_windows.py` with no
+mode flag splits the clip into equal windows of about 1.25 s and reads
+nothing but the frame count:
+
+```bash
+python3 scripts/plan_temporal_windows.py --run ~/runs/ring12_5s \
+    --out_dir_template '~/runs/uniform/win_{index}' --out window_plan.json
+```
+
+On the 5 s take that gives four windows of 31/30/30/30 frames, arm A of the
+matrix below. `--windows N` fixes the count instead, `--window_seconds`
+changes the target length, and `--boundaries` forces a split by hand, which
+is how a control arm is run through the same code path. The plan feeds
+`merge_sogst_segments.py --plan` directly, so the seams and time origins are
+never retyped.
+
+The content-adaptive planner runs only with `--cut adaptive`. It beat the
+uniform cut by 0.5% LPIPS for 1.5% more splats and a signal pass over the
+training images, which does not pay for itself as a default. Its flags
+(`--signal*`, `--fit_*`, `--target_lpips`, `--splat_budget`, `--min_frames`,
+`--max_frames`, `--seam_smoothing`) are refused without `--cut adaptive`, so
+a plan never becomes adaptive by accident; the plan JSON records which mode
+made it in its `cut` field. The rest of this section is the measurement
+behind the planner.
+
 Uniform frame intervals are the fixed-GOP of video coding, so the obvious
 question is whether content should choose the cuts instead. Three
 measurements on the ring12 runs answer most of it, and the answer is more
@@ -412,28 +437,28 @@ LPIPS_stitched(N) = LPIPS_pooled(N) + seam cost per seam * (N - 1)
 splats(N)         = N * 181k + 1150k
 ```
 
-`scripts/plan_temporal_windows.py` computes the signal, fits or loads the
-coefficients, and solves a dynamic program over the cuts:
+With `--cut adaptive`, `scripts/plan_temporal_windows.py` computes the
+signal, fits or loads the coefficients, and solves a dynamic program over
+the cuts:
 
 ```bash
-python3 scripts/plan_temporal_windows.py --run ~/runs/ring12_5s --report
 python3 scripts/plan_temporal_windows.py --run ~/runs/ring12_5s \
-    --windows 4 --out_dir_template '~/runs/planned/win_{index}' \
-    --out window_plan.json
+    --cut adaptive --report
+python3 scripts/plan_temporal_windows.py --run ~/runs/ring12_5s \
+    --cut adaptive --windows 4 \
+    --out_dir_template '~/runs/planned/win_{index}' --out window_plan.json
 ```
 
 `--report` prints the rate-distortion table over window counts, `--windows`
-fixes a count, `--target_lpips` picks the cheapest count that reaches a
-score, and `--boundaries` forces a split by hand, which is how a control arm
-is run through the same code path. The plan feeds
-`merge_sogst_segments.py --plan` directly, so the seams and time origins are
-never retyped.
+fixes a count, and without it the planner picks the count with the best
+predicted stitched score. `--target_lpips` picks the cheapest count that
+reaches a score instead.
 
 The coefficients are fitted, not hard-coded, and `--fit_from` recomputes them
 from finished runs:
 
 ```bash
-python3 scripts/plan_temporal_windows.py --run $R/ring12_5s \
+python3 scripts/plan_temporal_windows.py --run $R/ring12_5s --cut adaptive \
     --fit_from $R/dur_12:0 $R/dur_24:0 $R/dur_48:0 $R/dur_96:0 \
     $R/ring12_5s:0 $R/win_0:0 $R/win_1:31 $R/win_2:61 $R/win_3:91
 ```
@@ -646,7 +671,7 @@ it, so the failure is loud.
 | `scripts/verify_blender_intrinsics.py` | Projection gate for a rig's camera model |
 | `scripts/run_synthetic_pipeline.py` | The orchestrator |
 | `scripts/merge_sogst_segments.py` | Stitch windowed models into one clip |
-| `scripts/plan_temporal_windows.py` | Choose where to cut a clip into windows |
+| `scripts/plan_temporal_windows.py` | Cut a clip into windows: uniform by default, `--cut adaptive` for the motion planner |
 | `scripts/seed_window_init.py` | Seed a window from the previous window's model |
 | `scripts/run_window_plan.py` | Train a plan, stitch it, score it |
 | `configs/rigs/` | Rig specs and the reference GoPro calibration |
