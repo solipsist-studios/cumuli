@@ -25,6 +25,12 @@ temp directory that's deleted once the subprocess exits.
 conda env: whichever has Diffuman4D's dependencies (easyvolcap, fire) --
 confirmed usage ran this under the "queen" conda env.
 
+See also triangulate_rig_keypoints.py: a separate, self-contained
+weighted-DLT triangulator (pure numpy, conda env cumuli) written for the
+4DAnyone rig-gap-fill pipeline, which needs a lighter dependency footprint
+than pulling in Diffuman4D. Kept side by side deliberately, not merged --
+different consumers, different envs.
+
 Usage:
     python3 triangulate_and_project_keypoints.py \\
         --camera_path /path/to/transforms.json \\
