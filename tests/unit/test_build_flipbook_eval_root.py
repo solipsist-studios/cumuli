@@ -172,3 +172,26 @@ def test_a_malformed_bbox_is_rejected(tmp_path, monkeypatch):
             "--flipbook_root", str(train), "--out", str(tmp_path / "d"),
             "--init_bbox", "0,0,0,1",
         ])
+
+
+def test_a_rebuild_clears_scored_views_from_an_earlier_build(tmp_path, monkeypatch):
+    """A build with no scored cameras writes test views named frame_NNNNN
+    from a TRAINING camera. Ground truth a previous build left under the
+    same names belongs to a different camera, and the orchestrators score
+    whenever eval_gt_flat holds images, so it has to go."""
+    train = tmp_path / "flipbook_src"
+    out = tmp_path / "dataset"
+    write_flipbook(train, ["00", "01"], 2)
+    for stale in ("eval_gt_flat/frame_00001.png", "evalcams/came00/x.png"):
+        (out / stale).parent.mkdir(parents=True, exist_ok=True)
+        (out / stale).write_bytes(b"stale")
+
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py",
+        "--flipbook_root", str(train), "--out", str(out),
+        "--fps", "24", "--downscale", "1", "--hull_min_views", "1",
+        "--jobs", "2", "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+
+    assert not (out / "eval_gt_flat").exists()
+    assert not (out / "evalcams").exists()

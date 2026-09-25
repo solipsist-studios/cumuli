@@ -59,6 +59,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -391,6 +392,13 @@ def main():
     # from two camera configurations are not comparable; a fixed eval set is.
     eval_rig, eval_frame_dirs = load_eval_root(
         args.eval_root, n_source_frames, frame_idx)
+    # Scored views from an earlier build into the same --out must not
+    # survive into this one. The orchestrators turn scoring on when
+    # eval_gt_flat holds any image, and a training camera standing in for
+    # the test views reuses the frame_NNNNN names a held-out camera wrote,
+    # so a stale file would be scored against the wrong camera's render.
+    for stale in ('evalcams', 'eval_gt_flat'):
+        shutil.rmtree(out / stale, ignore_errors=True)
     if eval_rig:
         eval_labels = sorted(eval_rig)
         jobs = []
