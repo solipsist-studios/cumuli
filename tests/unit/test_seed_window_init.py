@@ -11,7 +11,6 @@ readNerfSyntheticInfo only subsamples a cloud longer than its budget and
 takes a different branch for a shorter one.
 """
 
-import json
 
 import numpy as np
 import pytest

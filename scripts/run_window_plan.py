@@ -25,13 +25,18 @@ between.
 Usage:
     python3 scripts/run_window_plan.py --plan window_plan.json \\
         --master ~/runs/ring12_5s --blend ~/assets/ariana_packed.blend \\
-        --rig_spec configs/rigs/ring12.json --merge_out ~/runs/planned.sogst
+        --rig_spec configs/rigs/ring12.json --merge_out ~/runs/planned.sogst \\
+        --extra="--samples 64" --merge_args="--mode hard"
+
+--extra and --merge_args each take ONE string, split like a shell command
+line. Write them with "=", as above: argparse reads a separate value that
+starts with "-" as an option of this script.
 """
 
 import argparse
 import json
+import shlex
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -40,20 +45,25 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-PYTHON = sys.executable
+from run_unified_pipeline import CONDA_ENV, StageError, run_script  # noqa: E402
 
 
 def info(message):
     print(f"[window-plan] {message}", flush=True)
 
 
-def run(command, label):
-    printable = " ".join(str(c) for c in command)
-    info(f"{label}: {printable}")
+def run(script, args, label, conda_env=CONDA_ENV):
+    """One script through the orchestrators' shared runner.
+
+    The helpers need the `cumuli` env (numpy, torch for eval_render.py), so
+    they run with its interpreter exactly as run_synthetic_pipeline.py runs
+    them, whatever Python launched this script. The pipeline itself is an
+    orchestrator and runs with this interpreter, like a user would run it."""
     started = time.time()
-    result = subprocess.run([str(c) for c in command])
-    if result.returncode != 0:
-        raise SystemExit(f"{label} failed with exit code {result.returncode}")
+    try:
+        run_script(script, args, conda_env=conda_env, label=label)
+    except StageError as e:
+        raise SystemExit(str(e))
     info(f"{label} finished in {(time.time() - started) / 60:.1f} min")
 
 
@@ -82,9 +92,8 @@ def link_frames(master, out_dir, first, count, subdirs=("flipbook_src", "eval_sr
     info(f"linked frames {first}..{first + count - 1} into {out_dir.name}")
 
 
-def pipeline_command(args, out_dir, frame_start, frame_count, start, stop):
+def pipeline_args(args, out_dir, frame_start, frame_count, start, stop):
     command = [
-        PYTHON, SCRIPT_DIR / "run_synthetic_pipeline.py",
         "--blend", args.blend, "--rig_spec", args.rig_spec,
         "--out_dir", out_dir,
         "--frame_start", str(frame_start), "--frame_count", str(frame_count),
@@ -97,12 +106,18 @@ def pipeline_command(args, out_dir, frame_start, frame_count, start, stop):
     ]
     if stop:
         command += ["--stop_after_stage", stop]
-    if args.extra:
-        command += args.extra
+    command += shlex.split(args.extra)
     return command
 
 
-def main():
+def run_pipeline(args, out_dir, window, start, stop, label):
+    run("run_synthetic_pipeline.py",
+        pipeline_args(args, out_dir, window["frame_start"],
+                      window["frame_count"], start, stop),
+        label, conda_env=None)
+
+
+def build_parser():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--plan", required=True,
@@ -122,14 +137,21 @@ def main():
     ap.add_argument("--eval_every", type=int, default=1)
     ap.add_argument("--merge_out", default=None,
                     help="stitch the windows here when they are all trained")
-    ap.add_argument("--merge_args", nargs="*", default=None,
-                    help="extra flags for merge_sogst_segments.py")
+    ap.add_argument("--merge_args", default="",
+                    help='extra flags for merge_sogst_segments.py, as one '
+                         'string: --merge_args="--mode hard"')
     ap.add_argument("--skip_eval", action="store_true")
     ap.add_argument("--skip_trained", action="store_true",
                     help="leave windows that already hold a splat_4d.sogst")
-    ap.add_argument("--extra", nargs="*", default=None,
-                    help="extra flags passed through to every pipeline call")
-    args = ap.parse_args()
+    ap.add_argument("--extra", default="",
+                    help="extra flags passed through to every "
+                         "run_synthetic_pipeline.py call, as one string: "
+                         '--extra="--samples 64"')
+    return ap
+
+
+def main():
+    args = build_parser().parse_args()
 
     plan_path = Path(args.plan).expanduser()
     plan = json.loads(plan_path.read_text())
@@ -160,9 +182,8 @@ def main():
 
         seeding = args.seed and i > 0
         stop = "dataset4d" if seeding else None
-        run(pipeline_command(args, out_dir, window["frame_start"],
-                             window["frame_count"], "dataset4d", stop),
-            f"window {i} dataset4d" if seeding else f"window {i}")
+        run_pipeline(args, out_dir, window, "dataset4d", stop,
+                     f"window {i} dataset4d" if seeding else f"window {i}")
 
         if seeding:
             previous = Path(windows[i - 1]["out_dir"]).expanduser()
@@ -174,37 +195,34 @@ def main():
             handover = min(window["offset_seconds"]
                            - windows[i - 1]["offset_seconds"], previous_span)
             hull = out_dir / "dataset_4dgs" / "points3d.ply"
-            run([PYTHON, SCRIPT_DIR / "seed_window_init.py",
-                 "--model", previous / "splat_4d.sogst",
-                 "--at_seconds", f"{handover:.6f}",
-                 "--window_seconds", f"{(window['frame_count'] - 1) / fps:.6f}",
-                 "--hull", hull, "--out", hull,
-                 "--seed_fraction", str(args.seed_fraction),
-                 "--num_pts", str(args.num_pts)],
+            run("seed_window_init.py", [
+                "--model", previous / "splat_4d.sogst",
+                "--at_seconds", f"{handover:.6f}",
+                "--window_seconds", f"{(window['frame_count'] - 1) / fps:.6f}",
+                "--hull", hull, "--out", hull,
+                "--seed_fraction", str(args.seed_fraction),
+                "--num_pts", str(args.num_pts)],
                 f"window {i} seed from window {i - 1}")
-            run(pipeline_command(args, out_dir, window["frame_start"],
-                                 window["frame_count"], "train4d", None),
-                f"window {i} train4d")
+            run_pipeline(args, out_dir, window, "train4d", None,
+                         f"window {i} train4d")
 
     info(f"all windows done in {(time.time() - started) / 60:.0f} min")
 
     if args.merge_out:
         merge_out = Path(args.merge_out).expanduser()
-        command = [PYTHON, SCRIPT_DIR / "merge_sogst_segments.py",
-                   "--plan", plan_path, "--out", merge_out,
-                   "--report_json", merge_out.with_suffix(".stitch.json")]
-        if args.merge_args:
-            command += args.merge_args
-        run(command, "merge")
+        run("merge_sogst_segments.py", [
+            "--plan", plan_path, "--out", merge_out,
+            "--report_json", merge_out.with_suffix(".stitch.json"),
+        ] + shlex.split(args.merge_args), "merge")
 
         if not args.skip_eval:
             dataset = master / "dataset_4dgs"
-            run([PYTHON, SCRIPT_DIR / "eval_render.py",
-                 "--model", merge_out,
-                 "--transforms", dataset / "transforms_test.json",
-                 "--gt-dir", dataset / "eval_gt_flat",
-                 "--downscale", "1", "--every", "1",
-                 "--report_json", merge_out.with_suffix(".eval.json")],
+            run("eval_render.py", [
+                "--model", merge_out,
+                "--transforms", dataset / "transforms_test.json",
+                "--gt-dir", dataset / "eval_gt_flat",
+                "--downscale", "1", "--every", "1",
+                "--report_json", merge_out.with_suffix(".eval.json")],
                 "eval stitched")
 
 

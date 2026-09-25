@@ -20,14 +20,14 @@ hash grid and an MLP at render time and nothing bakes to .sogst. The idea
 does fit, in the form the trainer already accepts.
 
 The obvious route, resuming from the previous window's checkpoint, is a trap.
-train_scratch.py restores `first_iter` from the checkpoint (line 124) while
-densification is gated on `iteration < densify_until_iter` (line 354), so a
+The trainer (train_scratch.py) restores `first_iter` from the checkpoint,
+while densification is gated on `iteration < densify_until_iter`, so a
 resume at 30k lands past the densification window: the model inherits a full
 splat set, never re-densifies, and saturates the cap immediately.
 
 Seeding the point cloud avoids all of that. readNerfSyntheticInfo reads
 points3d.ply and, when it holds more points than --num_pts, randomly
-subsamples to that budget (scene/dataset_readers.py:311-330). Hand it a cloud
+subsamples to that budget (in the trainer's scene/dataset_readers.py). Hand it a cloud
 drawn from the previous window's trained splats and the next window starts
 sparse but structurally correct, with the densification schedule running from
 iteration 0 exactly as it does now. No trainer patch, no checkpoint surgery,
