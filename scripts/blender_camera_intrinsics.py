@@ -407,6 +407,14 @@ def calib_to_blender(calib, render_size=None, sensor_width_mm=DEFAULT_SENSOR_WID
         meta["renders_distortion"] = False
         if model == MODEL_OPENCV and np.any(np.abs(np.asarray(dist, dtype=np.float64)) > 1e-9):
             meta["distortion_not_rendered"] = True
+            # The meta block describes the RENDERED image, which downstream
+            # writes out as each camera's calibration pkl. Keeping the
+            # source distortion there would tell the pose solve to treat an
+            # undistorted render as distorted. The source stays on record.
+            meta["source_model"] = model
+            meta["source_distortion_coefficients"] = meta["distortion_coefficients"]
+            meta["model"] = MODEL_PINHOLE
+            meta["distortion_coefficients"] = [0.0] * len(meta["distortion_coefficients"])
 
     settings["_meta"] = meta
     return settings

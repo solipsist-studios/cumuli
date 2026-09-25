@@ -132,6 +132,12 @@ def test_opencv_distortion_is_carried_but_flagged_as_not_rendered():
     settings = bci.calib_to_blender(calib)
     assert settings["type"] == "PERSP"
     assert settings["_meta"]["distortion_not_rendered"] is True
+    # What is written as the camera's calibration must match the pixels,
+    # which carry no distortion; the source calibration stays on record.
+    assert settings["_meta"]["model"] == bci.MODEL_PINHOLE
+    assert not any(settings["_meta"]["distortion_coefficients"])
+    assert settings["_meta"]["source_model"] == bci.MODEL_OPENCV
+    assert settings["_meta"]["source_distortion_coefficients"][0] == 0.1
 
 
 # ------------------------------------------------------- fisheye cameras

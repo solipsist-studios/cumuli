@@ -291,6 +291,16 @@ def test_unknown_spec_keys_are_rejected():
         crs.validate_spec(ring_spec(nonsense=1))
 
 
+@pytest.mark.parametrize("key", ["subject_collections", "background_collections",
+                                 "markers"])
+def test_keys_nothing_reads_are_rejected_rather_than_ignored(key):
+    """The collections are fixed names set by prepare_blender_scene.py, and
+    nothing places markers. Accepting these keys made a spec that set them
+    look configured while changing nothing."""
+    with pytest.raises(crs.RigSpecError, match="unknown rig spec key"):
+        crs.validate_spec(ring_spec(**{key: []}))
+
+
 def test_unknown_layout_is_rejected():
     with pytest.raises(crs.RigSpecError, match="layout must be"):
         crs.validate_spec(ring_spec(layout="spiral"))

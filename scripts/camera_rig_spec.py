@@ -109,8 +109,7 @@ LAYOUTS = ("cage", "rings", "explicit")
 SPEC_KEYS = {
     "name", "layout", "target", "center", "cage", "rings", "cameras",
     "resolution", "camera_model", "intrinsics", "calibration_pkl", "eval",
-    "lights", "subject_collections", "background_collections", "markers",
-    "description",
+    "lights", "description",
 }
 
 DEFAULT_EVAL_COUNT = 4
