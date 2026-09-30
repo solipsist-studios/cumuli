@@ -51,6 +51,23 @@ SOGST_EXTENSION = '.sogst'
 SOGST_CODEBOOK_SIZE = 256
 SOGST_SHN_WIDTHS = {1: 192, 2: 512, 3: 960}
 
+# Higher-order SH coefficients per colour channel for each band count,
+# (bands+1)^2 - 1.  An f_rest block is [N, 3 * coeffs], channel-major:
+# column j * coeffs + k is channel j, coefficient k.  Band count 0 is a
+# model with no f_rest block at all.
+SOGST_SHN_COEFFS = {1: 3, 2: 8, 3: 15}
+
+
+def shn_bands_for_width(width):
+    """The SH band count of an f_rest block `width` columns wide (9, 24 or
+    45).  Raises on any other width: a partial block would pack garbage into
+    the SH textures, and nothing downstream would notice."""
+    for bands, coeffs in SOGST_SHN_COEFFS.items():
+        if width == 3 * coeffs:
+            return bands
+    raise ValueError(f'f_rest has {width} columns; it must be 3 * coeffs for '
+                     f'1, 2 or 3 SH bands (9, 24 or 45)')
+
 # The canonical per-splat field order, shared by the PLY interchange format
 # and the packer.  docs/sogst-format.md section 7.2 says what each one means
 # and which space it is in.  Several are easy to get wrong: the quaternion

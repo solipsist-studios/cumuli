@@ -331,12 +331,13 @@ Higher-order spherical harmonics, vector-quantized. Present only when
   entry id. B unused, A = 255. `shN.count` is the number of palette entries and
   MUST be ≤ 65536.
 
-> **Known limitation of the reference decoder.** `decode_sogst_fields()` writes
-> reconstructed coefficients into a fixed 45-wide `f_rest` array at stride 15
-> regardless of `bands`, so its output layout is only correct for `bands == 3`.
-> The reference encoder only ever emits `bands == 3`. New encoders SHOULD emit
-> `bands == 3`. Players that implement `bands < 3` MUST use the channel-major
-> stride `coeffs` given above, not 15.
+The reference encoder emits the band count of the model it was given:
+`bake_sogst.py --sh_degree 1` or `2` produces `bands` 1 or 2, and the
+reference decoder (`decode_sogst_fields()` in `eval_render.py`) returns a
+`3 * coeffs`-wide `f_rest` at stride `coeffs`. A player MUST use the stride
+`coeffs` for the declared band count, not 15. A player that implements only
+`bands == 3` MUST NOT render a lower-band file as if it were third order; it
+MAY fall back to DC-only, as for a file with no `shN` group.
 
 ### 4.8 `accel` — `accel_l.webp`, `accel_u.webp` (OPTIONAL)
 
@@ -570,7 +571,7 @@ Then, OPTIONAL:
 
 | column(s) | convention |
 |---|---|
-| `f_rest_0..f_rest_44` | 45 values, **channel-major**: index `j*15 + k` is channel `j`, coefficient `k`. All 45 or none. |
+| `f_rest_0..f_rest_{3c-1}` | `3c` values for `c` = 3, 8 or 15 coefficients (SH degree 1, 2 or 3), **channel-major**: index `j*c + k` is channel `j`, coefficient `k`. Exactly 9, 24 or 45 contiguous columns from `f_rest_0`, or none. The degree follows from the count, as in a standard 3DGS PLY. |
 | `ax, ay, az` | **Raw `dt^2` coefficient, not half-acceleration.** All three or none. See §4.8's gating rules, which apply equally to the PLY. |
 
 All columns MUST have exactly `N` entries. Nothing downstream cross-checks

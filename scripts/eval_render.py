@@ -41,7 +41,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from sogst_pack import decode_webp  # noqa: E402
-from sogst_io import SOGST_FIELDS  # noqa: E402
+from sogst_io import SOGST_FIELDS, SOGST_SHN_COEFFS, shn_bands_for_width  # noqa: E402
 
 
 def build_report(views, config):
@@ -152,18 +152,18 @@ def decode_sogst_fields(v3_path):
         labels = (tex['shN_labels.webp'][:, 0].astype(np.int64) +
                   (tex['shN_labels.webp'][:, 1].astype(np.int64) << 8))
         codebook = np.asarray(meta['shN']['codebook'])
-        coeffs = {1: 3, 2: 8, 3: 15}[meta['shN']['bands']]
+        coeffs = SOGST_SHN_COEFFS[meta['shN']['bands']]
         # engine layout: palette entry n occupies texels
         # [(n % 64) * coeffs, (n % 64 + 1) * coeffs) on row n // 64.
-        # sh[j*15 + k] = codebook[centroid_bytes[(u + k)*4 + j + v*W*4]]
+        # sh[j*coeffs + k] = codebook[centroid_bytes[(u + k)*4 + j + v*W*4]]
         u = (labels % 64) * coeffs
         v = labels // 64
         base = v * w + u                                    # texel index of coeff 0
-        f_rest = np.zeros((n, 45), dtype=np.float64)
+        f_rest = np.zeros((n, 3 * coeffs), dtype=np.float64)
         for k in range(coeffs):
             texel = flat[base + k]                          # [N, 4] bytes
             for j in range(3):
-                f_rest[:, j * 15 + k] = codebook[texel[:, j]]
+                f_rest[:, j * coeffs + k] = codebook[texel[:, j]]
         fields['f_rest'] = f_rest
 
     time = meta.get('time', {})
@@ -288,15 +288,16 @@ def main():
     t_center = to(fields['t_center'])
     t_sigma = to(np.maximum(np.abs(fields['t_sigma']), 1e-6))
 
-    sh_degree = 3 if 'f_rest' in fields else 0
+    # degree = bands: 9, 24 or 45 f_rest columns are degree 1, 2 or 3
+    sh_degree = shn_bands_for_width(fields['f_rest'].shape[1]) if 'f_rest' in fields else 0
     n_sh = (sh_degree + 1) ** 2
     shs = torch.zeros((n, n_sh, 3), dtype=torch.float32, device=dev)
     shs[:, 0, 0] = to(fields['f_dc_0'])
     shs[:, 0, 1] = to(fields['f_dc_1'])
     shs[:, 0, 2] = to(fields['f_dc_2'])
     if sh_degree:
-        f_rest = to(fields['f_rest'])                        # [N, 45] channel-major
-        shs[:, 1:, :] = f_rest.reshape(n, 3, 15).permute(0, 2, 1)
+        f_rest = to(fields['f_rest'])                        # [N, 3*(n_sh-1)] channel-major
+        shs[:, 1:, :] = f_rest.reshape(n, 3, n_sh - 1).permute(0, 2, 1)
 
     import lpips as lpips_mod
     lpips_model = lpips_mod.LPIPS(net='alex').to(dev)
