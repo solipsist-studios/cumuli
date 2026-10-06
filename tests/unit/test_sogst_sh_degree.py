@@ -109,7 +109,9 @@ def write_checkpoint(path, n, model_degree, rng):
     convert_from_checkpoint() unpacks, with features_rest laid out as the
     3S+2 temporal copies a rotor 4DGS model stores."""
     S = (model_degree + 1) ** 2 - 1
-    t = lambda a: torch.from_numpy(np.asarray(a, dtype=np.float32))
+    def t(a):
+        return torch.from_numpy(np.asarray(a, dtype=np.float32))
+
     ident = np.tile([1.0, 0.0, 0.0, 0.0], (n, 1))
     features_dc = rng.uniform(0.5, 1.0, (n, 1, 3))
     features_rest = rng.normal(0.0, 0.05, (n, 3 * S + 2, 3))

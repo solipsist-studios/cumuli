@@ -31,7 +31,7 @@ where it is most visible. It stores the temporal parameters explicitly so
 the viewer can evaluate motion and temporal fade per rendered frame on the
 GPU. There is no per-frame data: the file covers the full clip continuously.
 
-Requirements: torch numpy dahuffman  (the OMG4 training environment)
+Requirements: torch numpy, plus dahuffman for comp.xz input  (the OMG4 training environment)
 
 Usage:
     python bake_sogst.py \
@@ -79,18 +79,19 @@ SOGST_EXPORT_OPTIONS = None
 PLY_EXPORT_PATH = None
 PLY_EXPORT_SIDECAR = False
 
-try:
-    import dahuffman
-except ImportError:
-    sys.exit("ERROR: 'dahuffman' package not found. Install it with: pip install dahuffman")
-
-
 # ---------------------------------------------------------------------------
 # SVQ / Huffman decode (mirrors utils/compress_utils.py + decode() in the
 # OMG4 repository's scene/gaussian_model.py)
 # ---------------------------------------------------------------------------
 
 def huffman_decode(encoded_bytes, huffman_table, count):
+    # Imported here rather than at module load: only comp.xz inputs are
+    # Huffman-coded, so a checkpoint bake (and the unit tests, which import
+    # this module) must not need the package.
+    try:
+        import dahuffman
+    except ImportError:
+        sys.exit("ERROR: 'dahuffman' package not found. Install it with: pip install dahuffman")
     codec = dahuffman.HuffmanCodec(code_table=huffman_table)
     return np.fromiter(codec.decode(encoded_bytes), dtype=np.uint16, count=count)
 
