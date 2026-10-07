@@ -42,9 +42,11 @@ required.
 
 The reference implementation is `scripts/sogst_pack.py` (encoder),
 `scripts/sogst_io.py` (container writer) and `decode_sogst_fields()` in
-`scripts/eval_render.py`. That decoder is the only complete inverse of the
+`cumuli_core.sogst` (the `deps/cumuli-core` submodule, re-exported by
+`scripts/eval_render.py`). That decoder is the only complete inverse of the
 encoder. Use it as the oracle when you validate an independent implementation.
-`scripts/sogst_ply.py` reads and writes the interchange PLY of §7.
+`cumuli_core.ply` (re-exported by `scripts/sogst_ply.py`) reads and writes the
+interchange PLY of §7.
 
 ## 1. The representation
 
