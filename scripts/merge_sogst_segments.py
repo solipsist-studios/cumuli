@@ -281,7 +281,7 @@ def to_pack_fields(merged):
     """Field arrays in the shape pack_sogst wants.
 
     decode_sogst_fields returns the higher-order spherical harmonics as a
-    single 'f_rest' array of [N, 45], NOT as f_rest_0..f_rest_44. Looking
+    single 'f_rest' array of [N, 9|24|45], NOT as f_rest_0..f_rest_44. Looking
     for the split names finds nothing, silently drops every view-dependent
     coefficient, and produces a flat-shaded model: that mistake cost 0.0186
     LPIPS against 0.0071 on the first attempt at this merge. Carry the block

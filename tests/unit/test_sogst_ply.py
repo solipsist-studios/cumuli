@@ -210,7 +210,45 @@ def test_partial_f_rest_raises(tmp_path):
 def test_wrong_f_rest_width_raises(tmp_path):
     fields = make_fields(include_sh=True)
     fields["f_rest"] = fields["f_rest"][:, :30]
-    with pytest.raises(ValueError, match=r"\[N, 45\]"):
+    with pytest.raises(ValueError, match="9, 24 or 45"):
+        write_sogst_ply(str(tmp_path / "s.ply"), fields, 0.0, 1.0, 30.0)
+
+
+def lower_bands(f_rest, coeffs):
+    """The first `coeffs` coefficients of a 45-wide channel-major block,
+    re-laid out channel-major at stride `coeffs`."""
+    n = f_rest.shape[0]
+    return np.ascontiguousarray(
+        f_rest.reshape(n, 3, 15)[:, :, :coeffs].reshape(n, 3 * coeffs))
+
+
+@pytest.mark.parametrize("coeffs", [3, 8])
+def test_lower_band_f_rest_round_trips(tmp_path, coeffs):
+    """A degree-1 or degree-2 bake writes 9 or 24 f_rest_* columns, the
+    standard 3DGS PLY layout for that degree, and reads back unchanged."""
+    fields = make_fields(include_sh=True)
+    fields["f_rest"] = lower_bands(fields["f_rest"], coeffs)
+    path = tmp_path / "s.ply"
+    write_sogst_ply(str(path), fields, 0.0, 1.0, 30.0)
+
+    header = path.read_bytes().split(b"end_header")[0].decode("ascii")
+    names = [ln.split()[-1] for ln in header.splitlines()
+             if ln.startswith("property float f_rest_")]
+    assert names == PLY_SH_COLUMNS[:3 * coeffs]
+
+    _header, back = read_sogst_ply(str(path))
+    np.testing.assert_array_equal(
+        back["f_rest"], np.asarray(fields["f_rest"], dtype=np.float32))
+
+
+def test_gapped_f_rest_columns_raise(tmp_path):
+    """Nine f_rest_* columns that are not f_rest_0..f_rest_8 have the right
+    count for one band but the wrong indices."""
+    fields = make_fields(include_sh=True)
+    f_rest = fields.pop("f_rest")
+    for i in range(1, 10):
+        fields[f"f_rest_{i}"] = f_rest[:, i]
+    with pytest.raises(ValueError, match="no gaps"):
         write_sogst_ply(str(tmp_path / "s.ply"), fields, 0.0, 1.0, 30.0)
 
 

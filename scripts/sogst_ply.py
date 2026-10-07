@@ -21,7 +21,8 @@ before changing anything here.
         t_sigma                     STANDARD DEVIATION in seconds, > 0
 
     OPTIONAL:
-        f_rest_0..f_rest_44         channel-major: index j*15 + k
+        f_rest_0..f_rest_{3c-1}     channel-major: index j*c + k, where c is
+                                    3, 8 or 15 coefficients (1, 2 or 3 bands)
         ax ay az                    RAW dt^2 coefficient, not a/2
 
 Clip-level scalars are not per-vertex, so they ride in PLY comments:
@@ -56,11 +57,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sogst_io import SOGST_FIELDS  # noqa: E402
+from sogst_io import SOGST_FIELDS, shn_bands_for_width  # noqa: E402
 
 # Column blocks, in the order they appear in the file.
 PLY_BASE_COLUMNS = list(SOGST_FIELDS)                       # the 19 required
-PLY_SH_COLUMNS = [f'f_rest_{i}' for i in range(45)]           # all 45 or none
+PLY_SH_COLUMNS = [f'f_rest_{i}' for i in range(45)]           # 9, 24, 45 or none
 PLY_ACCEL_COLUMNS = ['ax', 'ay', 'az']                        # all 3 or none
 
 # Comment keys carrying clip-level scalars.
@@ -90,7 +91,7 @@ def write_sogst_ply(out_path, fields, time_min, time_max, fps,
     out_path    : Destination .ply path.
     fields      : Maps column name -> float array.  Must contain every name
                   in PLY_BASE_COLUMNS as a length-N 1-D array.  May contain
-                  'f_rest' as [N, 45] (or the 45 individual f_rest_* names),
+                  'f_rest' as [N, 9|24|45] (or the individual f_rest_* names),
                   and 'ax'/'ay'/'az'.
     time_min,
     time_max    : Clip bounds in seconds.
@@ -160,6 +161,25 @@ def write_sogst_sidecar(ply_path, time_min, time_max, fps, cov2d_scale=None,
     return path
 
 
+def sh_columns_present(columns):
+    """The f_rest_* names in `columns`, in index order.  They must be exactly
+    f_rest_0..f_rest_{w-1} for a width w of 9, 24 or 45 (1, 2 or 3 bands):
+    higher-order SH is all-or-nothing per band count, because a partial block
+    packs garbage into the SH textures."""
+    present = [c for c in PLY_SH_COLUMNS if c in columns]
+    if not present:
+        return present
+    try:
+        shn_bands_for_width(len(present))
+    except ValueError:
+        raise ValueError(f'higher-order SH is all-or-nothing: got {len(present)} '
+                         'f_rest_* columns, expected 9, 24 or 45 (1, 2 or 3 bands)') from None
+    if present != PLY_SH_COLUMNS[:len(present)]:
+        raise ValueError(f'f_rest_* columns must be f_rest_0..f_rest_{len(present) - 1} '
+                         'with no gaps')
+    return present
+
+
 def _collect_columns(fields):
     """Validate `fields` and flatten it to an ordered name -> float array map.
 
@@ -177,20 +197,19 @@ def _collect_columns(fields):
         columns[name] = np.asarray(fields[name], dtype=np.float32).ravel()
     n = len(columns['x'])
 
-    # Higher-order SH: accept either the [N, 45] block or 45 named columns.
+    # Higher-order SH: accept either the [N, 3c] block or 3c named columns,
+    # for c = 3, 8 or 15 coefficients (1, 2 or 3 bands).
     f_rest = fields.get('f_rest')
     if f_rest is not None:
         f_rest = np.asarray(f_rest, dtype=np.float32)
-        if f_rest.ndim != 2 or f_rest.shape[1] != 45:
-            raise ValueError('write_sogst_ply: f_rest must be [N, 45] '
-                             f'(channel-major, index j*15+k), got {f_rest.shape}')
-        for i, name in enumerate(PLY_SH_COLUMNS):
-            columns[name] = f_rest[:, i]
+        if f_rest.ndim != 2:
+            raise ValueError('write_sogst_ply: f_rest must be [N, 9|24|45] '
+                             f'(channel-major, index j*coeffs+k), got {f_rest.shape}')
+        shn_bands_for_width(f_rest.shape[1])
+        for i in range(f_rest.shape[1]):
+            columns[PLY_SH_COLUMNS[i]] = f_rest[:, i]
     else:
-        present = [c for c in PLY_SH_COLUMNS if c in fields]
-        if present and len(present) != 45:
-            raise ValueError('write_sogst_ply: higher-order SH is all-or-nothing; '
-                             f'got {len(present)} of 45 f_rest_* columns')
+        present = sh_columns_present(fields)
         for name in present:
             columns[name] = np.asarray(fields[name], dtype=np.float32).ravel()
 
@@ -243,7 +262,7 @@ def read_sogst_ply(ply_path, require_scalars=True):
     """Read an interchange PLY into (header, fields).
 
     `fields` matches what the packer consumes (1-D arrays
-    under the SOGST_FIELDS names, plus 'f_rest' as [N, 45] and 'ax'/'ay'/
+    under the SOGST_FIELDS names, plus 'f_rest' as [N, 9|24|45] and 'ax'/'ay'/
     'az' when present), so it feeds pack_sogst() directly.
 
     `header` carries time_min, time_max, fps, count, motion_degree and an
@@ -294,12 +313,12 @@ def read_sogst_ply(ply_path, require_scalars=True):
         raise ValueError(f'{ply_path}: missing required columns: {missing}')
 
     fields = {name: raw[name] for name in PLY_BASE_COLUMNS}
-    sh_present = [c for c in PLY_SH_COLUMNS if c in raw]
+    try:
+        sh_present = sh_columns_present(raw)
+    except ValueError as e:
+        raise ValueError(f'{ply_path}: {e}') from None
     if sh_present:
-        if len(sh_present) != 45:
-            raise ValueError(f'{ply_path}: {len(sh_present)} of 45 f_rest_* columns '
-                             '-- higher-order SH is all-or-nothing')
-        fields['f_rest'] = np.stack([raw[c] for c in PLY_SH_COLUMNS], axis=1)
+        fields['f_rest'] = np.stack([raw[c] for c in sh_present], axis=1)
     accel_present = [c for c in PLY_ACCEL_COLUMNS if c in raw]
     if accel_present:
         if len(accel_present) != 3:
@@ -395,7 +414,8 @@ def main():
         print(f'  sidecar: {path}')
 
     size_mb = os.path.getsize(args.output) / 1024 / 1024
-    cols = len(PLY_BASE_COLUMNS) + (45 if 'f_rest' in fields else 0) + (3 if 'ax' in fields else 0)
+    n_sh = fields['f_rest'].shape[1] if 'f_rest' in fields else 0
+    cols = len(PLY_BASE_COLUMNS) + n_sh + (3 if 'ax' in fields else 0)
     print(f'Wrote {args.output}  ({n:,} splats x {cols} columns, {size_mb:.1f} MB)')
 
     if args.verify:

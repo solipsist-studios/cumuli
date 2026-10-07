@@ -33,8 +33,10 @@ from PIL import Image
 
 from sogst_io import (
     SOGST_CODEBOOK_SIZE,
+    SOGST_SHN_COEFFS,
     SOGST_SHN_WIDTHS,
     build_sogst_meta,
+    shn_bands_for_width,
     write_sogst,
     write_sogst_streamed,
     report_output,
@@ -301,11 +303,14 @@ def compute_quat_planes(rot_wxyz: np.ndarray):
     return b, mode
 
 
-def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
-    """VQ the [N, 45] higher-order SH into centroids + labels textures."""
-    coeffs = {1: 3, 2: 8, 3: 15}[bands]
-    dims = 3 * coeffs
-    centroids, labels = vq_vectors(f_rest[:, :dims], shn_count)
+def pack_shn(f_rest: np.ndarray, shn_count: int):
+    """VQ the [N, 3 * coeffs] higher-order SH into centroids + labels
+    textures.  The band count comes from the block width, so a model baked
+    at degree 1 or 2 packs its own coefficients rather than a zero-padded
+    third-order block."""
+    bands = shn_bands_for_width(f_rest.shape[1])
+    coeffs = SOGST_SHN_COEFFS[bands]
+    centroids, labels = vq_vectors(f_rest, shn_count)
     k = centroids.shape[0]
 
     # NOT DONE, deliberately, with the measurement recorded so nobody has to
@@ -339,7 +344,7 @@ def pack_shn(f_rest: np.ndarray, shn_count: int, bands: int = 3):
         for c in range(coeffs):
             cent_img[v, u + c, j] = cidx[:, j * coeffs + c]
 
-    return cent_img, labels, codebook, k
+    return cent_img, labels, codebook, k, bands
 
 
 # ---------------------------------------------------------------------------
@@ -354,7 +359,7 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     """Quantize per-splat field arrays and write a version-1 .sogst archive.
 
     `fields` maps SOGST_FIELDS names to float32[N] arrays, plus optional
-    'f_rest' as float32[N, 45].  `order_segments` accepts a precomputed
+    'f_rest' as float32[N, 3 * coeffs] (9, 24 or 45 columns for 1-3 bands).  `order_segments` accepts a precomputed
     (order, segments) pair from compute_sogst_order() (the CLI shares it
     with verify_sogst).  Otherwise it is computed here.  Returns the
     written meta.
@@ -403,9 +408,9 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     cent_blob = None
     labels = None
     if fields.get('f_rest') is not None and shn_count > 0:
-        cent_img, labels, shn_cb, k = pack_shn(fields['f_rest'], shn_count)
+        cent_img, labels, shn_cb, k, bands = pack_shn(fields['f_rest'], shn_count)
         cent_blob = encode_webp(cent_img, webp_method)
-        shn_kwargs = {'shn_count': k, 'shn_bands': 3, 'shn_codebook': shn_cb}
+        shn_kwargs = {'shn_count': k, 'shn_bands': bands, 'shn_codebook': shn_cb}
 
     # -- texture emission for an index range [a, b) ------------------------
     def group_textures(a: int, b: int) -> dict:

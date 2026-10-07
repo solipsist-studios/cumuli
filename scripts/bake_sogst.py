@@ -31,7 +31,7 @@ where it is most visible. It stores the temporal parameters explicitly so
 the viewer can evaluate motion and temporal fade per rendered frame on the
 GPU. There is no per-frame data: the file covers the full clip continuously.
 
-Requirements: torch numpy dahuffman  (the OMG4 training environment)
+Requirements: torch numpy, plus dahuffman for comp.xz input  (the OMG4 training environment)
 
 Usage:
     python bake_sogst.py \
@@ -79,18 +79,19 @@ SOGST_EXPORT_OPTIONS = None
 PLY_EXPORT_PATH = None
 PLY_EXPORT_SIDECAR = False
 
-try:
-    import dahuffman
-except ImportError:
-    sys.exit("ERROR: 'dahuffman' package not found. Install it with: pip install dahuffman")
-
-
 # ---------------------------------------------------------------------------
 # SVQ / Huffman decode (mirrors utils/compress_utils.py + decode() in the
 # OMG4 repository's scene/gaussian_model.py)
 # ---------------------------------------------------------------------------
 
 def huffman_decode(encoded_bytes, huffman_table, count):
+    # Imported here rather than at module load: only comp.xz inputs are
+    # Huffman-coded, so a checkpoint bake (and the unit tests, which import
+    # this module) must not need the package.
+    try:
+        import dahuffman
+    except ImportError:
+        sys.exit("ERROR: 'dahuffman' package not found. Install it with: pip install dahuffman")
     codec = dahuffman.HuffmanCodec(code_table=huffman_table)
     return np.fromiter(codec.decode(encoded_bytes), dtype=np.uint16, count=count)
 
@@ -252,6 +253,8 @@ def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     y_max = np.array([0.489, 0.489, 0.489,
                       0.546, 0.546, 0.630, 0.546, 0.546,
                       0.590, 0.590, 0.457, 0.746, 0.457, 0.590, 0.590], dtype=np.float32)
+    # a degree-1 or degree-2 block carries 3 or 8 coefficients per channel
+    y_max = y_max[:f_rest.shape[1]]
     SH_C0 = 0.28209479177387814
     base = np.abs(f_dc * SH_C0 + 0.5)                                  # [N,3]
     bound = (np.abs(f_rest) * y_max[None, :, None]).sum(axis=1)        # [N,3]
@@ -262,6 +265,28 @@ def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     print(f'  SH overshoot clamp: attenuated {clamped:,} / {len(scale):,} splats '
           f'(max total excursion was {excess.max():.2f})')
     return f_rest * scale[:, None, None]
+
+
+def truncate_sh(f_rest, sh_degree):
+    """Keep the first sh_degree bands of an [N, coeffs, 3] SH block.
+
+    Bands are nested ((d+1)^2 - 1 coefficients through degree d), so
+    dropping the trailing coefficients is exactly a lower-degree model.
+    sh_degree None keeps the model's own degree. 0 returns None: DC only.
+    Asking for more bands than the model has is refused, since padding with
+    zeros would only add bytes that render as nothing."""
+    if f_rest is None or sh_degree is None:
+        return f_rest
+    model_degree = int(round(math.sqrt(f_rest.shape[1] + 1))) - 1
+    if sh_degree > model_degree:
+        raise ValueError(f'--sh_degree {sh_degree} exceeds the model\'s own SH degree '
+                         f'{model_degree}; there are no higher bands to bake')
+    if sh_degree == 0:
+        print(f'  SH degree: baking DC only (model has degree {model_degree})')
+        return None
+    if sh_degree < model_degree:
+        print(f'  SH degree: baking degree {sh_degree} of the model\'s {model_degree}')
+    return f_rest[:, :(sh_degree + 1) ** 2 - 1, :]
 
 
 # ---------------------------------------------------------------------------
@@ -581,10 +606,12 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
         t_center,
         t_sigma
     ]
+    n_rest = 0 if f_rest is None else f_rest.shape[1]
     if f_rest is not None:
-        # PLY channel-major order: f_rest_{ch*15 + k} = eff_rest[k][channel ch]
+        # PLY channel-major order: f_rest_{ch*n + k} = eff_rest[k][channel ch],
+        # with n = 3, 8 or 15 coefficients for SH degree 1, 2 or 3
         for ch in range(3):
-            for k in range(15):
+            for k in range(n_rest):
                 arrays.append(f_rest[:, k, ch])
     if accel is not None:
         # degree-2 motion: the raw dt^2 coefficient (spec section 4.8)
@@ -610,8 +637,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
     fields = {name: arrays[i] for i, name in enumerate(SOGST_FIELDS)}
     cursor = len(SOGST_FIELDS)
     if f_rest is not None:
-        fields['f_rest'] = np.stack(arrays[cursor:cursor + 45], axis=1)
-        cursor += 45
+        fields['f_rest'] = np.stack(arrays[cursor:cursor + 3 * n_rest], axis=1)
+        cursor += 3 * n_rest
     if accel is not None:
         for i, name in enumerate(('ax', 'ay', 'az')):
             fields[name] = arrays[cursor + i]
@@ -633,7 +660,7 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
-                            include_sh=True, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
+                            sh_degree=None, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
                             top_k_fraction=1.0, extra_keep_mask_path=None,
                             filter_black_floaters=False, mask_filter_root=None,
                             mask_filter_outside_frac=0.5):
@@ -711,16 +738,26 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
     quat = quat_from_rotmat(eigvec)
     log_scales = (0.5 * np.log(eigval) + math.log(max(scale_boost, 1e-6))).astype(np.float32)
 
-    # Temporal SH fold at t = t_center (dirs_t = 0 -> both cosine bands = 1),
-    # matching eval_shfs_4d()'s coefficient layout (utils/sh_utils.py): index
-    # 0 = static DC, 16 = t1*DC, 32 = t2*DC fold into f_dc. The three
-    # temporal copies of spatial bands 1..15 fold into f_rest. Identical
-    # arithmetic to convert()'s MLP path, just fed real coefficients.
+    # Temporal SH fold at t = t_center (dirs_t = 0 -> both cosine bands = 1).
+    # Each temporal copy holds the DC plus S spatial coefficients, so
+    # features_rest (which omits the static DC) is laid out as
+    #   [0:S] static | [S] t1*DC | [S+1:2S+1] t1*spatial | [2S+1] t2*DC | [2S+2:3S+2] t2*spatial
+    # and has 3S+2 columns: 47 for a model trained at sh_degree 3 (S = 15),
+    # 26 at sh_degree 2 (S = 8). The DC copies fold into f_dc, the spatial
+    # copies into f_rest. Identical arithmetic to convert()'s MLP path, just
+    # fed real coefficients.
     print("  Folding temporal SH at each splat's own t_center …")
-    f_dc = features_dc + features_rest[:, 15, :] + features_rest[:, 31, :]
-    f_rest = None
-    if include_sh:
-        f_rest = (features_rest[:, 0:15, :] + features_rest[:, 16:31, :] + features_rest[:, 32:47, :])
+    n_features = features_rest.shape[1]
+    S = (n_features - 2) // 3
+    if 3 * S + 2 != n_features or round(math.sqrt(S + 1)) ** 2 != S + 1:
+        raise ValueError(f"features_rest has {n_features} columns, which is not 3S+2 "
+                         f"for S = (degree+1)^2 - 1 spatial SH coefficients")
+    f_dc = features_dc + features_rest[:, S, :] + features_rest[:, 2 * S + 1, :]
+    f_rest = (features_rest[:, 0:S, :]
+              + features_rest[:, S + 1:2 * S + 1, :]
+              + features_rest[:, 2 * S + 2:3 * S + 2, :])
+    f_rest = truncate_sh(f_rest, sh_degree)
+    if f_rest is not None:
         f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
 
     if top_k_fraction < 1.0:
@@ -754,7 +791,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
 
 
 def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
-                 include_sh=True, sh_clamp=1.5, keep_main_cluster=False):
+                 sh_degree=None, sh_clamp=1.5, keep_main_cluster=False):
     """FTGS-variant checkpoint (OMG4_FTGS): explicit velocity + temporal
     opacity, gsplat-trained (no FoV-sentinel bug -> no compensation), MLPs in
     tiny-cuda-nn layout with a 3-D (xyz-only) frequency-encoded input."""
@@ -788,12 +825,12 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
     opacity_logit = tcnn_mlp_forward(save_dict['MLP_opacity'], space_feat, 64, 1, 'leaky')[:, 0]
 
     f_rest = None
-    if include_sh:
+    if sh_degree != 0:
         view_feat = np.concatenate([cont_feat, appearance[:, 3:6]], axis=1)
         view_sh = tcnn_mlp_forward(save_dict['MLP_sh'], view_feat, 64, 141, 'leaky').reshape(-1, 47, 3)
         # gsplat consumes the first (deg+1)^2 = 16 coefficients of [dc, view]:
         # dc is coeff 0, view[0:15] are the deg 1..3 spatial coefficients.
-        f_rest = view_sh[:, 0:15, :].copy()
+        f_rest = truncate_sh(view_sh[:, 0:15, :].copy(), sh_degree)
         f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
@@ -802,7 +839,7 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
                   keep_main_cluster=keep_main_cluster, accel=accel)
 
 
-def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include_sh=True,
+def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, sh_degree=None,
             scale_boost=1.0, aniso_boost=None, aniso_camera_rotations=None,
             cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False,
             filter_corrupted=True, filter_black_floaters=False):
@@ -812,7 +849,7 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
 
     if 'means' in save_dict:
         convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
-                     include_sh=include_sh, sh_clamp=sh_clamp,
+                     sh_degree=sh_degree, sh_clamp=sh_clamp,
                      keep_main_cluster=keep_main_cluster)
         return
 
@@ -889,16 +926,17 @@ def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, include
     # the effective spatial coefficient k collapses to
     #   eff[k] = sh[k] + sh[k+16] + sh[k+32]
     # which is exactly a standard 3-band 3DGS SH set. Coefficient 0 folds into
-    # f_dc. Coefficients 1..15 become f_rest (PLY channel-major layout).
-    f_rest = None
-    if include_sh:
-        features_view = appearance[:, 3:6]
-        view_feat = np.concatenate([cont_feat, features_view], axis=1)          # [N,16]
-        view_sh = mlp_forward(save_dict['MLP_sh'], view_feat, 64, 141, 'leaky_relu').reshape(-1, 47, 3)
-        # full coeff j (1..47) = view_sh[:, j-1]. Temporal fold at t = t_center:
-        f_dc = f_dc + view_sh[:, 15, :] + view_sh[:, 31, :]
-        # eff[k] for k=1..15: view indices k-1, k+15, k+31
-        f_rest = (view_sh[:, 0:15, :] + view_sh[:, 16:31, :] + view_sh[:, 32:47, :])  # [N,15,3]
+    # f_dc. Coefficients 1..15 become f_rest (PLY channel-major layout). The
+    # temporal DC copies fold into f_dc even for a DC-only bake: they are
+    # view-independent, so dropping them would change the base colour.
+    features_view = appearance[:, 3:6]
+    view_feat = np.concatenate([cont_feat, features_view], axis=1)              # [N,16]
+    view_sh = mlp_forward(save_dict['MLP_sh'], view_feat, 64, 141, 'leaky_relu').reshape(-1, 47, 3)
+    # full coeff j (1..47) = view_sh[:, j-1]. Temporal fold at t = t_center:
+    f_dc = f_dc + view_sh[:, 15, :] + view_sh[:, 31, :]
+    # eff[k] for k=1..15: view indices k-1, k+15, k+31
+    f_rest = (view_sh[:, 0:15, :] + view_sh[:, 16:31, :] + view_sh[:, 32:47, :])      # [N,15,3]
+    f_rest = truncate_sh(f_rest, sh_degree)
 
     if f_rest is not None:
         f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
@@ -933,8 +971,14 @@ if __name__ == '__main__':
                         help='Attenuate higher SH bands per splat so total colour excursion stays below '
                              'this (colour units) from every direction. Kills firework artifacts on '
                              'under-observed splats (default: 1.5, 0 disables)')
+    parser.add_argument('--sh_degree', type=int, default=None, choices=range(4),
+                        help='Spherical-harmonic degree to bake, 0-3: 0 is DC only (view-independent '
+                             'colour), 1-3 keep that many view-dependent bands (3, 8 or 15 '
+                             'coefficients per channel). Lower degrees give a smaller file and flatter '
+                             'shading. Default: the model\'s own degree (3 for comp.xz, and whatever '
+                             'the checkpoint was trained at). Must not exceed it.')
     parser.add_argument('--no_sh', action='store_true',
-                        help='Skip baking the 3-band view-dependent SH coefficients (smaller file, flatter shading)')
+                        help='Same as --sh_degree 0')
     parser.add_argument('--cov2d_scale', type=str, default=None,
                         help='"kx,ky": store a screen-space 2D-covariance scale in the header for the '
                              'viewer to apply per view. Reproduces the reference renderer exactly at '
@@ -1020,6 +1064,10 @@ if __name__ == '__main__':
     if args.output:
         SOGST_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
                                 'segment_duration': args.segment_duration}
+    if args.no_sh:
+        if args.sh_degree not in (None, 0):
+            sys.exit(f'--no_sh contradicts --sh_degree {args.sh_degree}')
+        args.sh_degree = 0
     if args.emit_ply_sidecar and not args.emit_ply:
         sys.exit('--emit_ply_sidecar requires --emit_ply')
     PLY_EXPORT_PATH = args.emit_ply
@@ -1040,7 +1088,7 @@ if __name__ == '__main__':
         if not (0.0 < args.top_k_fraction <= 1.0):
             sys.exit('--top_k_fraction must be in (0.0, 1.0]')
         convert_from_checkpoint(args.input, args.output, args.time_min, args.time_max, args.fps,
-                                args.prune_threshold, include_sh=not args.no_sh,
+                                args.prune_threshold, sh_degree=args.sh_degree,
                                 scale_boost=args.scale_boost, sh_clamp=args.sh_clamp,
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
@@ -1050,7 +1098,7 @@ if __name__ == '__main__':
                                 mask_filter_outside_frac=args.mask_filter_outside_frac)
     else:
         convert(args.input, args.output, args.time_min, args.time_max, args.fps,
-                args.prune_threshold, include_sh=not args.no_sh, scale_boost=args.scale_boost,
+                args.prune_threshold, sh_degree=args.sh_degree, scale_boost=args.scale_boost,
                 aniso_boost=aniso, aniso_camera_rotations=cam_rots, cov2d_scale=cov2d,
                 sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
                 filter_corrupted=not args.no_filter_corrupted,

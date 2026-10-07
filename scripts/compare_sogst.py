@@ -612,7 +612,11 @@ def compare(path_a, path_b, verbose=False):
     # a few percent of the data's own spread.  A transposed layout lands at
     # a large fraction of it, because it is comparing unrelated
     # coefficients.
-    if 'f_rest' in a and 'f_rest' in b:
+    if 'f_rest' in a and 'f_rest' in b and a['f_rest'].shape != b['f_rest'].shape:
+        failures.append('f_rest')
+        print(f'NOTE: f_rest widths differ ({a["f_rest"].shape[1]} vs {b["f_rest"].shape[1]} '
+              'columns): the two files carry different SH band counts.\n')
+    elif 'f_rest' in a and 'f_rest' in b:
         fa = np.asarray(a['f_rest'], np.float64)
         fb = np.asarray(b['f_rest'], np.float64)
         spread = float(np.std(fa))
