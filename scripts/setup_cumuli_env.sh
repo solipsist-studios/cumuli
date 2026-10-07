@@ -3,8 +3,9 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 #
 # Full provisioning for the single `cumuli` pipeline env. environment.yml
-# is the package manifest. This script adds the four installs a yml cannot
-# express (see that file's header) and verifies the result.
+# is the package manifest. This script adds the installs a yml cannot
+# express (see that file's header), the editable cumuli-core library from
+# deps/cumuli-core, and verifies the result.
 #
 # Usage:
 #   bash scripts/setup_cumuli_env.sh          # GPU machine (default)
@@ -95,6 +96,15 @@ echo "=== easyvolcap: --no-deps @${EASYVOLCAP_COMMIT:0:7} ==="
 "$PY" -m pip install --no-deps \
     "git+https://github.com/zju3dv/EasyVolcap.git@$EASYVOLCAP_COMMIT"
 
+echo "=== cumuli-core: editable from deps/cumuli-core, --no-deps ==="
+# The shared library (interchange PLY, cameras, spacetime slice, renderer,
+# metrics). --no-deps: torch, gsplat, lpips and torchmetrics come from the
+# yml pins above, and a resolver pass must not move them.
+CORE="$REPO_ROOT/deps/cumuli-core"
+[ -f "$CORE/pyproject.toml" ] || {
+    echo "FAIL: deps/cumuli-core not initialised (git submodule update --init deps/cumuli-core)"; exit 1; }
+"$PY" -m pip install --no-deps -e "$CORE"
+
 if [ "$CPU_ONLY" = 0 ]; then
     echo "=== OMG4 CUDA extensions (ABI-bound to this env's torch) ==="
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
@@ -125,7 +135,9 @@ core = ["torch", "torchvision", "numpy", "scipy", "PIL", "cv2", "pycolmap",
         "hloc", "plyfile", "fire", "open3d", "transformers", "gsplat",
         "lpips", "torchmetrics", "dahuffman", "omegaconf",
         "easyvolcap.utils.console_utils", "easyvolcap.utils.parallel_utils",
-        "sapiens.pose", "diffusers", "hydra", "kornia"]
+        "sapiens.pose", "diffusers", "hydra", "kornia",
+        "cumuli_core.ply", "cumuli_core.spacetime", "cumuli_core.render",
+        "cumuli_core.metrics"]
 gpu = ["diff_gaussian_rasterization", "simple_knn", "pointops2"]
 failed = []
 for mod in core + ([] if cpu_only else gpu):

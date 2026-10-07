@@ -34,14 +34,16 @@ import argparse
 import json
 import os
 import sys
-import zipfile
 
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sogst_pack import decode_webp  # noqa: E402
-from sogst_io import SOGST_FIELDS, SOGST_SHN_COEFFS, shn_bands_for_width  # noqa: E402
+import cumuli_core_path  # noqa: E402,F401  (adds deps/cumuli-core/src if needed)
+from cumuli_core.cameras import load_transforms  # noqa: E402
+# decode_sogst_fields and load_model are re-exported: merge_sogst_segments,
+# compare_sogst and the tests import them from here.
+from cumuli_core.sogst import decode_sogst_fields, load_model  # noqa: E402,F401
 
 
 def build_report(views, config):
@@ -62,161 +64,15 @@ def build_report(views, config):
 
 
 # ---------------------------------------------------------------------------
-# .sogst archive -> field arrays (mirrors the engine decoder:
-# sogst_pack.verify_sogst covers the same math for scalar attributes, and this
-# adds quats and shN, so it is the only complete inverse of the encoder)
-# ---------------------------------------------------------------------------
-
-def decode_sogst_fields(v3_path):
-    """Decode a .sogst archive into the field dict the packer consumes,
-    plus a (time_min, time_max, fps) header tuple."""
-    zf = zipfile.ZipFile(v3_path)
-    meta = json.loads(zf.read('meta.json'))
-    n = meta['count']
-
-    if meta.get('streams'):
-        groups = []
-        if meta['streams']['persistent']:
-            groups.append((meta['streams']['persistent'], meta['segments']['persistent']))
-        for prefix, seg in zip(meta['streams']['segments'], meta['segments']['list']):
-            if prefix:
-                groups.append((prefix, seg['range']))
-        names = {name.split('/', 1)[1] for name in zf.namelist() if '/' in name}
-        tex = {name: np.zeros((n, 4), dtype=np.uint8) for name in names}
-        for prefix, (a, b) in groups:
-            for name in names:
-                tex[name][a:b] = decode_webp(zf.read(f'{prefix}/{name}')).reshape(-1, 4)[:b - a]
-        cent_raw = zf.read('shN_centroids.webp') if 'shN_centroids.webp' in zf.namelist() else None
-    else:
-        tex = {name: decode_webp(zf.read(name)).reshape(-1, 4)[:n]
-               for name in zf.namelist() if name.endswith('.webp') and name != 'shN_centroids.webp'}
-        cent_raw = zf.read('shN_centroids.webp') if 'shN_centroids.webp' in zf.namelist() else None
-
-    def unsplit16(l, u, mins, maxs):
-        q = (u.astype(np.float64) * 256 + l) / 65535.0
-        t = np.asarray(mins)[None, :] + q * (np.asarray(maxs)[None, :] - np.asarray(mins)[None, :])
-        return np.sign(t) * (np.exp(np.abs(t)) - 1.0)
-
-    fields = {}
-    xyz = unsplit16(tex['means_l.webp'][:, :3], tex['means_u.webp'][:, :3],
-                    meta['means']['mins'], meta['means']['maxs'])
-    fields['x'], fields['y'], fields['z'] = xyz[:, 0], xyz[:, 1], xyz[:, 2]
-
-    # smallest-three quats: byte planes are the three kept components in
-    # [-1/sqrt(2), 1/sqrt(2)], alpha = 252 + index of the dropped (largest)
-    # component in wxyz order
-    qb = (tex['quats.webp'][:, :3].astype(np.float64) / 255.0 - 0.5) * np.sqrt(2.0)
-    mode = tex['quats.webp'][:, 3].astype(np.int64) - 252
-    d = np.sqrt(np.clip(1.0 - (qb * qb).sum(axis=1), 0.0, None))
-    quat = np.empty((n, 4))
-    # engine mapping (GSplatSogIterator): mode 0 -> (a,b,c,d) as x,y,z,w ...
-    # expressed in w-first storage below (rot_0 = w)
-    a, b, c = qb[:, 0], qb[:, 1], qb[:, 2]
-    for m, (w_, x_, y_, z_) in enumerate((
-            (d, a, b, c), (a, d, b, c), (a, b, d, c), (a, b, c, d))):
-        sel = mode == m
-        quat[sel, 0] = w_[sel]
-        quat[sel, 1] = x_[sel]
-        quat[sel, 2] = y_[sel]
-        quat[sel, 3] = z_[sel]
-    for i in range(4):
-        fields[f'rot_{i}'] = quat[:, i]
-
-    scales_cb = np.asarray(meta['scales']['codebook'])
-    for c_ in range(3):
-        fields[f'scale_{c_}'] = scales_cb[tex['scales.webp'][:, c_]]
-
-    sh0_cb = np.asarray(meta['sh0']['codebook'])
-    for c_ in range(3):
-        fields[f'f_dc_{c_}'] = sh0_cb[tex['sh0.webp'][:, c_]]
-    alpha = tex['sh0.webp'][:, 3].astype(np.float64) / 255.0
-    alpha = np.clip(alpha, 1e-5, 1.0 - 1e-5)
-    fields['opacity'] = np.log(alpha / (1.0 - alpha))
-
-    vel = unsplit16(tex['motion_l.webp'][:, :3], tex['motion_u.webp'][:, :3],
-                    meta['motion']['mins'], meta['motion']['maxs'])
-    fields['vx'], fields['vy'], fields['vz'] = vel[:, 0], vel[:, 1], vel[:, 2]
-
-    if meta.get('accel'):
-        acc = unsplit16(tex['accel_l.webp'][:, :3], tex['accel_u.webp'][:, :3],
-                        meta['accel']['mins'], meta['accel']['maxs'])
-        fields['ax'], fields['ay'], fields['az'] = acc[:, 0], acc[:, 1], acc[:, 2]
-
-    fields['t_center'] = np.asarray(meta['trbf']['center']['codebook'])[tex['trbf.webp'][:, 0]]
-    fields['t_sigma'] = np.asarray(meta['trbf']['sigma']['codebook'])[tex['trbf.webp'][:, 1]]
-
-    if meta.get('shN') and cent_raw is not None:
-        cent = decode_webp(cent_raw)                       # [H, W, 4] RGBA bytes
-        h, w = cent.shape[0], cent.shape[1]
-        flat = cent.reshape(h * w, 4)
-        labels = (tex['shN_labels.webp'][:, 0].astype(np.int64) +
-                  (tex['shN_labels.webp'][:, 1].astype(np.int64) << 8))
-        codebook = np.asarray(meta['shN']['codebook'])
-        coeffs = SOGST_SHN_COEFFS[meta['shN']['bands']]
-        # engine layout: palette entry n occupies texels
-        # [(n % 64) * coeffs, (n % 64 + 1) * coeffs) on row n // 64.
-        # sh[j*coeffs + k] = codebook[centroid_bytes[(u + k)*4 + j + v*W*4]]
-        u = (labels % 64) * coeffs
-        v = labels // 64
-        base = v * w + u                                    # texel index of coeff 0
-        f_rest = np.zeros((n, 3 * coeffs), dtype=np.float64)
-        for k in range(coeffs):
-            texel = flat[base + k]                          # [N, 4] bytes
-            for j in range(3):
-                f_rest[:, j * coeffs + k] = codebook[texel[:, j]]
-        fields['f_rest'] = f_rest
-
-    time = meta.get('time', {})
-    header = {'time_min': time.get('min', 0.0), 'time_max': time.get('max', 0.0),
-              'fps': time.get('fps', 30.0), 'count': n}
-    return header, fields
-
-
-def load_model(path):
-    """Load a .sogst archive, or a 4D interchange PLY (unquantized, so
-    scoring one against its packed archive isolates quantization cost)."""
-    if zipfile.is_zipfile(path):
-        return decode_sogst_fields(path)
-    from sogst_ply import read_sogst_ply
-    header, fields = read_sogst_ply(path)
-    return {'time_min': header['time_min'], 'time_max': header['time_max'],
-            'fps': header['fps'], 'count': header['count']}, fields
-
-
-# ---------------------------------------------------------------------------
 # cameras
 # ---------------------------------------------------------------------------
 
 def load_cameras(transforms_path, downscale, every):
-    with open(transforms_path) as f:
-        t = json.load(f)
-    cams = []
-    for i, f in enumerate(t['frames']):
-        if i % every:
-            continue
-        # intrinsics are global (n3v-style) or per-frame (custom rigs)
-        fx = f.get('fl_x', t.get('fl_x')) / downscale
-        fy = f.get('fl_y', t.get('fl_y')) / downscale
-        cx = f.get('cx', t.get('cx')) / downscale
-        cy = f.get('cy', t.get('cy')) / downscale
-        # Per-frame first, exactly like the intrinsics above. Reading these
-        # only from the top level left them None for a dataset with
-        # per-camera intrinsics, so the size check below could not fire and
-        # a wrong --downscale silently rendered at the wrong scale.
-        w = f.get('w', t.get('w'))
-        h = f.get('h', t.get('h'))
-        w = w and int(round(w / downscale))
-        h = h and int(round(h / downscale))
-        c2w = np.asarray(f['transform_matrix'], dtype=np.float64)
-        # OpenGL c2w (nerfstudio/blender) -> OpenCV: flip the y/z axes
-        c2w = c2w.copy()
-        c2w[:3, 1:3] *= -1.0
-        w2c = np.linalg.inv(c2w)
-        K = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]])
-        name = os.path.basename(f['file_path'])
-        cams.append({'w2c': w2c, 'K': K, 'w': w, 'h': h,
-                     'time': float(f.get('time', 0.0)), 'name': name})
-    return cams
+    """Cameras as dicts (w2c, K, w, h, time, name), for older callers.
+    main() uses cumuli_core.cameras.load_transforms directly."""
+    return [{'w2c': c.w2c, 'K': c.K, 'w': c.width, 'h': c.height,
+             'time': c.time, 'name': c.name}
+            for c in load_transforms(transforms_path, downscale, every)]
 
 
 # ---------------------------------------------------------------------------
@@ -248,16 +104,19 @@ def main():
     args = ap.parse_args()
 
     import torch
-    from gsplat import rasterization
     from PIL import Image
 
+    from cumuli_core.metrics import LPIPS, psnr as psnr_fn, ssim as ssim_fn
+    from cumuli_core.render import render
+    from cumuli_core.spacetime import from_fields
+
     header, fields = load_model(args.model)
-    cams = load_cameras(args.transforms, args.downscale, args.every)
+    cams = load_transforms(args.transforms, args.downscale, args.every)
     n = header['count']
     print(f'model: {args.model}  splats: {n}  time: [{header["time_min"]:.3f}, '
           f'{header["time_max"]:.3f}]  cams: {len(cams)}')
 
-    times = [c['time'] for c in cams]
+    times = [c.time for c in cams]
     cam_span = max(times) - min(times)
     duration = header['time_max'] - header['time_min']
     tscale = args.time_scale
@@ -277,31 +136,11 @@ def main():
             print(f'note: rescaling camera time by {tscale:.4f} to match model range')
 
     dev = torch.device('cuda')
-    to = lambda a: torch.tensor(np.ascontiguousarray(a), dtype=torch.float32, device=dev)
-    xyz = to(np.stack([fields['x'], fields['y'], fields['z']], axis=1))
-    vel = to(np.stack([fields['vx'], fields['vy'], fields['vz']], axis=1))
-    accel = to(np.stack([fields['ax'], fields['ay'], fields['az']], axis=1)) \
-        if 'ax' in fields else None
-    quats = to(np.stack([fields[f'rot_{i}'] for i in range(4)], axis=1))       # wxyz
-    scales = torch.exp(to(np.stack([fields[f'scale_{i}'] for i in range(3)], axis=1)))
-    op_logit = to(fields['opacity'])
-    t_center = to(fields['t_center'])
-    t_sigma = to(np.maximum(np.abs(fields['t_sigma']), 1e-6))
-
-    # degree = bands: 9, 24 or 45 f_rest columns are degree 1, 2 or 3
-    sh_degree = shn_bands_for_width(fields['f_rest'].shape[1]) if 'f_rest' in fields else 0
-    n_sh = (sh_degree + 1) ** 2
-    shs = torch.zeros((n, n_sh, 3), dtype=torch.float32, device=dev)
-    shs[:, 0, 0] = to(fields['f_dc_0'])
-    shs[:, 0, 1] = to(fields['f_dc_1'])
-    shs[:, 0, 2] = to(fields['f_dc_2'])
-    if sh_degree:
-        f_rest = to(fields['f_rest'])                        # [N, 3*(n_sh-1)] channel-major
-        shs[:, 1:, :] = f_rest.reshape(n, 3, n_sh - 1).permute(0, 2, 1)
-
-    import lpips as lpips_mod
-    lpips_model = lpips_mod.LPIPS(net='alex').to(dev)
-    from torchmetrics.functional import structural_similarity_index_measure as tm_ssim
+    # degree = bands: 9, 24 or 45 f_rest columns are degree 1, 2 or 3.
+    # from_fields floors |t_sigma| at 1e-6 and lays f_rest out channel-major.
+    st = from_fields(fields, dev)
+    scales = st.scales
+    lpips_metric = LPIPS(verbose=True)
 
     if args.dump_dir:
         os.makedirs(args.dump_dir, exist_ok=True)
@@ -309,55 +148,47 @@ def main():
     psnrs, ssims, lpipss = [], [], []
     view_rows = []
     for cam in cams:
-        t = header['time_min'] + cam['time'] * tscale
-        dt = t - t_center
-        means = xyz + vel * dt[:, None]
-        if accel is not None:
-            means = means + accel * (dt * dt)[:, None]
-        alpha = torch.sigmoid(op_logit) * torch.exp(-0.5 * (dt / t_sigma) ** 2)
+        t = header['time_min'] + cam.time * tscale
+        means, alpha = st.slice(t)
 
-        gt_path = os.path.join(args.gt_dir, cam['name'] + '.png')
+        gt_path = os.path.join(args.gt_dir, cam.name + '.png')
         if not os.path.exists(gt_path):
             print(f'  missing GT {gt_path}, skipping')
             continue
         gt = torch.tensor(np.asarray(Image.open(gt_path), dtype=np.float32) / 255.0,
                           device=dev)[..., :3]
-        if cam['w'] is None:
-            cam['h'], cam['w'] = int(gt.shape[0]), int(gt.shape[1])
-        if gt.shape[:2] != (cam['h'], cam['w']):
+        if cam.width is None:
+            cam.height, cam.width = int(gt.shape[0]), int(gt.shape[1])
+        if gt.shape[:2] != (cam.height, cam.width):
             raise SystemExit(
                 f'GT size {tuple(gt.shape[:2])} != render '
-                f'{(cam["h"], cam["w"])} for {cam["name"]}. --downscale is '
+                f'{(cam.height, cam.width)} for {cam.name}. --downscale is '
                 f'{args.downscale}. A dataset whose transforms already carry '
                 'output-resolution intrinsics (anything from '
                 'build_flipbook_4dgs_dataset.py) needs --downscale 1; an '
                 'n3v-style dataset with full-resolution intrinsics beside '
                 'half-resolution ground truth needs --downscale 2.')
 
-        vm = to(cam['w2c'])[None]
-        K = to(cam['K'])[None]
         with torch.no_grad():
-            img, _, _ = rasterization(
-                means, quats, scales, alpha, shs, vm, K, cam['w'], cam['h'],
-                sh_degree=sh_degree, render_mode='RGB')
-        img = img[0].clamp(0, 1)
-
-        mse = torch.mean((img - gt) ** 2)
-        psnr = float(-10.0 * torch.log10(mse))
-        chw = img.permute(2, 0, 1)[None]
-        gt_chw = gt.permute(2, 0, 1)[None]
-        ssim = float(tm_ssim(chw, gt_chw, data_range=1.0))
-        lp = float(lpips_model(chw * 2 - 1, gt_chw * 2 - 1))
+            # packed=True is gsplat's own default, which this script always
+            # used; it keeps scores bit-identical to earlier reports.
+            img, _, _ = render(means, st.quats_wxyz, scales, alpha, st.sh, [cam],
+                               cam.width, cam.height, sh_degree=st.sh_degree,
+                               packed=True)
+            img = img[0].clamp(0, 1)
+            psnr = float(psnr_fn(img, gt))
+            ssim = float(ssim_fn(img, gt))
+            lp = float(lpips_metric(img, gt))
         psnrs.append(psnr)
         ssims.append(ssim)
         lpipss.append(lp)
-        view_rows.append({'name': cam['name'], 'time': float(cam['time']),
+        view_rows.append({'name': cam.name, 'time': float(cam.time),
                           'psnr_db': psnr, 'ssim': ssim, 'lpips': lp})
-        print(f'  {cam["name"]}  t={cam["time"]:.3f}  PSNR {psnr:6.3f}  SSIM {ssim:.4f}  LPIPS {lp:.4f}')
+        print(f'  {cam.name}  t={cam.time:.3f}  PSNR {psnr:6.3f}  SSIM {ssim:.4f}  LPIPS {lp:.4f}')
 
         if args.dump_dir:
             Image.fromarray((img.cpu().numpy() * 255).astype(np.uint8)).save(
-                os.path.join(args.dump_dir, cam['name'] + '.png'))
+                os.path.join(args.dump_dir, cam.name + '.png'))
 
     if psnrs:
         print(f'MEAN over {len(psnrs)} views:  PSNR {np.mean(psnrs):.3f}  '

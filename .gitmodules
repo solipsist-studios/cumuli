@@ -16,3 +16,6 @@
 [submodule "deps/OMG4"]
 	path = deps/OMG4
 	url = https://github.com/solipsist-studios/OMG4.git
+[submodule "deps/cumuli-core"]
+	path = deps/cumuli-core
+	url = https://github.com/solipsist-studios/cumuli-core.git

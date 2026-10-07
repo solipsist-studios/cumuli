@@ -58,7 +58,7 @@ jobs:
         run: |
           git submodule update --init \
             deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
-            deps/sapiens deps/OMG4
+            deps/sapiens deps/OMG4 deps/cumuli-core
 
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt

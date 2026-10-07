@@ -67,7 +67,7 @@ jobs:
         run: |
           git submodule update --init \
             deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
-            deps/sapiens
+            deps/sapiens deps/cumuli-core
 
       - name: Restore cached ffmpeg debs
         # The apt mirror stalled for hours on 2026-08-19 (two failed runs;

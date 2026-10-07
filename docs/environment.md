@@ -9,10 +9,11 @@ Precise setup instructions for the single `cumuli` conda environment
 and system tools this pipeline needs, plus the known-good versions this
 has actually been tested against. Provision it with
 `bash scripts/setup_cumuli_env.sh`, NOT `conda env create` alone:
-`environment.yml` is the package manifest, and the script adds four
+`environment.yml` is the package manifest, and the script adds five
 installs a yml cannot express (an editable, submodule-recursive hloc
-checkout, easyvolcap `--no-deps`, the OMG4 trainer's CUDA extensions,
-and the optional cupy/cuml SPM accelerators).
+checkout, easyvolcap `--no-deps`, the cumuli-core library editable from
+`deps/cumuli-core`, the OMG4 trainer's CUDA extensions, and the optional
+cupy/cuml SPM accelerators).
 
 ## Requirements
 
@@ -65,6 +66,31 @@ Sapiens checkpoints are separate from the env: set
 `SAPIENS_CHECKPOINT_ROOT` (or `--sapiens_checkpoint_root`) to a
 directory holding `detector/` (facebook/detr-resnet-101-dc5 snapshot)
 and `pose/sapiens2_<size>_pose.safetensors`.
+
+## cumuli-core
+
+`deps/cumuli-core` is Solipsist's shared library for the 4D splatting
+stack, a private submodule
+(https://github.com/solipsist-studios/cumuli-core). It holds the 4D
+interchange PLY reader and writer (`cumuli_core.ply`), the .sogst
+decoder, the transforms.json camera loader, the spacetime slice, the
+gsplat render wrapper and the PSNR/SSIM/LPIPS metrics. `sogst_ply.py`,
+`sogst_io.py` and `eval_render.py` import from it, and the clean-room
+trainer shares it.
+
+The setup script installs it with `pip install --no-deps -e
+deps/cumuli-core`, so edits in the submodule take effect without a
+reinstall, and torch/gsplat stay at the yml pins. To add it to an
+existing env by hand:
+
+```bash
+git submodule update --init deps/cumuli-core
+conda run -n cumuli pip install --no-deps -e deps/cumuli-core
+```
+
+If it is not installed but the submodule is checked out,
+`scripts/cumuli_core_path.py` puts `deps/cumuli-core/src` on `sys.path`,
+so the scripts and the unit suite still run from a bare python.
 
 ## System-level tools (no conda env)
 
