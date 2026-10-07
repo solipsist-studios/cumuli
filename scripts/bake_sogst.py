@@ -236,6 +236,43 @@ def bad_color_mask(f_dc):
     return ~bad
 
 
+# max |Y_lm| over the sphere for bands 1..3 (l=1: 0.489, l=2: up to 0.630, l=3: up to 0.746)
+SH_Y_MAX = np.array([0.489, 0.489, 0.489,
+                     0.546, 0.546, 0.630, 0.546, 0.546,
+                     0.590, 0.590, 0.457, 0.746, 0.457, 0.590, 0.590], dtype=np.float32)
+
+
+def clamp_sh_chroma(f_rest, limit):
+    """Bound the COLOURED part of each splat's view-dependent term, leaving
+    its brightness part alone.
+
+    The higher SH bands split into a luminance component (the per-coefficient
+    mean over R, G, B) and a chroma component (the rest). With ~10 cameras,
+    a splat's colour is pinned down in ~10 directions; between them the
+    fitted lobes extrapolate into hues the subject does not have, which
+    shows as coloured glints wherever the splat is opaque, worst on dark
+    material. Real view-dependence on skin and cloth is mostly brightness
+    (sheen, specular), so bounding only the chroma removes the glints and
+    keeps the shading. Per splat, the worst-case chroma excursion
+    sum(|chroma_lm| * max|Y_lm|) is scaled down to ``limit`` (colour units).
+
+    Heidi (cumuli-trainer, held-out cam05; close-up orbit, glint pixels per
+    10k subject pixels): no limit 0.94 glints, 36.08 dB, LPIPS 0.0096;
+    limit 0.02 0.14 glints (SH-off floor 0.12), 36.07 dB, LPIPS 0.0096.
+    The absolute --sh_clamp at 0.5 reached 0.21 glints only by costing
+    0.38 dB. limit <= 0 disables."""
+    if f_rest is None or limit <= 0:
+        return f_rest
+    y_max = SH_Y_MAX[:f_rest.shape[1]]
+    lum = f_rest.mean(axis=2, keepdims=True)                           # [N,c,1]
+    chroma = f_rest - lum
+    bound = (np.abs(chroma) * y_max[None, :, None]).sum(axis=1).max(axis=1)  # [N]
+    scale = np.minimum(1.0, limit / np.maximum(bound, 1e-9))
+    print(f'  SH chroma clamp: limited {int((scale < 1.0).sum()):,} / {len(scale):,} splats '
+          f'(max chroma excursion was {bound.max():.2f})')
+    return (lum + chroma * scale[:, None, None]).astype(f_rest.dtype)
+
+
 def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     """Scale down each splat's higher SH bands so its colour stays bounded
     from every view direction.
@@ -249,12 +286,8 @@ def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     """
     if f_rest is None or sh_clamp <= 0:
         return f_rest
-    # max |Y_lm| over the sphere for bands 1..3 (l=1: 0.489, l=2: up to 0.630, l=3: up to 0.746)
-    y_max = np.array([0.489, 0.489, 0.489,
-                      0.546, 0.546, 0.630, 0.546, 0.546,
-                      0.590, 0.590, 0.457, 0.746, 0.457, 0.590, 0.590], dtype=np.float32)
     # a degree-1 or degree-2 block carries 3 or 8 coefficients per channel
-    y_max = y_max[:f_rest.shape[1]]
+    y_max = SH_Y_MAX[:f_rest.shape[1]]
     SH_C0 = 0.28209479177387814
     base = np.abs(f_dc * SH_C0 + 0.5)                                  # [N,3]
     bound = (np.abs(f_rest) * y_max[None, :, None]).sum(axis=1)        # [N,3]
@@ -661,6 +694,7 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
                             sh_degree=None, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
+                            sh_chroma_clamp=0.0,
                             top_k_fraction=1.0, extra_keep_mask_path=None,
                             filter_black_floaters=False, mask_filter_root=None,
                             mask_filter_outside_frac=0.5):
@@ -758,7 +792,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
               + features_rest[:, 2 * S + 2:3 * S + 2, :])
     f_rest = truncate_sh(f_rest, sh_degree)
     if f_rest is not None:
-        f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
+        f_rest = clamp_sh_overshoot(f_dc, clamp_sh_chroma(f_rest, sh_chroma_clamp), sh_clamp)
 
     if top_k_fraction < 1.0:
         dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
@@ -841,7 +875,7 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
 
 def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshold,
                      sh_degree=None, sh_clamp=1.5, keep_main_cluster=False,
-                     top_k_fraction=1.0, filter_black_floaters=False,
+                     sh_chroma_clamp=0.0, top_k_fraction=1.0, filter_black_floaters=False,
                      mask_filter_root=None, mask_filter_outside_frac=0.5):
     """4D interchange PLY input: a trainer that already writes spacetime
     Gaussians (cumuli-trainer) needs no slicing, no temporal-SH fold and no
@@ -872,7 +906,7 @@ def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshol
         f_rest = fields['f_rest'].reshape(N, 3, n_coeffs).transpose(0, 2, 1).astype(np.float32)
     f_rest = truncate_sh(f_rest, sh_degree)
     if f_rest is not None:
-        f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
+        f_rest = clamp_sh_overshoot(f_dc, clamp_sh_chroma(f_rest, sh_chroma_clamp), sh_clamp)
 
     if top_k_fraction < 1.0:
         dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
@@ -1036,6 +1070,12 @@ if __name__ == '__main__':
     parser.add_argument('--keep_main_cluster', action='store_true',
                         help='Drop splats outside the largest connected cluster (removes isolated '
                              'floater blobs, intended for masked single-subject captures)')
+    parser.add_argument('--sh_chroma_clamp', type=float, default=0.0,
+                        help='Checkpoint and .ply inputs: bound the coloured part of each splat\'s '
+                             'view-dependent SH term to this many colour units, keeping its '
+                             'brightness part. Removes coloured glints from sparse-camera fits '
+                             '(see clamp_sh_chroma). The pipeline passes 0.02 for cumuli-trainer '
+                             'output. Default 0: off.')
     parser.add_argument('--sh_clamp', type=float, default=1.5,
                         help='Attenuate higher SH bands per splat so total colour excursion stays below '
                              'this (colour units) from every direction. Kills firework artifacts on '
@@ -1153,6 +1193,8 @@ if __name__ == '__main__':
 
     cov2d = tuple(float(v) for v in args.cov2d_scale.split(',')) if args.cov2d_scale else None
 
+    if args.sh_chroma_clamp > 0 and not args.input.endswith(('.ply', '.pth')):
+        sys.exit('--sh_chroma_clamp applies to checkpoint and .ply inputs only')
     if not args.input.endswith('.ply'):
         args.time_min = 0.0 if args.time_min is None else args.time_min
         args.time_max = 10.0 if args.time_max is None else args.time_max
@@ -1176,6 +1218,7 @@ if __name__ == '__main__':
         convert_from_ply(args.input, args.output, header['time_min'], header['time_max'],
                          header['fps'], args.prune_threshold, sh_degree=args.sh_degree,
                          sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
+                         sh_chroma_clamp=args.sh_chroma_clamp,
                          top_k_fraction=args.top_k_fraction,
                          filter_black_floaters=args.filter_black_floaters,
                          mask_filter_root=args.mask_filter_root,
@@ -1186,6 +1229,7 @@ if __name__ == '__main__':
         convert_from_checkpoint(args.input, args.output, args.time_min, args.time_max, args.fps,
                                 args.prune_threshold, sh_degree=args.sh_degree,
                                 scale_boost=args.scale_boost, sh_clamp=args.sh_clamp,
+                                sh_chroma_clamp=args.sh_chroma_clamp,
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
                                 extra_keep_mask_path=args.extra_keep_mask,

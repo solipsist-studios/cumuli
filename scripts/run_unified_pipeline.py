@@ -731,7 +731,10 @@ def _train_cumuli(args, L, iters, duration_s):
                    label="cumuli-trainer (spacetime 4DGS)")
     if not ply.is_file():
         raise StageError(f"training finished but {ply} does not exist")
-    return ["--input", ply]
+    # Bound the coloured part of the view-dependent SH: removes the coloured
+    # glints a sparse rig leaves on opaque splats at no measured cost (Heidi:
+    # 0.94 -> 0.14 glints per 10k, 36.08 -> 36.07 dB). See clamp_sh_chroma.
+    return ["--input", ply, "--sh_chroma_clamp", "0.02"]
 
 
 def stage_train4d(args, L):

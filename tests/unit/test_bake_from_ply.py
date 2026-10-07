@@ -104,3 +104,34 @@ def test_cli_refuses_flags_that_contradict_a_ply(tmp_path, flags, message):
     result = _run_cli("--input", ply, "--emit_ply", tmp_path / "x.ply", *flags)
     assert result.returncode != 0
     assert message in result.stderr
+
+
+def test_chroma_clamp_keeps_brightness_and_bounds_colour():
+    rng = np.random.default_rng(0)
+    f_rest = rng.normal(0, 0.5, (64, 8, 3)).astype(np.float32)
+    out = bake_sogst.clamp_sh_chroma(f_rest, 0.02)
+    # the luminance (mean over channels) of every coefficient is untouched
+    np.testing.assert_allclose(out.mean(axis=2), f_rest.mean(axis=2), atol=1e-6)
+    chroma = out - out.mean(axis=2, keepdims=True)
+    bound = (np.abs(chroma) * bake_sogst.SH_Y_MAX[None, :8, None]).sum(axis=1).max(axis=1)
+    assert bound.max() <= 0.02 + 1e-6
+    assert bake_sogst.clamp_sh_chroma(f_rest, 0.0) is f_rest
+    assert bake_sogst.clamp_sh_chroma(None, 0.02) is None
+
+
+def test_chroma_clamp_is_refused_for_comp_xz(tmp_path):
+    result = _run_cli("--input", tmp_path / "model.xz", "--emit_ply", tmp_path / "x.ply",
+                      "--sh_chroma_clamp", "0.02")
+    assert result.returncode != 0
+    assert "checkpoint and .ply inputs only" in result.stderr
+
+
+def test_chroma_clamp_through_the_ply_bake(monkeypatch, tmp_path):
+    ply, fields, _ = _input_ply(tmp_path)
+    _, out = _bake(monkeypatch, tmp_path, ply, sh_chroma_clamp=0.02)
+    n = len(out["x"])
+    c = out["f_rest"].shape[1] // 3
+    rest = out["f_rest"].reshape(n, 3, c).transpose(0, 2, 1)
+    chroma = rest - rest.mean(axis=2, keepdims=True)
+    bound = (np.abs(chroma) * bake_sogst.SH_Y_MAX[None, :c, None]).sum(axis=1).max(axis=1)
+    assert bound.max() <= 0.02 + 1e-5

@@ -1215,6 +1215,7 @@ def test_stage_train4d_cumuli_writes_config_trains_and_bakes_the_ply(monkeypatch
     a = bake["args"]
     assert a[a.index("--input") + 1] == str(ply)
     assert "--time_max" not in a and "--fps" not in a
+    assert a[a.index("--sh_chroma_clamp") + 1] == "0.02"
     assert "--mask_filter_root" in a
     assert any(Path(c["script"]).name == "eval_render.py" for c in scripts)
 
