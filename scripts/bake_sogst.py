@@ -839,6 +839,71 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
                   keep_main_cluster=keep_main_cluster, accel=accel)
 
 
+def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshold,
+                     sh_degree=None, sh_clamp=1.5, keep_main_cluster=False,
+                     top_k_fraction=1.0, filter_black_floaters=False,
+                     mask_filter_root=None, mask_filter_outside_frac=0.5):
+    """4D interchange PLY input: a trainer that already writes spacetime
+    Gaussians (cumuli-trainer) needs no slicing, no temporal-SH fold and no
+    FoV compensation, only the same post-filters the checkpoint path runs.
+    Mirrors convert_from_checkpoint()'s tail exactly, so a PLY and an OMG4
+    checkpoint of the same splats bake to the same output."""
+    from sogst_ply import read_sogst_ply
+
+    print(f"Loading interchange PLY {ply_path} …")
+    _header, fields = read_sogst_ply(ply_path)
+    col = lambda *names: np.stack([fields[n] for n in names], axis=1).astype(np.float32)
+    xyz = col('x', 'y', 'z')
+    quat = col('rot_0', 'rot_1', 'rot_2', 'rot_3')
+    log_scales = col('scale_0', 'scale_1', 'scale_2')
+    opacity_logit = fields['opacity'].astype(np.float32)
+    f_dc = col('f_dc_0', 'f_dc_1', 'f_dc_2')
+    velocity = col('vx', 'vy', 'vz')
+    t_center = fields['t_center'].astype(np.float32)
+    t_sigma = fields['t_sigma'].astype(np.float32)
+    accel = col('ax', 'ay', 'az') if 'ax' in fields else None
+    N = xyz.shape[0]
+    print(f"  {N:,} splats")
+
+    f_rest = None
+    if 'f_rest' in fields:
+        # channel-major [N, 3c] -> [N, c, 3], the layout finish_export writes back
+        n_coeffs = fields['f_rest'].shape[1] // 3
+        f_rest = fields['f_rest'].reshape(N, 3, n_coeffs).transpose(0, 2, 1).astype(np.float32)
+    f_rest = truncate_sh(f_rest, sh_degree)
+    if f_rest is not None:
+        f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
+
+    if top_k_fraction < 1.0:
+        dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
+        peak_weight = np.exp(-0.5 * (dist / np.maximum(t_sigma, 1e-9)) ** 2)
+        peak_alpha = (1.0 / (1.0 + np.exp(-opacity_logit))) * peak_weight
+        k = max(1, min(N, int(round(top_k_fraction * N))))
+        thresh = np.partition(peak_alpha, N - k)[N - k]
+        top = peak_alpha >= thresh
+        print(f"  top_k_fraction={top_k_fraction}: keeping {int(top.sum()):,} / {N:,} "
+              f"highest-visibility splats")
+        xyz, quat, log_scales, opacity_logit = xyz[top], quat[top], log_scales[top], opacity_logit[top]
+        f_dc, velocity, t_center, t_sigma = f_dc[top], velocity[top], t_center[top], t_sigma[top]
+        if f_rest is not None:
+            f_rest = f_rest[top]
+        if accel is not None:
+            accel = accel[top]
+
+    mask_keep = None
+    if mask_filter_root:
+        mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
+                                          t_sigma, opacity_logit,
+                                          outside_frac=mask_filter_outside_frac)
+
+    finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
+                  xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
+                  velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
+                  filter_corrupted=False, filter_dark_occluders=True,
+                  filter_black_floaters=filter_black_floaters,
+                  extra_keep_mask=mask_keep, accel=accel)
+
+
 def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, sh_degree=None,
             scale_boost=1.0, aniso_boost=None, aniso_camera_rotations=None,
             cov2d_scale=None, sh_clamp=1.5, keep_main_cluster=False,
@@ -953,15 +1018,19 @@ if __name__ == '__main__':
         description='Bake an OMG4 trainer artifact (comp.xz or chkpntNNNNN.pth) '
                     'into the .sogst container and/or the 4D interchange PLY')
     parser.add_argument('--input', required=True,
-                        help='Trainer artifact: comp.xz (OMG4) or chkpntNNNNN.pth')
+                        help='Trainer artifact: comp.xz (OMG4), chkpntNNNNN.pth, or a 4D '
+                             'interchange .ply (cumuli-trainer; post-filters only)')
     parser.add_argument('--output', default=None,
                         help='Destination .sogst archive. Optional when --emit_ply is '
                              'given, so a bake can produce only the interchange PLY.')
-    parser.add_argument('--time_min', type=float, default=0.0,
-                        help='Training time_duration min in seconds (default: 0.0)')
-    parser.add_argument('--time_max', type=float, default=10.0,
-                        help='Training time_duration max in seconds (default: 10.0)')
-    parser.add_argument('--fps', type=float, default=30.0, help='Advisory fps for UI (default: 30)')
+    parser.add_argument('--time_min', type=float, default=None,
+                        help='Training time_duration min in seconds (default: 0.0; a .ply input '
+                             'carries its own and a disagreeing value is an error)')
+    parser.add_argument('--time_max', type=float, default=None,
+                        help='Training time_duration max in seconds (default: 10.0; a .ply input '
+                             'carries its own and a disagreeing value is an error)')
+    parser.add_argument('--fps', type=float, default=None,
+                        help='Advisory fps for UI (default: 30; a .ply input carries its own)')
     parser.add_argument('--prune_threshold', type=float, default=1.0 / 1024,
                         help='Drop Gaussians whose peak alpha inside the time range is below this (default: 1/1024, 0 disables)')
     parser.add_argument('--keep_main_cluster', action='store_true',
@@ -1003,7 +1072,7 @@ if __name__ == '__main__':
                              'checkpoints use sqrt(1.6942*1.2707) = 1.4672. Models trained with a fixed '
                              'camera (or the FTGS/gsplat variant) need the default 1.0.')
     parser.add_argument('--top_k_fraction', type=float, default=1.0,
-                        help='Only used with --input pointing at a checkpoint (chkpntNNNN.pth), not comp.xz. '
+                        help='Only used with --input pointing at a checkpoint (chkpntNNNN.pth) or a .ply, not comp.xz. '
                              'Keep only this fraction (0.0-1.0) of splats, ranked by peak visibility '
                              '(opacity x temporal-fade weight at each splat\'s own t_center). 1.0 (default) '
                              'keeps every splat: full fidelity, largest file. Size/quality knob that '
@@ -1026,7 +1095,7 @@ if __name__ == '__main__':
                              '(visible as transparency). Same rationale as the checkpoint path, '
                              'which never applies them.')
     parser.add_argument('--mask_filter_root', type=str, default=None,
-                        help='Checkpoint path only: 4DGS dataset root (with transforms_train.json '
+                        help='Checkpoint and .ply inputs only: 4DGS dataset root (with transforms_train.json '
                              'and RGBA realcams frames). Drops Gaussians projecting OUTSIDE the '
                              'subject silhouette in most (time, camera) tests across their visible '
                              'lifetime, not just at t_center. Removes splats that drift off the '
@@ -1084,7 +1153,34 @@ if __name__ == '__main__':
 
     cov2d = tuple(float(v) for v in args.cov2d_scale.split(',')) if args.cov2d_scale else None
 
-    if args.input.endswith('.pth'):
+    if not args.input.endswith('.ply'):
+        args.time_min = 0.0 if args.time_min is None else args.time_min
+        args.time_max = 10.0 if args.time_max is None else args.time_max
+        args.fps = 30.0 if args.fps is None else args.fps
+
+    if args.input.endswith('.ply'):
+        from sogst_ply import read_sogst_ply
+        header, _ = read_sogst_ply(args.input)
+        for flag, key in (('time_min', 'time_min'), ('time_max', 'time_max'), ('fps', 'fps')):
+            given = getattr(args, flag)
+            if given is not None and abs(given - header[key]) > 1e-6:
+                sys.exit(f'--{flag} {given} disagrees with the PLY header ({header[key]}). '
+                         'A .ply carries its own clip scalars; drop the flag.')
+        for flag in ('scale_boost', 'aniso_boost', 'cov2d_scale', 'extra_keep_mask'):
+            default = 1.0 if flag == 'scale_boost' else None
+            if getattr(args, flag) != default:
+                sys.exit(f'--{flag} does not apply to a .ply input: it compensates OMG4 '
+                         'checkpoint internals that a spacetime trainer does not have.')
+        if not (0.0 < args.top_k_fraction <= 1.0):
+            sys.exit('--top_k_fraction must be in (0.0, 1.0]')
+        convert_from_ply(args.input, args.output, header['time_min'], header['time_max'],
+                         header['fps'], args.prune_threshold, sh_degree=args.sh_degree,
+                         sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
+                         top_k_fraction=args.top_k_fraction,
+                         filter_black_floaters=args.filter_black_floaters,
+                         mask_filter_root=args.mask_filter_root,
+                         mask_filter_outside_frac=args.mask_filter_outside_frac)
+    elif args.input.endswith('.pth'):
         if not (0.0 < args.top_k_fraction <= 1.0):
             sys.exit('--top_k_fraction must be in (0.0, 1.0]')
         convert_from_checkpoint(args.input, args.output, args.time_min, args.time_max, args.fps,
