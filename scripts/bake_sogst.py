@@ -498,6 +498,69 @@ def black_floater_mask(f_dc, opacity_logit, log_scales,
     return ~bad
 
 
+def training_sample_rate(dataset_root, xyz):
+    """[N] the finest sampling of each splat by any training camera, in
+    pixels per scene unit: max over cameras that see it in frame of
+    focal / depth. Splats no camera frames get the median of the rest."""
+    import json
+    root = os.path.expanduser(dataset_root)
+    with open(os.path.join(root, 'transforms_train.json')) as fh:
+        t = json.load(fh)
+    seen = {}
+    for fr in t['frames']:   # a static rig: one pose per camera label
+        lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
+        seen.setdefault(lab, fr)
+    rate = np.zeros(len(xyz), np.float64)
+    for fr in seen.values():
+        c2w = np.asarray(fr['transform_matrix'], np.float64).copy()
+        c2w[:3, 1:3] *= -1.0                       # OpenGL -> OpenCV
+        w2c = np.linalg.inv(c2w)
+        cam = xyz @ w2c[:3, :3].T + w2c[:3, 3]
+        z = cam[:, 2]
+        fx = float(fr.get('fl_x', t.get('fl_x'))); fy = float(fr.get('fl_y', t.get('fl_y')))
+        cx = float(fr.get('cx', t.get('cx'))); cy = float(fr.get('cy', t.get('cy')))
+        w = float(fr.get('w', t.get('w'))); h = float(fr.get('h', t.get('h')))
+        zz = np.maximum(z, 1e-6)
+        u = fx * cam[:, 0] / zz + cx
+        v = fy * cam[:, 1] / zz + cy
+        ok = (z > 1e-3) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        rate = np.where(ok, np.maximum(rate, fx / zz), rate)
+    if (rate > 0).any():
+        rate[rate == 0] = np.median(rate[rate > 0])
+    else:
+        rate[:] = 1.0
+    return rate
+
+
+def smooth_3d(dataset_root, xyz, log_scales, opacity_logit, smooth_px):
+    """Low-pass each splat by an isotropic Gaussian of ``smooth_px`` training
+    pixels: the 3D smoothing filter of Mip-Splatting (Yu et al. 2024), as a
+    bake-time knob rather than a training term.
+
+    Adding sigma^2 I to a covariance keeps its axes, so each scale becomes
+    sqrt(s^2 + sigma^2), with sigma = smooth_px / (finest training sampling
+    rate of that splat). Peak opacity is scaled by s1 s2 s3 / s1' s2' s3'
+    so each splat keeps its integrated density. Thin, noisy splats widen and
+    fade the most; large smooth ones barely change. 0 disables.
+
+    It trades sharpness for calm: on a 10-camera rig the fine detail between
+    cameras is partly noise, and a softer bake reads as cleaner."""
+    if smooth_px <= 0:
+        return log_scales, opacity_logit
+    rate = training_sample_rate(dataset_root, xyz)
+    sigma2 = (smooth_px / rate) ** 2                                    # [N]
+    s2 = np.exp(2.0 * log_scales.astype(np.float64))
+    new_s2 = s2 + sigma2[:, None]
+    new_log_scales = 0.5 * np.log(new_s2)
+    ratio = np.exp((log_scales.astype(np.float64) - new_log_scales).sum(axis=1))  # det ratio^(1/2)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit.astype(np.float64)))
+    new_alpha = np.clip(alpha * ratio, 1e-7, 1 - 1e-7)
+    print(f'  3D smoothing: {smooth_px:g} training px; median filter width '
+          f'{np.median(np.sqrt(sigma2)):.4g} units, median opacity x{np.median(ratio):.3f}')
+    return (new_log_scales.astype(np.float32),
+            np.log(new_alpha / (1.0 - new_alpha)).astype(np.float32))
+
+
 def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacity_logit,
                           outside_frac=0.5, downscale=4, time_stride=4, k_sigma=2.0,
                           alpha_thresh=0.02):
@@ -694,7 +757,7 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
                             sh_degree=None, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
-                            sh_chroma_clamp=0.0,
+                            sh_chroma_clamp=0.0, smooth_px=0.0,
                             top_k_fraction=1.0, extra_keep_mask_path=None,
                             filter_black_floaters=False, mask_filter_root=None,
                             mask_filter_outside_frac=0.5):
@@ -810,6 +873,9 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
         if f_rest is not None:
             f_rest = f_rest[top_mask]
 
+    if smooth_px > 0:
+        log_scales, opacity_logit = smooth_3d(mask_filter_root, xyz, log_scales, opacity_logit, smooth_px)
+
     mask_keep = None
     if mask_filter_root:
         mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
@@ -875,7 +941,7 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
 
 def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshold,
                      sh_degree=None, sh_clamp=1.5, keep_main_cluster=False,
-                     sh_chroma_clamp=0.0, top_k_fraction=1.0, filter_black_floaters=False,
+                     sh_chroma_clamp=0.0, smooth_px=0.0, top_k_fraction=1.0, filter_black_floaters=False,
                      mask_filter_root=None, mask_filter_outside_frac=0.5):
     """4D interchange PLY input: a trainer that already writes spacetime
     Gaussians (cumuli-trainer) needs no slicing, no temporal-SH fold and no
@@ -923,6 +989,9 @@ def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshol
             f_rest = f_rest[top]
         if accel is not None:
             accel = accel[top]
+
+    if smooth_px > 0:
+        log_scales, opacity_logit = smooth_3d(mask_filter_root, xyz, log_scales, opacity_logit, smooth_px)
 
     mask_keep = None
     if mask_filter_root:
@@ -1070,6 +1139,11 @@ if __name__ == '__main__':
     parser.add_argument('--keep_main_cluster', action='store_true',
                         help='Drop splats outside the largest connected cluster (removes isolated '
                              'floater blobs, intended for masked single-subject captures)')
+    parser.add_argument('--smooth_px', type=float, default=0.0,
+                        help='Checkpoint and .ply inputs: blur every splat by an isotropic Gaussian '
+                             'this many training-camera pixels wide (Mip-Splatting 3D filter), '
+                             'conserving its density. Trades sharpness for a calmer, less noisy '
+                             'look. Needs --mask_filter_root for the training cameras. Default 0: off.')
     parser.add_argument('--sh_chroma_clamp', type=float, default=0.0,
                         help='Checkpoint and .ply inputs: bound the coloured part of each splat\'s '
                              'view-dependent SH term to this many colour units, keeping its '
@@ -1193,6 +1267,10 @@ if __name__ == '__main__':
 
     cov2d = tuple(float(v) for v in args.cov2d_scale.split(',')) if args.cov2d_scale else None
 
+    if args.smooth_px > 0 and not args.mask_filter_root:
+        sys.exit('--smooth_px needs --mask_filter_root (the dataset with the training cameras)')
+    if args.smooth_px > 0 and not args.input.endswith(('.ply', '.pth')):
+        sys.exit('--smooth_px applies to checkpoint and .ply inputs only')
     if args.sh_chroma_clamp > 0 and not args.input.endswith(('.ply', '.pth')):
         sys.exit('--sh_chroma_clamp applies to checkpoint and .ply inputs only')
     if not args.input.endswith('.ply'):
@@ -1218,7 +1296,7 @@ if __name__ == '__main__':
         convert_from_ply(args.input, args.output, header['time_min'], header['time_max'],
                          header['fps'], args.prune_threshold, sh_degree=args.sh_degree,
                          sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
-                         sh_chroma_clamp=args.sh_chroma_clamp,
+                         sh_chroma_clamp=args.sh_chroma_clamp, smooth_px=args.smooth_px,
                          top_k_fraction=args.top_k_fraction,
                          filter_black_floaters=args.filter_black_floaters,
                          mask_filter_root=args.mask_filter_root,
@@ -1229,7 +1307,7 @@ if __name__ == '__main__':
         convert_from_checkpoint(args.input, args.output, args.time_min, args.time_max, args.fps,
                                 args.prune_threshold, sh_degree=args.sh_degree,
                                 scale_boost=args.scale_boost, sh_clamp=args.sh_clamp,
-                                sh_chroma_clamp=args.sh_chroma_clamp,
+                                sh_chroma_clamp=args.sh_chroma_clamp, smooth_px=args.smooth_px,
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
                                 extra_keep_mask_path=args.extra_keep_mask,

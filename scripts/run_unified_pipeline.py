@@ -736,7 +736,11 @@ def _train_cumuli(args, L, iters, duration_s):
     # Bound the coloured part of the view-dependent SH: removes the coloured
     # glints a sparse rig leaves on opaque splats at no measured cost (Heidi:
     # 0.94 -> 0.14 glints per 10k, 36.08 -> 36.07 dB). See clamp_sh_chroma.
-    return ["--input", ply, "--sh_chroma_clamp", "0.02"]
+    bake = ["--input", ply, "--sh_chroma_clamp", "0.02"]
+    if getattr(args, "smooth_px", 0):
+        # Optional softening: a calmer, slightly blurrier bake (see smooth_3d)
+        bake += ["--smooth_px", str(args.smooth_px)]
+    return bake
 
 
 def stage_train4d(args, L):
@@ -884,6 +888,11 @@ def add_train4d_args(parser):
     parser.add_argument("--trainer", choices=("omg4", "cumuli"), default="omg4",
                         help="4DGS trainer: omg4 (default, the vendored OMG4 fork) or cumuli "
                              "(the clean-room cumuli-trainer package, installed in the cumuli env).")
+    parser.add_argument("--smooth_px", type=float, default=0.0,
+                        help="--trainer cumuli only: bake-time 3D smoothing, in training-camera "
+                             "pixels. Higher is softer and calmer, lower is sharper and noisier. "
+                             "Heidi: 0 -> LPIPS 0.0097, 0.5 -> 0.0106, 1 -> 0.0120 (PSNR rises "
+                             "slightly). Default 0: off.")
     parser.add_argument("--export_min_contribution", type=float, default=None,
                         help="--trainer cumuli only: drop Gaussians whose largest contribution to "
                              "any training view is under this many pixels (hidden Gaussians glint "

@@ -135,3 +135,38 @@ def test_chroma_clamp_through_the_ply_bake(monkeypatch, tmp_path):
     chroma = rest - rest.mean(axis=2, keepdims=True)
     bound = (np.abs(chroma) * bake_sogst.SH_Y_MAX[None, :c, None]).sum(axis=1).max(axis=1)
     assert bound.max() <= 0.02 + 1e-5
+
+
+def _write_one_camera_dataset(root, fx=1000.0, w=1000, h=1000):
+    """transforms_train.json with one camera at the origin looking down -z
+    (OpenGL), so a point at depth d is sampled at fx / d pixels per unit."""
+    import json
+    root.mkdir(parents=True, exist_ok=True)
+    frame = {"file_path": "realcams/cam00/frame_00001", "camera_label": "00", "time": 0.0,
+             "fl_x": fx, "fl_y": fx, "cx": w / 2, "cy": h / 2, "w": w, "h": h,
+             "transform_matrix": np.eye(4).tolist()}
+    (root / "transforms_train.json").write_text(json.dumps({"frames": [frame]}))
+
+
+def test_smooth_3d_widens_by_the_sampling_rate_and_conserves_density(tmp_path):
+    _write_one_camera_dataset(tmp_path / "ds")
+    xyz = np.array([[0.0, 0.0, -2.0], [0.0, 0.0, -4.0]])      # depth 2 and 4 in front
+    log_scales = np.log(np.array([[0.01, 0.01, 0.0001], [0.05, 0.05, 0.05]], np.float32))
+    logit = np.array([2.0, 2.0], np.float32)
+    new_ls, new_logit = bake_sogst.smooth_3d(str(tmp_path / "ds"), xyz, log_scales, logit, 1.0)
+    sigma = np.array([2.0 / 1000.0, 4.0 / 1000.0])            # 1 px at fx/d
+    np.testing.assert_allclose(np.exp(new_ls), np.sqrt(np.exp(2 * log_scales) + sigma[:, None] ** 2), rtol=1e-5)
+    # density: alpha * s1 s2 s3 is unchanged
+    a0 = 1 / (1 + np.exp(-logit)); a1 = 1 / (1 + np.exp(-new_logit))
+    np.testing.assert_allclose(a1 * np.exp(new_ls).prod(1), a0 * np.exp(log_scales).prod(1), rtol=1e-4)
+    # the needle (third axis 0.1 mm) fades far more than the round splat
+    assert a1[0] / a0[0] < a1[1] / a0[1]
+    same = bake_sogst.smooth_3d(str(tmp_path / "ds"), xyz, log_scales, logit, 0.0)
+    assert same[0] is log_scales and same[1] is logit
+
+
+def test_smooth_px_needs_the_training_dataset(tmp_path):
+    ply, _, _ = _input_ply(tmp_path)
+    result = _run_cli("--input", ply, "--emit_ply", tmp_path / "x.ply", "--smooth_px", "1")
+    assert result.returncode != 0
+    assert "--smooth_px needs --mask_filter_root" in result.stderr

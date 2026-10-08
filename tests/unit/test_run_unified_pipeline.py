@@ -1273,3 +1273,20 @@ def test_export_min_contribution_flag_defaults_to_the_trainer():
     unified.add_train4d_args(parser)
     assert parser.parse_args([]).export_min_contribution is None
     assert parser.parse_args(["--export_min_contribution", "0"]).export_min_contribution == 0.0
+
+
+def test_stage_train4d_cumuli_passes_smooth_px_to_the_bake(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    for value, present in ((0.0, False), (1.0, True)):
+        scripts = _capture_runs(monkeypatch)
+        _capture_modules(monkeypatch)
+        args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+        args.smooth_px = value
+        L = unified.build_layout(tmp_path / f"o{value}")
+        L["train4d_model"].mkdir(parents=True, exist_ok=True)
+        (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+        unified.stage_train4d(args, L)
+        bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")["args"]
+        assert ("--smooth_px" in bake) == present
+        if present:
+            assert bake[bake.index("--smooth_px") + 1] == "1.0"
