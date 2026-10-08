@@ -1304,3 +1304,12 @@ def test_stage_train4d_cumuli_passes_smooth_frames_to_the_bake(monkeypatch, tmp_
     unified.stage_train4d(args, L)
     bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")["args"]
     assert bake[bake.index("--smooth_frames") + 1] == "2.0"
+
+
+def test_smoothing_defaults_are_the_heidi_pick():
+    parser = argparse.ArgumentParser()
+    unified.add_train4d_args(parser)
+    args = parser.parse_args([])
+    assert (args.smooth_px, args.smooth_frames) == (0.5, 2.0)
+    off = parser.parse_args(["--smooth_px", "0", "--smooth_frames", "0"])
+    assert (off.smooth_px, off.smooth_frames) == (0.0, 0.0)

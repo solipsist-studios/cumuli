@@ -891,15 +891,19 @@ def add_train4d_args(parser):
     parser.add_argument("--trainer", choices=("omg4", "cumuli"), default="omg4",
                         help="4DGS trainer: omg4 (default, the vendored OMG4 fork) or cumuli "
                              "(the clean-room cumuli-trainer package, installed in the cumuli env).")
-    parser.add_argument("--smooth_frames", type=float, default=0.0,
+    # Defaults picked by eye on Heidi (2026-10-08): 0.5 px + 2 frames gave a
+    # face 13% steadier than no smoothing and 6% steadier than the old
+    # sh2_defaults look (close-up frame-to-frame change 19.90 -> 17.23 vs
+    # 18.35), at 36.20 dB / LPIPS 0.0110 against 36.09 / 0.0097 unsmoothed.
+    parser.add_argument("--smooth_frames", type=float, default=2.0,
                         help="--trainer cumuli only: bake-time temporal smoothing, in frames. "
-                             "Steadier playback, at the risk of ghosting when large. Heidi: 2 "
-                             "frames -> 6%% calmer face, LPIPS 0.0097 -> 0.0101. Default 0: off.")
-    parser.add_argument("--smooth_px", type=float, default=0.0,
+                             "Steadier playback, at the risk of ghosting when large. Default 2; "
+                             "0 turns it off.")
+    parser.add_argument("--smooth_px", type=float, default=0.5,
                         help="--trainer cumuli only: bake-time 3D smoothing, in training-camera "
                              "pixels. Higher is softer and calmer, lower is sharper and noisier. "
                              "Heidi: 0 -> LPIPS 0.0097, 0.5 -> 0.0106, 1 -> 0.0120 (PSNR rises "
-                             "slightly). Default 0: off.")
+                             "slightly). Default 0.5; 0 turns it off.")
     parser.add_argument("--export_min_contribution", type=float, default=None,
                         help="--trainer cumuli only: drop Gaussians whose largest contribution to "
                              "any training view is under this many pixels (hidden Gaussians glint "
