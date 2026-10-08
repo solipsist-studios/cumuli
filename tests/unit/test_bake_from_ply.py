@@ -170,3 +170,22 @@ def test_smooth_px_needs_the_training_dataset(tmp_path):
     result = _run_cli("--input", ply, "--emit_ply", tmp_path / "x.ply", "--smooth_px", "1")
     assert result.returncode != 0
     assert "--smooth_px needs --mask_filter_root" in result.stderr
+
+
+def test_smooth_time_widens_lifetimes_and_conserves_the_time_integral():
+    ts = np.array([0.05, 1.0], np.float32)
+    logit = np.array([3.0, 3.0], np.float32)
+    new_ts, new_logit = bake_sogst.smooth_time(ts, logit, 3.0, 30.0)
+    s = 3.0 / 30.0
+    np.testing.assert_allclose(new_ts, np.sqrt(ts.astype(np.float64) ** 2 + s ** 2), rtol=1e-5)
+    a0 = 1 / (1 + np.exp(-logit)); a1 = 1 / (1 + np.exp(-new_logit))
+    np.testing.assert_allclose(a1 * new_ts, a0 * ts, rtol=1e-4)     # peak x width kept
+    assert a1[0] / a0[0] < a1[1] / a0[1]                               # short-lived fade most
+    same = bake_sogst.smooth_time(ts, logit, 0.0, 30.0)
+    assert same[0] is ts and same[1] is logit
+
+
+def test_smooth_frames_through_the_ply_bake(monkeypatch, tmp_path):
+    ply, fields, meta = _input_ply(tmp_path)
+    _, out = _bake(monkeypatch, tmp_path, ply, smooth_frames=2.0)
+    assert np.median(out["t_sigma"]) > np.median(np.asarray(fields["t_sigma"]))

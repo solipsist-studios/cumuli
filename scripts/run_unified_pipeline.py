@@ -740,6 +740,9 @@ def _train_cumuli(args, L, iters, duration_s):
     if getattr(args, "smooth_px", 0):
         # Optional softening: a calmer, slightly blurrier bake (see smooth_3d)
         bake += ["--smooth_px", str(args.smooth_px)]
+    if getattr(args, "smooth_frames", 0):
+        # Optional temporal softening: gentler fade-in/out (see smooth_time)
+        bake += ["--smooth_frames", str(args.smooth_frames)]
     return bake
 
 
@@ -888,6 +891,10 @@ def add_train4d_args(parser):
     parser.add_argument("--trainer", choices=("omg4", "cumuli"), default="omg4",
                         help="4DGS trainer: omg4 (default, the vendored OMG4 fork) or cumuli "
                              "(the clean-room cumuli-trainer package, installed in the cumuli env).")
+    parser.add_argument("--smooth_frames", type=float, default=0.0,
+                        help="--trainer cumuli only: bake-time temporal smoothing, in frames. "
+                             "Steadier playback, at the risk of ghosting when large. Heidi: 2 "
+                             "frames -> 6%% calmer face, LPIPS 0.0097 -> 0.0101. Default 0: off.")
     parser.add_argument("--smooth_px", type=float, default=0.0,
                         help="--trainer cumuli only: bake-time 3D smoothing, in training-camera "
                              "pixels. Higher is softer and calmer, lower is sharper and noisier. "

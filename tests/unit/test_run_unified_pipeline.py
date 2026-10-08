@@ -1290,3 +1290,17 @@ def test_stage_train4d_cumuli_passes_smooth_px_to_the_bake(monkeypatch, tmp_path
         assert ("--smooth_px" in bake) == present
         if present:
             assert bake[bake.index("--smooth_px") + 1] == "1.0"
+
+
+def test_stage_train4d_cumuli_passes_smooth_frames_to_the_bake(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    scripts = _capture_runs(monkeypatch)
+    _capture_modules(monkeypatch)
+    args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+    args.smooth_frames = 2.0
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+    unified.stage_train4d(args, L)
+    bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")["args"]
+    assert bake[bake.index("--smooth_frames") + 1] == "2.0"
