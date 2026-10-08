@@ -718,6 +718,8 @@ def _train_cumuli(args, L, iters, duration_s):
         }
         if args.t_init_div:
             config["t_init_div"] = args.t_init_div
+        if getattr(args, "export_min_contribution", None) is not None:
+            config["export_min_contribution"] = args.export_min_contribution
         config_path = L["train4d_config"]
         # JSON is valid YAML, and it cannot misquote a path.
         config_path.write_text(json.dumps(config, indent=2) + "\n")
@@ -882,6 +884,10 @@ def add_train4d_args(parser):
     parser.add_argument("--trainer", choices=("omg4", "cumuli"), default="omg4",
                         help="4DGS trainer: omg4 (default, the vendored OMG4 fork) or cumuli "
                              "(the clean-room cumuli-trainer package, installed in the cumuli env).")
+    parser.add_argument("--export_min_contribution", type=float, default=None,
+                        help="--trainer cumuli only: drop Gaussians whose largest contribution to "
+                             "any training view is under this many pixels (hidden Gaussians glint "
+                             "from new viewpoints). Default: the trainer's own (2); 0 keeps them.")
     parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
                         help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
                              "deps/OMG4 submodule).")

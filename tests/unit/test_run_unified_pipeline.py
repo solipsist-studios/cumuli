@@ -1251,3 +1251,25 @@ def test_trainer_flag_defaults_to_omg4_and_is_configurable():
     assert parser.parse_args([]).trainer == "omg4"
     assert parser.parse_args(["--trainer", "cumuli"]).trainer == "cumuli"
     assert "trainer" in unified.CONFIGURABLE_DEFAULTS
+
+
+def test_stage_train4d_cumuli_passes_export_min_contribution(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    _capture_runs(monkeypatch)
+    _capture_modules(monkeypatch)
+    for value, expected in ((None, None), (0.0, 0.0), (8.0, 8.0)):
+        args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+        args.export_min_contribution = value
+        L = unified.build_layout(tmp_path / f"out{value}")
+        L["train4d_model"].mkdir(parents=True, exist_ok=True)
+        (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+        unified.stage_train4d(args, L)
+        config = json.loads(L["train4d_config"].read_text())
+        assert config.get("export_min_contribution") == expected
+
+
+def test_export_min_contribution_flag_defaults_to_the_trainer():
+    parser = argparse.ArgumentParser()
+    unified.add_train4d_args(parser)
+    assert parser.parse_args([]).export_min_contribution is None
+    assert parser.parse_args(["--export_min_contribution", "0"]).export_min_contribution == 0.0
