@@ -4,18 +4,18 @@
 #
 # Full provisioning for the single `cumuli` pipeline env. environment.yml
 # is the package manifest. This script adds the installs a yml cannot
-# express (see that file's header), the editable cumuli-core library from
-# deps/cumuli-core, and verifies the result.
+# express (see that file's header), the editable cumuli-core and
+# cumuli-trainer packages from deps/, and verifies the result.
 #
 # Usage:
 #   bash scripts/setup_cumuli_env.sh          # GPU machine (default)
 #   bash scripts/setup_cumuli_env.sh --cpu    # CPU-only (CI): cpu torch
-#                                             # wheels, no CUDA extensions
+#                                             # wheels, no gsplat JIT warm-up
 #
 # Overridable:
 #   CONDA                 conda executable (default: ~/miniconda3/condabin/conda)
 #   ENV_NAME              env name (default: cumuli)
-#   TORCH_CUDA_ARCH_LIST  compute capability for the extension build
+#   TORCH_CUDA_ARCH_LIST  compute capability for gsplat's JIT build
 #                         (default: probed from nvidia-smi)
 #   MAX_JOBS              parallel build jobs (default: nproc)
 set -euo pipefail
@@ -105,8 +105,14 @@ CORE="$REPO_ROOT/deps/cumuli-core"
     echo "FAIL: deps/cumuli-core not initialised (git submodule update --init deps/cumuli-core)"; exit 1; }
 "$PY" -m pip install --no-deps -e "$CORE"
 
+echo "=== cumuli-trainer: editable from deps/cumuli-trainer, --no-deps ==="
+TRAINER="$REPO_ROOT/deps/cumuli-trainer"
+[ -f "$TRAINER/pyproject.toml" ] || {
+    echo "FAIL: deps/cumuli-trainer not initialised (git submodule update --init deps/cumuli-trainer)"; exit 1; }
+"$PY" -m pip install --no-deps -e "$TRAINER"
+
 if [ "$CPU_ONLY" = 0 ]; then
-    echo "=== OMG4 CUDA extensions (ABI-bound to this env's torch) ==="
+    echo "=== gsplat CUDA JIT build (once, against this env's torch) ==="
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 || true)"
         TORCH_CUDA_ARCH_LIST="${CAP:-12.0}"
@@ -114,16 +120,18 @@ if [ "$CPU_ONLY" = 0 ]; then
     export TORCH_CUDA_ARCH_LIST
     export MAX_JOBS=${MAX_JOBS:-$(nproc)}
     echo "TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST MAX_JOBS=$MAX_JOBS"
-    OMG4="$REPO_ROOT/deps/OMG4"
-    [ -f "$OMG4/train_scratch.py" ] || {
-        echo "FAIL: deps/OMG4 not initialised (git submodule update --init deps/OMG4)"; exit 1; }
-    "$PY" -m pip install "$OMG4/diff-gaussian-rasterization" --no-build-isolation
-    "$PY" -m pip install "$OMG4/simple-knn" --no-build-isolation
-    "$PY" -m pip install "$OMG4/pointops2" --no-build-isolation
-
-    echo "=== optional SPM accelerators (failure is a warning) ==="
-    "$PY" -m pip install cupy-cuda13x || echo "=== WARN cupy-cuda13x failed ==="
-    "$PY" -m pip install cuml-cu13 || echo "=== WARN cuml-cu13 failed ==="
+    "$PY" - <<'WARMUP'
+import torch
+from gsplat import rasterization
+d = "cuda"
+means = torch.zeros(1, 3, device=d); means[0, 2] = 2.0
+img, _, _ = rasterization(means, torch.tensor([[1.0, 0, 0, 0]], device=d),
+                          torch.full((1, 3), 0.1, device=d), torch.ones(1, device=d),
+                          torch.ones(1, 3, device=d), torch.eye(4, device=d)[None],
+                          torch.tensor([[[100.0, 0, 32], [0, 100.0, 32], [0, 0, 1]]], device=d),
+                          64, 64)
+print("gsplat ok:", tuple(img.shape))
+WARMUP
 fi
 
 echo "=== verify ==="
@@ -133,12 +141,12 @@ import importlib, os, sys
 cpu_only = os.environ.get("CUMULI_VERIFY_CPU") == "1"
 core = ["torch", "torchvision", "numpy", "scipy", "PIL", "cv2", "pycolmap",
         "hloc", "plyfile", "fire", "open3d", "transformers", "gsplat",
-        "lpips", "torchmetrics", "dahuffman", "omegaconf",
+        "lpips", "torchmetrics", "omegaconf",
         "easyvolcap.utils.console_utils", "easyvolcap.utils.parallel_utils",
         "sapiens.pose", "diffusers", "hydra", "kornia",
         "cumuli_core.ply", "cumuli_core.spacetime", "cumuli_core.render",
-        "cumuli_core.metrics"]
-gpu = ["diff_gaussian_rasterization", "simple_knn", "pointops2"]
+        "cumuli_core.metrics", "cumuli_trainer"]
+gpu = []
 failed = []
 for mod in core + ([] if cpu_only else gpu):
     try:

@@ -59,15 +59,14 @@ jobs:
         with:
           submodules: false
 
-      - name: Fetch the pipeline submodules (not the 4D trainer forks)
-        # `submodules: true` would also clone deps/4d-gaussian-splatting and
-        # deps/OMG4, which this CPU pipeline run never touches. Init exactly
-        # the submodules the capture pipeline wraps -- the same set the old
-        # blanket fetch delivered before the trainer forks were vendored.
+      - name: Fetch the pipeline submodules
+        # The capture pipeline's submodules, plus cumuli-core and
+        # cumuli-trainer: the CPU run never trains, but the setup script
+        # installs both packages and its verify step imports them.
         run: |
           git submodule update --init \
             deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
-            deps/sapiens deps/cumuli-core
+            deps/sapiens deps/cumuli-core deps/cumuli-trainer
 
       - name: Restore cached ffmpeg debs
         # The apt mirror stalled for hours on 2026-08-19 (two failed runs;
