@@ -713,14 +713,14 @@ def test_build_parser_rejects_invalid_start_from_stage_choice():
 
 def test_apply_config_defaults_overrides_configurable_defaults(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"hloc_feature_type": "aliked", "trainer_repo": "/elsewhere/OMG4"}))
+    config_path.write_text(json.dumps({"hloc_feature_type": "aliked", "hloc_resize_max": 2048}))
     parser = unified.build_parser()
     monkeypatch.setattr(sys, "argv", ["prog", "--config", str(config_path)])
 
     unified.apply_config_defaults(parser)
     args = parser.parse_args(_BASE_CLI)
     assert args.hloc_feature_type == "aliked"
-    assert str(args.trainer_repo) == "/elsewhere/OMG4"
+    assert args.hloc_resize_max == 2048
 
 
 def test_apply_config_defaults_explicit_cli_flag_wins_over_config(tmp_path, monkeypatch):
@@ -1079,99 +1079,17 @@ def test_stage_dataset4d_keeps_hull_min_views_on_a_full_rig(monkeypatch, tmp_pat
 
 
 def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
-                  eval_camera="05", skip_eval=False, trainer="omg4"):
-    repo = tmp_path / "omg4repo"
-    repo.mkdir(parents=True, exist_ok=True)
-    (repo / "train_scratch.py").write_text("# stub")
-    return NS(trainer=trainer, trainer_repo=repo, total_train_iters=iters,
-              train_window=8, train_fps=30.0, t_init_div=t_init_div,
-              num_pts=100000, batch_size4d=2, densify_until_iter=150,
-              densify_until_num_points=1000, trainer_config=trainer_config,
-              eval_camera=eval_camera, eval_every=10, skip_eval=skip_eval)
-
+                  eval_camera="05", skip_eval=False):
+    return NS(total_train_iters=iters, train_window=8, train_fps=30.0, t_init_div=t_init_div,
+              num_pts=None, batch_size4d=None, densify_until_iter=None,
+              densify_until_num_points=None, trainer_config=trainer_config,
+              eval_camera=eval_camera, eval_every=10, skip_eval=skip_eval,
+              smooth_px=0.5, smooth_frames=2.0, export_min_contribution=None)
 
 def test_stage_train4d_raises_without_gpu(monkeypatch, tmp_path):
     monkeypatch.setattr(unified, "gpu_available", lambda: False)
     with pytest.raises(unified.StageError, match="CUDA GPU"):
         unified.stage_train4d(_train4d_args(tmp_path), unified.build_layout(tmp_path / "out"))
-
-
-def test_stage_train4d_generates_config_and_trains(monkeypatch, tmp_path):
-    monkeypatch.setattr(unified, "gpu_available", lambda: True)
-    calls = _capture_runs(monkeypatch)
-    args = _train4d_args(tmp_path, iters=200)
-    L = unified.build_layout(tmp_path / "out")
-    L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
-
-    # Training "succeeds": the fake run_script drops the checkpoint the
-    # stage asserts on afterwards.
-    real_capture = unified.run_script
-
-    def run_and_checkpoint(script_name, a, **kw):
-        real_capture(script_name, a, **kw)
-        if Path(str(script_name)).name == "train_scratch.py":
-            L["train4d_model"].mkdir(parents=True, exist_ok=True)
-            (L["train4d_model"] / "chkpnt200.pth").write_bytes(b"x")
-    monkeypatch.setattr(unified, "run_script", run_and_checkpoint)
-
-    unified.stage_train4d(args, L)
-
-    config = L["train4d_config"].read_text()
-    assert "iterations: 200" in config
-    assert f'source_path: "{L["dataset4d"].resolve()}"' in config
-    # (window - 1) / fps = 7/30
-    assert "time_duration: [0.0, 0.233333]" in config
-
-    train = next(c for c in calls if Path(c["script"]).name == "train_scratch.py")
-    assert train["conda_env"] == "cumuli"
-    assert str(train["cwd"]) == str(args.trainer_repo)
-    assert train["extra_env"] == {"GS4D_T_INIT_DIV": "100"}
-    a = train["args"]
-    assert a[a.index("--save_iterations") + 1] == "200"
-    assert a[a.index("--test_iterations") + 1] == "200"
-
-    bake = next(c for c in calls if Path(c["script"]).name == "bake_sogst.py")
-    assert "--mask_filter_root" in bake["args"]
-    assert any(Path(c["script"]).name == "eval_render.py" for c in calls)
-
-
-def test_stage_train4d_t_init_div_zero_leaves_env_unset(monkeypatch, tmp_path):
-    monkeypatch.setattr(unified, "gpu_available", lambda: True)
-    calls = _capture_runs(monkeypatch)
-    args = _train4d_args(tmp_path, iters=7, t_init_div=0, skip_eval=True)
-    L = unified.build_layout(tmp_path / "out")
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt7.pth").write_bytes(b"x")
-    L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
-
-    unified.stage_train4d(args, L)
-    # Training was skipped (checkpoint pre-existing), so only bake ran; the
-    # env-var rule is observable on the generated config path instead: no
-    # train call happened, and no call carries GS4D_T_INIT_DIV.
-    assert all(not (c["extra_env"] or {}).get("GS4D_T_INIT_DIV") for c in calls)
-    assert not any(Path(c["script"]).name == "eval_render.py" for c in calls)
-
-
-def test_stage_train4d_trainer_config_bypasses_generation(monkeypatch, tmp_path):
-    monkeypatch.setattr(unified, "gpu_available", lambda: True)
-    calls = _capture_runs(monkeypatch)
-    own_config = tmp_path / "mine.yaml"
-    own_config.write_text("gaussian_dim: 4\n")
-    args = _train4d_args(tmp_path, iters=7, trainer_config=own_config, skip_eval=True)
-    L = unified.build_layout(tmp_path / "out")
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt7.pth").write_bytes(b"x")
-
-    unified.stage_train4d(args, L)
-    assert not L["train4d_config"].exists()
-
-
-def test_stage_train4d_missing_trainer_repo_is_a_stage_error(monkeypatch, tmp_path):
-    monkeypatch.setattr(unified, "gpu_available", lambda: True)
-    args = _train4d_args(tmp_path)
-    (args.trainer_repo / "train_scratch.py").unlink()
-    with pytest.raises(unified.StageError, match="trainer entry point"):
-        unified.stage_train4d(args, unified.build_layout(tmp_path / "out"))
 
 
 def _capture_modules(monkeypatch, on_run=None):
@@ -1188,7 +1106,7 @@ def _capture_modules(monkeypatch, on_run=None):
 def test_stage_train4d_cumuli_writes_config_trains_and_bakes_the_ply(monkeypatch, tmp_path):
     monkeypatch.setattr(unified, "gpu_available", lambda: True)
     scripts = _capture_runs(monkeypatch)
-    args = _train4d_args(tmp_path, iters=200, trainer="cumuli")
+    args = _train4d_args(tmp_path, iters=200)
     L = unified.build_layout(tmp_path / "out")
     L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
     ply = L["train4d_model"] / "splat_4d.ply"
@@ -1209,8 +1127,7 @@ def test_stage_train4d_cumuli_writes_config_trains_and_bakes_the_ply(monkeypatch
         "test_iterations": [200], "save_iterations": [200], "t_init_div": 100}
     assert modules == [{"module": "cumuli_trainer",
                         "args": ["--config", str(L["train4d_config"])]}]
-    # OMG4 never runs, and the bake reads the PLY's own clip scalars
-    assert not any(Path(c["script"]).name == "train_scratch.py" for c in scripts)
+    # the bake reads the PLY's own clip scalars
     bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")
     a = bake["args"]
     assert a[a.index("--input") + 1] == str(ply)
@@ -1224,7 +1141,7 @@ def test_stage_train4d_cumuli_skips_training_when_the_ply_exists(monkeypatch, tm
     monkeypatch.setattr(unified, "gpu_available", lambda: True)
     _capture_runs(monkeypatch)
     modules = _capture_modules(monkeypatch)
-    args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True, t_init_div=0)
+    args = _train4d_args(tmp_path, iters=7, skip_eval=True, t_init_div=0)
     L = unified.build_layout(tmp_path / "out")
     L["train4d_model"].mkdir(parents=True, exist_ok=True)
     (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
@@ -1238,19 +1155,11 @@ def test_stage_train4d_cumuli_missing_ply_is_a_stage_error(monkeypatch, tmp_path
     monkeypatch.setattr(unified, "gpu_available", lambda: True)
     _capture_runs(monkeypatch)
     _capture_modules(monkeypatch)
-    args = _train4d_args(tmp_path, trainer="cumuli")
+    args = _train4d_args(tmp_path)
     L = unified.build_layout(tmp_path / "out")
     L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
     with pytest.raises(unified.StageError, match="splat_4d.ply does not exist"):
         unified.stage_train4d(args, L)
-
-
-def test_trainer_flag_defaults_to_omg4_and_is_configurable():
-    parser = argparse.ArgumentParser()
-    unified.add_train4d_args(parser)
-    assert parser.parse_args([]).trainer == "omg4"
-    assert parser.parse_args(["--trainer", "cumuli"]).trainer == "cumuli"
-    assert "trainer" in unified.CONFIGURABLE_DEFAULTS
 
 
 def test_stage_train4d_cumuli_passes_export_min_contribution(monkeypatch, tmp_path):
@@ -1258,7 +1167,7 @@ def test_stage_train4d_cumuli_passes_export_min_contribution(monkeypatch, tmp_pa
     _capture_runs(monkeypatch)
     _capture_modules(monkeypatch)
     for value, expected in ((None, None), (0.0, 0.0), (8.0, 8.0)):
-        args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+        args = _train4d_args(tmp_path, iters=7, skip_eval=True)
         args.export_min_contribution = value
         L = unified.build_layout(tmp_path / f"out{value}")
         L["train4d_model"].mkdir(parents=True, exist_ok=True)
@@ -1280,7 +1189,7 @@ def test_stage_train4d_cumuli_passes_smooth_px_to_the_bake(monkeypatch, tmp_path
     for value, present in ((0.0, False), (1.0, True)):
         scripts = _capture_runs(monkeypatch)
         _capture_modules(monkeypatch)
-        args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+        args = _train4d_args(tmp_path, iters=7, skip_eval=True)
         args.smooth_px = value
         L = unified.build_layout(tmp_path / f"o{value}")
         L["train4d_model"].mkdir(parents=True, exist_ok=True)
@@ -1296,7 +1205,7 @@ def test_stage_train4d_cumuli_passes_smooth_frames_to_the_bake(monkeypatch, tmp_
     monkeypatch.setattr(unified, "gpu_available", lambda: True)
     scripts = _capture_runs(monkeypatch)
     _capture_modules(monkeypatch)
-    args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+    args = _train4d_args(tmp_path, iters=7, skip_eval=True)
     args.smooth_frames = 2.0
     L = unified.build_layout(tmp_path / "out")
     L["train4d_model"].mkdir(parents=True, exist_ok=True)
@@ -1313,3 +1222,34 @@ def test_smoothing_defaults_are_the_heidi_pick():
     assert (args.smooth_px, args.smooth_frames) == (0.5, 2.0)
     off = parser.parse_args(["--smooth_px", "0", "--smooth_frames", "0"])
     assert (off.smooth_px, off.smooth_frames) == (0.0, 0.0)
+
+
+def test_stage_train4d_trainer_config_bypasses_generation(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    _capture_runs(monkeypatch)
+    modules = _capture_modules(monkeypatch)
+    own_config = tmp_path / "mine.json"
+    own_config.write_text("{}")
+    args = _train4d_args(tmp_path, iters=7, trainer_config=own_config, skip_eval=True)
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+    unified.stage_train4d(args, L)
+    assert not L["train4d_config"].exists()
+
+
+def test_stage_train4d_maps_the_trainer_flags(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    _capture_runs(monkeypatch)
+    _capture_modules(monkeypatch)
+    args = _train4d_args(tmp_path, iters=7, skip_eval=True)
+    args.num_pts, args.batch_size4d = 50000, 4
+    args.densify_until_iter, args.densify_until_num_points = 15000, 200000
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+    unified.stage_train4d(args, L)
+    config = json.loads(L["train4d_config"].read_text())
+    assert config["cameras_per_step"] == 4
+    assert config["representation"] == {"name": "spacetime", "max_init_points": 50000}
+    assert config["strategy"] == {"name": "mcmc", "refine_stop": 15000, "cap_max": 200000}
