@@ -343,11 +343,16 @@ What the flags mean:
   pairs leak: holding out one camera whose mate keeps training measured
   ~5.7 dB of pure leakage on an 11-camera rig. That number is leak, not
   quality. Check your rig's pair structure before choosing the split.
-- **`train4d` is CUDA-gated.** It generates the trainer config from
+- **`train4d` is CUDA-gated.** `--trainer` picks the trainer. The
+  default, `omg4`, generates the config from
   `configs/gs4d_pretrain_template.yaml` (override with
-  `--trainer_config`), trains `train_scratch.py` in `deps/OMG4` under
-  the `omg4` env, bakes with `bake_sogst.py`, and scores the held-out
-  camera with `eval_render.py`.
+  `--trainer_config`) and trains `train_scratch.py` in `deps/OMG4`.
+  `cumuli` writes a JSON config and runs `python -m cumuli_trainer`,
+  the clean-room trainer, which writes spacetime Gaussians to
+  `train4d_output/splat_4d.ply`. Both run in the `cumuli` env. Either
+  output goes through `bake_sogst.py` (a PLY gets the post-filters only:
+  no slicing, no scale compensation, and its own clip scalars), then
+  `eval_render.py` scores the held-out camera.
 
 The masks are baked into the dataset's RGBA alpha during the dataset
 build, so alpha supervision is part of training by construction. The
