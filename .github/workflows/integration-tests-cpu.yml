@@ -187,8 +187,8 @@ jobs:
         # queen/omg4). The setup script's --cpu mode keeps the historical
         # disk discipline: cpu torch is installed BEFORE the rest of the
         # requirements so nothing can drag the multi-GB CUDA-bundled PyPI
-        # torch wheel in transitively, pip caching is off, and the trainer
-        # CUDA extensions are skipped (train4d never runs here).
+        # torch wheel in transitively, pip caching is off, and gsplat's
+        # CUDA JIT build is skipped (train4d never runs here).
         if: steps.conda-cache.outputs.cache-hit != 'true'
         shell: bash -l {0}
         run: bash scripts/setup_cumuli_env.sh --cpu

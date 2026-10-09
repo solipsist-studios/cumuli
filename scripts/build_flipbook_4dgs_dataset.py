@@ -20,8 +20,8 @@ Input (--flipbook_root, for example capture_flipbook/):
 Output (--out) mirrors the per-frame refit dataset layout:
     realcams/cam<label>/frame_NNNNN.png  RGBA (mask in alpha), downscaled
     transforms_train.json / transforms_test.json
-        per-view entries with per-frame intrinsics (the rotor trainer's
-        Blender loader and eval_render.py both support these. There is
+        per-view entries with per-frame intrinsics (cumuli-trainer and
+        eval_render.py both support these. There is
         deliberately NO global intrinsics block: the cameras differ)
     points3d.ply                     per-frame visual-hull init points
                                      with colour and per-point `time`

@@ -35,7 +35,7 @@ STAGES
   dataset4d  build_flipbook_4dgs_dataset.py over the rendered flipbook,
              with the eval ring merged in through --eval_root.
   train4d    the shared stage from run_unified_pipeline.py, unmodified:
-             rotor 4DGS training, bake to .sogst, then eval_render.py.
+             cumuli-trainer 4DGS training, bake to .sogst, then eval_render.py.
 
 --------------------------------------------------------------------------
 SCORING

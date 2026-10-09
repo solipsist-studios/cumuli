@@ -6,7 +6,7 @@
 run_unified_pipeline.py
 
 Unified entry point for the volumetric capture pipeline: sync -> undistort
--> pose solve/refine -> mask -> 4D dataset build -> rotor 4DGS training,
+-> pose solve/refine -> mask -> 4D dataset build -> cumuli-trainer 4DGS training,
 baked to a streamable .sogst asset.
 Orchestrates the other scripts in this directory via subprocess; it does
 not reimplement any of their logic. (A Diffuman4D 48-camera dense-ring
@@ -545,7 +545,7 @@ def stage_masks(args, L, image_ext):
 
 
 def stage_dataset4d(args, L, image_ext, sync_json: Path):
-    """Build the 4D (D-NeRF-style) training dataset for the rotor trainer.
+    """Build the 4D (D-NeRF-style) training dataset for cumuli-trainer.
 
     Extracts a --train_window frame sequence, runs the standard per-instant
     chain (undistort, masks, keypoints, clean) on each frame, lays each

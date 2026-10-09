@@ -3,9 +3,9 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
 """
-build_4dgs_dataset.py  –  Assemble a D-NeRF-style dataset for native 4D
-Gaussian Splatting training (fudan-zvg/4d-gaussian-splatting "Blender"
-loader) from this pipeline's per-camera frame layout.
+build_4dgs_dataset.py  –  Assemble a D-NeRF-style dataset (the Blender
+transforms_train/test.json layout) for 4D Gaussian Splatting training from
+this pipeline's per-camera frame layout.
 
 Input (a dataset root laid out as follows):
     images/<camera_label>/<pattern % frame>     RGB frames, static cameras
@@ -22,13 +22,13 @@ Output (--out):
                                          seconds; test = --test_cameras
     points3d.ply                         per-frame visual-hull init points
                                          with colour and a `time` property
-                                         (the 4DGS loader initialises each
-                                         Gaussian's temporal centre from it)
+                                         (each initial Gaussian's temporal
+                                         centre)
 
 The visual hull is carved per frame by rejection sampling: points must
 project inside the subject mask in at least --hull_min_views cameras.
 Colours are averaged from a few spread cameras (no occlusion reasoning —
-it's an initialisation, densification takes it from there).
+it's an initialisation, training takes it from there).
 
 Usage:
     python build_4dgs_dataset.py \

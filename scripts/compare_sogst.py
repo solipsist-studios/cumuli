@@ -670,8 +670,8 @@ def compare(path_a, path_b, verbose=False):
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--a', required=True, help='Reference .sogst/.omg4 or .ply')
-    parser.add_argument('--b', required=True, help='Candidate .sogst/.omg4 or .ply')
+    parser.add_argument('--a', required=True, help='Reference .sogst or .ply')
+    parser.add_argument('--b', required=True, help='Candidate .sogst or .ply')
     args = parser.parse_args()
     sys.exit(compare(args.a, args.b))
 
