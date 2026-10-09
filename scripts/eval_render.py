@@ -27,7 +27,7 @@ transforms already carry output-resolution intrinsics. n3v-style datasets
 (for example coffee_martini with eval_gt_half) carry full-resolution
 intrinsics beside half-resolution ground truth and need `--downscale 2`,
 which matches the trainer's `resolution: 2`. Numbers are directly
-comparable to the OMG4 trainer's eval on the same test cameras.
+comparable to cumuli-trainer's own eval on the same test cameras.
 """
 
 import argparse

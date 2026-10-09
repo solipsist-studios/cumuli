@@ -202,17 +202,12 @@ def validate_dataset4d(L, real_cameras):
 
 
 def validate_train4d(L, real_cameras):
-    model_dir = L["train4d_model"]
-    ckpts = sorted(model_dir.glob("chkpnt*.pth")) if model_dir.is_dir() else []
-    if not ckpts:
-        raise ValidationError(f"no chkpnt*.pth under {model_dir}")
-
-    # A crashed trainer can leave a small partial file behind. A real rotor
-    # checkpoint is tens of MB at minimum, so 1 MB is a safe floor.
-    newest = max(ckpts, key=lambda p: p.stat().st_mtime)
-    if newest.stat().st_size < 1_000_000:
-        raise ValidationError(
-            f"{newest} is {newest.stat().st_size} bytes -- truncated checkpoint?")
+    model_ply = L["train4d_model"] / "splat_4d.ply"
+    if not model_ply.is_file():
+        raise ValidationError(f"no splat_4d.ply under {L['train4d_model']}")
+    # A crashed trainer can leave an empty or header-only file behind.
+    if ply_vertex_count(model_ply) < 1:
+        raise ValidationError(f"{model_ply} declares zero Gaussians -- did training finish?")
 
     out = L["sogst_out"]
     if not out.is_file():

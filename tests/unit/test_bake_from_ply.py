@@ -5,8 +5,7 @@
 
 cumuli-trainer writes spacetime Gaussians directly, so the bake only runs
 its post-filters on them.  These tests pin that nothing else happens: no
-slicing, no scale change, the PLY's own clip scalars, and the OMG4-only
-flags refused rather than silently applied.
+slicing, no scale change, and the PLY's own clip scalars.
 """
 
 import subprocess
@@ -95,17 +94,6 @@ def test_cli_takes_clip_scalars_from_the_ply(tmp_path):
     assert header["fps"] == pytest.approx(meta["fps"])
 
 
-@pytest.mark.parametrize("flags, message", [
-    (["--time_max", "99"], "disagrees with the PLY header"),
-    (["--scale_boost", "1.4672"], "does not apply to a .ply input"),
-])
-def test_cli_refuses_flags_that_contradict_a_ply(tmp_path, flags, message):
-    ply, _, _ = _input_ply(tmp_path)
-    result = _run_cli("--input", ply, "--emit_ply", tmp_path / "x.ply", *flags)
-    assert result.returncode != 0
-    assert message in result.stderr
-
-
 def test_chroma_clamp_keeps_brightness_and_bounds_colour():
     rng = np.random.default_rng(0)
     f_rest = rng.normal(0, 0.5, (64, 8, 3)).astype(np.float32)
@@ -117,13 +105,6 @@ def test_chroma_clamp_keeps_brightness_and_bounds_colour():
     assert bound.max() <= 0.02 + 1e-6
     assert bake_sogst.clamp_sh_chroma(f_rest, 0.0) is f_rest
     assert bake_sogst.clamp_sh_chroma(None, 0.02) is None
-
-
-def test_chroma_clamp_is_refused_for_comp_xz(tmp_path):
-    result = _run_cli("--input", tmp_path / "model.xz", "--emit_ply", tmp_path / "x.ply",
-                      "--sh_chroma_clamp", "0.02")
-    assert result.returncode != 0
-    assert "checkpoint and .ply inputs only" in result.stderr
 
 
 def test_chroma_clamp_through_the_ply_bake(monkeypatch, tmp_path):
@@ -189,3 +170,9 @@ def test_smooth_frames_through_the_ply_bake(monkeypatch, tmp_path):
     ply, fields, meta = _input_ply(tmp_path)
     _, out = _bake(monkeypatch, tmp_path, ply, smooth_frames=2.0)
     assert np.median(out["t_sigma"]) > np.median(np.asarray(fields["t_sigma"]))
+
+
+def test_cli_refuses_anything_but_an_interchange_ply(tmp_path):
+    result = _run_cli("--input", tmp_path / "chkpnt30000.pth", "--emit_ply", tmp_path / "x.ply")
+    assert result.returncode != 0
+    assert "must be a 4D interchange .ply" in result.stderr
