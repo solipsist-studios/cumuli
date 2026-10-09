@@ -65,8 +65,8 @@ python3 scripts/run_unified_pipeline.py \
 
 Key flags:
 
-- **`--config`** -- JSON file of per-rig defaults (
-  `--trainer_repo`, `SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
+- **`--config`** -- JSON file of per-rig defaults
+  (`SAPIENS_CHECKPOINT_ROOT`, HLOC settings) so
   you do not have to repeat them on every run. Explicit CLI flags always
   override the config. See `configs/README.md`.
 - **`--start_from_stage` / `--stop_after_stage`** (`sync`, `production`,
@@ -317,7 +317,7 @@ python3 scripts/triangulate_and_project_keypoints.py \
 
 The last two stages run through the orchestrator rather than one script
 each: `dataset4d` loops the per-instant chain over the whole training
-window, and `train4d` drives the vendored trainer. Resume from the
+window, and `train4d` trains it with cumuli-trainer (`deps/cumuli-trainer`). Resume from the
 calibrated run directory:
 
 ```bash
@@ -343,16 +343,32 @@ What the flags mean:
   pairs leak: holding out one camera whose mate keeps training measured
   ~5.7 dB of pure leakage on an 11-camera rig. That number is leak, not
   quality. Check your rig's pair structure before choosing the split.
-- **`train4d` is CUDA-gated.** `--trainer` picks the trainer. The
-  default, `omg4`, generates the config from
-  `configs/gs4d_pretrain_template.yaml` (override with
-  `--trainer_config`) and trains `train_scratch.py` in `deps/OMG4`.
-  `cumuli` writes a JSON config and runs `python -m cumuli_trainer`,
-  the clean-room trainer, which writes spacetime Gaussians to
-  `train4d_output/splat_4d.ply`. Both run in the `cumuli` env. Either
-  output goes through `bake_sogst.py` (a PLY gets the post-filters only:
-  no slicing, no scale compensation, and its own clip scalars), then
-  `eval_render.py` scores the held-out camera.
+- **`train4d` is CUDA-gated.** It writes a JSON config, runs
+  `python -m cumuli_trainer --config <json>` in the `cumuli` env, and
+  the trainer writes `train4d_output/splat_4d.ply` (the 4D interchange
+  PLY, which carries its own clip scalars). `bake_sogst.py` bakes that
+  PLY to `.sogst`, then `eval_render.py` scores the held-out camera.
+- **Trainer flags.** Each one left unset keeps the trainer's own
+  default. `--num_pts` caps the initial Gaussians drawn from
+  `points3d.ply` (default: all of them). `--batch_size4d` is cameras
+  rendered per step (default 2). `--densify_until_iter` is the last step
+  of relocation and growth (default 25000). `--densify_until_num_points` is the
+  Gaussian budget (default 300k; larger budgets measured worse on
+  held-out cameras). `--t_init_div` sets the initial temporal width
+  (default 100 here). `--export_min_contribution` drops Gaussians whose
+  largest contribution to any training view is under that many pixels
+  (trainer default 2; 0 keeps them). `--trainer_config` passes a
+  pre-written config instead and skips generation.
+- **Bake flags.** The stage bakes with `--sh_chroma_clamp 0.02`, which
+  bounds only the coloured part of view-dependent SH. On Heidi it cut
+  coloured glints from 0.94 to 0.14 per 10k subject pixels at no
+  measured cost (36.08 to 36.07 dB, LPIPS 0.0096 both).
+  `--smooth_px` (default 0.5) blurs every splat by that many
+  training-camera pixels, and `--smooth_frames` (default 2) widens every
+  splat's lifetime by that many frames. Together they made the close-up
+  face 13% steadier (frame-to-frame change 19.90 to 17.23) on Heidi, at
+  held-out 36.20 dB / LPIPS 0.0110 against 36.09 / 0.0097 unsmoothed.
+  Set either to 0 to turn it off.
 
 The masks are baked into the dataset's RGBA alpha during the dataset
 build, so alpha supervision is part of training by construction. The

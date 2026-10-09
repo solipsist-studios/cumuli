@@ -33,7 +33,7 @@ body:
         - "clean_masks.py (mask cleanup)"
         - "triangulate_and_project_keypoints.py"
         - "build_colmap_sparse.py (COLMAP export)"
-        - "Training (4D rotor trainer, dataset4d/train4d stages)"
+        - "Training (4D trainer, dataset4d/train4d stages)"
         - "run_unified_pipeline.py (orchestrator itself)"
         - "render_frame_sequence.py (multi-frame)"
         - "Installation / conda environment setup"

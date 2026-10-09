@@ -7,8 +7,7 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 
 `run_unified_pipeline.py --config <file>.json` loads per-rig defaults for the
 flags that are about the machine/setup rather than a specific capture --
-`--trainer_repo`, `SAPIENS_CHECKPOINT_ROOT`,
-and the HLOC feature-extraction settings. Explicit CLI flags always win over the
+`SAPIENS_CHECKPOINT_ROOT` and the HLOC feature-extraction settings. Explicit CLI flags always win over the
 config. The config only fills in what you did not pass.
 
 Per-run flags (`--video_dir`, `--calib_dir`, `--out_dir`, `--target_time`,

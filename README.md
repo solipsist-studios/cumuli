@@ -30,7 +30,7 @@ scripts/   pipeline scripts, plus run_unified_pipeline.py (the
            have posed cameras
 deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
-           (--trainer_repo, HLOC settings, etc.), see
+           (SAPIENS_CHECKPOINT_ROOT, HLOC settings), see
            configs/README.md
 environment.yml  the cumuli env manifest (see scripts/setup_cumuli_env.sh),
            pinning the known-good versions from docs/environment.md
@@ -65,8 +65,8 @@ git submodule update --init --recursive
 - `deps/BiRefNet` -- background removal model (invoked via Diffuman4D's own wrapper script)
 - `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
 - `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today. It also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
-- `deps/4d-gaussian-splatting` -- 4D "rotor" gaussian splat trainer for the native `.sogst` path (solipsist-studios fork, carries required patches, see docs/omg4_native_training.md)
-- `deps/OMG4` -- SPM compression + SPM-native fine-tuning for the 4D path (solipsist-studios fork with the `--spm_native_out` patches)
+- `deps/cumuli-trainer` -- the 4D gaussian splat trainer behind the `train4d` stage (Solipsist, private)
+- `deps/cumuli-core` -- shared 4D library: interchange PLY, `.sogst` decoding, cameras, gsplat rendering, metrics (Solipsist, private)
 
 ## Conda environments
 
@@ -95,8 +95,8 @@ python3 scripts/run_unified_pipeline.py \
     --target_time <e.g. 2500ms>
 ```
 
-`--config` loads per-rig defaults (`--trainer_repo`,
-`SAPIENS_CHECKPOINT_ROOT`, HLOC settings) from a JSON file so you do not have
+`--config` loads per-rig defaults (`SAPIENS_CHECKPOINT_ROOT`,
+HLOC settings) from a JSON file so you do not have
 to repeat them on every run. Copy [configs/example_rig.json](configs/example_rig.json)
 and fill in your own paths. See [configs/README.md](configs/README.md).
 Everything it sets can still be overridden on the command line.
@@ -152,28 +152,9 @@ published analog to the `.sogst` container itself, reports only quality
 deltas against its input representation (-0.4 to +0.9 dB at >90% size
 reduction), not absolute benchmark metrics.
 
-Where this pipeline stands: it trains the same rotor 4DGS model the
-OMG4 paper compresses, so OMG4's rows are the closest published analog.
-Our own coffee_martini measurements, trained and scored end to end with
-this repo (`train_scratch.py` -> `spm_native.py` -> `eval_render.py`,
-30-frame held-out subset, LPIPS-AlexNet):
-
-| model | splats | size | PSNR | SSIM | LPIPS |
-|---|---|---|---|---|---|
-| pretrain (1.2M-point cap) | 1.2M | ~350 MB raw | 24.97 | - | - |
-| SPM-native `.sogst` | 414k | **10.0 MB** | 24.51 | 0.851 | 0.200 |
-
-The headline: SPM-native cost **0.46 dB** against its own pretrain while
-cutting the model to a 10 MB streamable archive - the count reduction
-is nearly free when explicit SH is kept, which is why `spm_native.py`
-is the recommended path. The gap to the published 27.3-29.1 dB range is
-dominated by the pretrain itself: our 32 GB consumer GPU forced a
-1.2M-gaussian densification cap where the papers train unconstrained
-multi-million-point models on data-center hardware. For calibration on
-the identical harness, the OMG4 authors' own published (uncapped,
-implicit-path) coffee_martini artifact scores 25.92 dB / LPIPS 0.144 at
-3.15 MB. Do not compare any of these numbers against the table above
-without the caveats listed there.
+This repo's own trainer (cumuli-trainer) has not been scored on this
+benchmark yet. Measurements of the earlier OMG4-based training path are
+in git history.
 
 ## Contributing
 
@@ -247,14 +228,11 @@ human capture pipeline, anyone deploying it commercially should read
 the agreement and take their own legal advice rather than relying on
 this summary.
 
-`deps/4d-gaussian-splatting` is MIT at the repository level, with the
-Inria Gaussian-Splatting license (non-commercial research) covering its
-3DGS-derived parts. Both license files ship in the submodule.
-`deps/OMG4` carries **no license file**. It is consumed as a GitHub fork
-of an academic repository, and several of its files carry the Inria
-non-commercial notice. Treat both trainers as research-use components
-and take advice before any commercial deployment of the 4D training
-path.
+The 4D training path no longer depends on OMG4's or Inria's
+non-commercial code. The trainer, `deps/cumuli-trainer`, is Solipsist's
+own code under the PolyForm Noncommercial license, the same terms as
+this repository, and the shared library `deps/cumuli-core` is too. Both
+render through gsplat, which is Apache-2.0.
 
 Everything else wrapped by the pipeline (BiRefNet:
 MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,

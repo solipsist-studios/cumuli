@@ -55,8 +55,7 @@ narrower here than for typical software.
 **Out of scope**, though still worth telling us about as normal bugs:
 
 - Vulnerabilities in the wrapped third-party tools -- COLMAP, HLOC,
-  the 4D trainer stack (deps/4d-gaussian-splatting, deps/OMG4),
-  Sapiens, BiRefNet, Diffuman4D, ffmpeg, RawTherapee.
+  gsplat, Sapiens, BiRefNet, Diffuman4D, ffmpeg, RawTherapee.
   Report those upstream. We will bump pins once a fix is released.
 - Vulnerabilities in the conda environments' Python packages. We audit the
   pins in `envs/*.yml` periodically, but those packages are not ours.

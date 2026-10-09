@@ -54,10 +54,11 @@ pytest tests/integration -q
 
 Needs, on the machine running it:
 - An NVIDIA GPU (`nvidia-smi`)
-- The `cumuli` conda env, provisioned by `scripts/setup_cumuli_env.sh`
-  (a plain `conda env create` lacks the trainer CUDA extensions the
-  GPU-mode prereq check probes for, see `docs/environment.md`)
-- The `deps/OMG4` submodule checked out (the vendored trainer)
+- The `deps/cumuli-trainer` and `deps/cumuli-core` submodules checked
+  out, and the `cumuli` conda env provisioned by
+  `scripts/setup_cumuli_env.sh`, which installs both from `deps/`. A
+  plain `conda env create` lacks them, and the GPU-mode prereq check
+  probes `import cumuli_trainer, gsplat` (see `docs/environment.md`)
 - `ffmpeg` on PATH
 - Sapiens checkpoints (`SAPIENS_CHECKPOINT_ROOT`, or `VCP_SAPIENS_CHECKPOINT_ROOT`
   to point at a different location than the orchestrator's own default)
