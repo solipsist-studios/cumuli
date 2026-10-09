@@ -189,9 +189,8 @@ def main():
                     help="the new window's existing points3d.ply")
     ap.add_argument("--out", required=True)
     ap.add_argument("--total", type=int, default=300_000,
-                    help="points to write. Keep this ABOVE the trainer's "
-                         "--num_pts: readNerfSyntheticInfo subsamples a longer "
-                         "cloud and mishandles a shorter one (default 300000)")
+                    help="points to write. The trainer subsamples a cloud "
+                         "longer than its --num_pts (default 300000)")
     ap.add_argument("--seed_fraction", type=float, default=0.5,
                     help="share taken from the previous model rather than the "
                          "hull; 1.0 and 0.0 give the pure variants")
