@@ -48,10 +48,12 @@ alongside sync itself. So the actual flow is:
      transforms apply to every frame) -> build_flipbook_4dgs_dataset.py
      (D-NeRF dataset with per-view intrinsics, mate-aware eval holdouts).
      CPU-capable end to end.
-  6. TRAIN4D (CUDA only): generate the trainer config from
-     configs/gs4d_pretrain_template.yaml -> train_scratch.py in the
-     vendored deps/OMG4 fork -> bake_sogst.py (lifetime mask-consistency
-     filter on) -> eval_render.py --report_json on the held-out camera.
+  6. TRAIN4D (CUDA only): --trainer omg4 (default) generates the config
+     from configs/gs4d_pretrain_template.yaml -> train_scratch.py in the
+     vendored deps/OMG4 fork; --trainer cumuli writes a JSON config ->
+     python -m cumuli_trainer -> splat_4d.ply. Either way: bake_sogst.py
+     (lifetime mask-consistency filter on) -> eval_render.py --report_json
+     on the held-out camera.
      The Diffuman4D 48-camera dense-ring branch is still not wired in.
 
 Usage (see --help for every flag):
@@ -206,6 +208,22 @@ def run_script(script_name, args, conda_env=None, cwd=None, extra_env=None, labe
     info(f"$ {' '.join(cmd)}{env_suffix}")
 
     result = subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env)
+    if result.returncode != 0:
+        fail(f"{tag} exited with code {result.returncode} -- stopping pipeline.")
+        raise StageError(f"{tag} failed (exit {result.returncode})")
+    ok(f"{tag} complete")
+
+
+def run_module(module, args, extra_env=None, label=None):
+    """run_script for an installed package: `<CONDA_ENV python> -m module args`.
+    Same fresh-environment rule as run_script."""
+    cmd = [resolve_env_python(), "-m", module] + [str(a) for a in args]
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    tag = label or module
+    info(f"$ {' '.join(cmd)}  {C.YELLOW}[conda: {CONDA_ENV}]{C.RESET}")
+    result = subprocess.run(cmd, env=env)
     if result.returncode != 0:
         fail(f"{tag} exited with code {result.returncode} -- stopping pipeline.")
         raise StageError(f"{tag} failed (exit {result.returncode})")
@@ -622,23 +640,11 @@ def stage_dataset4d(args, L, image_ext, sync_json: Path):
                label="build_flipbook_4dgs_dataset.py (4D dataset assembly)")
 
 
-def stage_train4d(args, L):
-    """Train the rotor 4DGS model, bake it to .sogst, and score it.
-
-    GPU-gated: the trainer's rasterizer is CUDA-only, so this stage refuses
-    to start without a visible GPU rather than fail deep inside training.
-    The trainer is train_scratch.py in the vendored OMG4 fork (upstream
-    4d-gaussian-splatting train.py plus this project's patches), run in the
-    trainer conda env. Explicit --save_iterations makes the checkpoint name
-    deterministic: <model_path>/chkpnt<iters>.pth."""
-    banner("STAGE: TRAIN4D (rotor 4DGS training, bake, eval)")
-
-    if not gpu_available():
-        raise StageError(
-            "stage 'train4d' requires a CUDA GPU (nvidia-smi found no device). "
-            "Run through --stop_after_stage dataset4d on this machine and "
-            "train on a GPU host.")
-
+def _train_omg4(args, L, iters, duration_s):
+    """OMG4 rotor 4DGS: train_scratch.py from a generated config, then the
+    bake slices the rotor checkpoint. Explicit --save_iterations makes the
+    checkpoint name deterministic: <model_path>/chkpnt<iters>.pth. Returns
+    the bake's input arguments."""
     trainer_repo = Path(args.trainer_repo).expanduser().resolve()
     train_script = trainer_repo / "train_scratch.py"
     if not train_script.is_file():
@@ -647,8 +653,6 @@ def stage_train4d(args, L):
             f"submodule (git submodule update --init deps/OMG4) or point "
             f"--trainer_repo at a patched OMG4 clone.")
 
-    iters = args.total_train_iters
-    duration_s = (args.train_window - 1) / args.train_fps
     if args.trainer_config:
         config_path = Path(args.trainer_config)
         info(f"Using caller-supplied trainer config {config_path} "
@@ -688,18 +692,94 @@ def stage_train4d(args, L):
             label="train_scratch.py (rotor 4DGS pretrain)")
     if not checkpoint.is_file():
         raise StageError(f"training finished but {checkpoint} does not exist")
+    return ["--input", checkpoint, "--time_min", "0",
+            "--time_max", f"{duration_s:.6f}", "--fps", str(args.train_fps)]
 
-    bake_args = [
-        "--input", checkpoint, "--output", L["sogst_out"],
-        "--time_min", "0", "--time_max", f"{duration_s:.6f}",
-        "--fps", str(args.train_fps),
+
+def _train_cumuli(args, L, iters, duration_s):
+    """cumuli-trainer: spacetime Gaussians trained directly, written as the
+    4D interchange PLY <model_path>/splat_4d.ply. The PLY carries its own
+    clip scalars, so the bake takes no time or fps flags. The OMG4-only
+    knobs (--num_pts, --batch_size4d, --densify_until_*) do not apply; the
+    trainer's own defaults govern them. Returns the bake's input arguments."""
+    model_dir = L["train4d_model"]
+    if args.trainer_config:
+        config_path = Path(args.trainer_config)
+        info(f"Using caller-supplied trainer config {config_path}")
+    else:
+        config = {
+            "source_path": str(L["dataset4d"].resolve()),
+            "model_path": str(model_dir.resolve()),
+            "time_duration": [0.0, round(duration_s, 6)],
+            "fps": args.train_fps,
+            "iterations": iters,
+            "test_iterations": [iters],
+            "save_iterations": [iters],
+        }
+        if args.t_init_div:
+            config["t_init_div"] = args.t_init_div
+        if getattr(args, "export_min_contribution", None) is not None:
+            config["export_min_contribution"] = args.export_min_contribution
+        config_path = L["train4d_config"]
+        # JSON is valid YAML, and it cannot misquote a path.
+        config_path.write_text(json.dumps(config, indent=2) + "\n")
+        info(f"Wrote trainer config {config_path}")
+
+    ply = model_dir / "splat_4d.ply"
+    if ply.is_file():
+        info(f"{ply} already on disk -- skipping training (delete it to force a retrain)")
+    else:
+        run_module("cumuli_trainer", ["--config", config_path],
+                   label="cumuli-trainer (spacetime 4DGS)")
+    if not ply.is_file():
+        raise StageError(f"training finished but {ply} does not exist")
+    # Bound the coloured part of the view-dependent SH: removes the coloured
+    # glints a sparse rig leaves on opaque splats at no measured cost (Heidi:
+    # 0.94 -> 0.14 glints per 10k, 36.08 -> 36.07 dB). See clamp_sh_chroma.
+    bake = ["--input", ply, "--sh_chroma_clamp", "0.02"]
+    if getattr(args, "smooth_px", 0):
+        # Optional softening: a calmer, slightly blurrier bake (see smooth_3d)
+        bake += ["--smooth_px", str(args.smooth_px)]
+    if getattr(args, "smooth_frames", 0):
+        # Optional temporal softening: gentler fade-in/out (see smooth_time)
+        bake += ["--smooth_frames", str(args.smooth_frames)]
+    return bake
+
+
+def stage_train4d(args, L):
+    """Train the 4DGS model, bake it to .sogst, and score it.
+
+    GPU-gated: both trainers rasterize with CUDA, so this stage refuses to
+    start without a visible GPU rather than fail deep inside training.
+    --trainer picks the trainer: `omg4` (default) is train_scratch.py in the
+    vendored OMG4 fork, baked from its rotor checkpoint; `cumuli` is the
+    clean-room cumuli-trainer package, which writes spacetime Gaussians as
+    an interchange PLY that the bake only post-filters. Both end in the same
+    .sogst and the same eval."""
+    banner(f"STAGE: TRAIN4D ({args.trainer} 4DGS training, bake, eval)")
+
+    if not gpu_available():
+        raise StageError(
+            "stage 'train4d' requires a CUDA GPU (nvidia-smi found no device). "
+            "Run through --stop_after_stage dataset4d on this machine and "
+            "train on a GPU host.")
+
+    iters = args.total_train_iters
+    duration_s = (args.train_window - 1) / args.train_fps
+    if args.trainer == "cumuli":
+        bake_args = _train_cumuli(args, L, iters, duration_s)
+    else:
+        bake_args = _train_omg4(args, L, iters, duration_s)
+
+    bake_args += [
+        "--output", L["sogst_out"],
         # Lifetime mask-consistency filter: drops splats that project outside
         # the subject mask in most views across their active life. Removes
         # real silhouette-escaping junk; it is not a quality regulariser.
         "--mask_filter_root", L["dataset4d"],
     ]
     run_script("bake_sogst.py", bake_args, conda_env=CONDA_ENV,
-               label="bake_sogst.py (bake checkpoint to .sogst)")
+               label=f"bake_sogst.py (bake {args.trainer} output to .sogst)")
 
     # Score when a rig camera was held out, OR when ground-truth frames
     # exist for some other reason. The second case is the rendered-rig path:
@@ -735,7 +815,7 @@ def stage_train4d(args, L):
 CONFIGURABLE_DEFAULTS = {
     "sapiens_checkpoint_root",
     "multiframe_sfm_script", "hloc_feature_type", "hloc_resize_max", "hloc_max_keypoints",
-    "trainer_repo",
+    "trainer_repo", "trainer",
 }
 
 
@@ -808,6 +888,26 @@ def add_train4d_args(parser):
                         help="Pre-written trainer yaml. Bypasses template generation entirely; "
                              "the template's source_path/model_path substitutions become the "
                              "caller's responsibility.")
+    parser.add_argument("--trainer", choices=("omg4", "cumuli"), default="omg4",
+                        help="4DGS trainer: omg4 (default, the vendored OMG4 fork) or cumuli "
+                             "(the clean-room cumuli-trainer package, installed in the cumuli env).")
+    # Defaults picked by eye on Heidi (2026-10-08): 0.5 px + 2 frames gave a
+    # face 13% steadier than no smoothing and 6% steadier than the old
+    # sh2_defaults look (close-up frame-to-frame change 19.90 -> 17.23 vs
+    # 18.35), at 36.20 dB / LPIPS 0.0110 against 36.09 / 0.0097 unsmoothed.
+    parser.add_argument("--smooth_frames", type=float, default=2.0,
+                        help="--trainer cumuli only: bake-time temporal smoothing, in frames. "
+                             "Steadier playback, at the risk of ghosting when large. Default 2; "
+                             "0 turns it off.")
+    parser.add_argument("--smooth_px", type=float, default=0.5,
+                        help="--trainer cumuli only: bake-time 3D smoothing, in training-camera "
+                             "pixels. Higher is softer and calmer, lower is sharper and noisier. "
+                             "Heidi: 0 -> LPIPS 0.0097, 0.5 -> 0.0106, 1 -> 0.0120 (PSNR rises "
+                             "slightly). Default 0.5; 0 turns it off.")
+    parser.add_argument("--export_min_contribution", type=float, default=None,
+                        help="--trainer cumuli only: drop Gaussians whose largest contribution to "
+                             "any training view is under this many pixels (hidden Gaussians glint "
+                             "from new viewpoints). Default: the trainer's own (2); 0 keeps them.")
     parser.add_argument("--trainer_repo", type=Path, default=REPO_ROOT / "deps" / "OMG4",
                         help="Patched OMG4 clone carrying train_scratch.py (default: the vendored "
                              "deps/OMG4 submodule).")

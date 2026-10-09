@@ -236,6 +236,43 @@ def bad_color_mask(f_dc):
     return ~bad
 
 
+# max |Y_lm| over the sphere for bands 1..3 (l=1: 0.489, l=2: up to 0.630, l=3: up to 0.746)
+SH_Y_MAX = np.array([0.489, 0.489, 0.489,
+                     0.546, 0.546, 0.630, 0.546, 0.546,
+                     0.590, 0.590, 0.457, 0.746, 0.457, 0.590, 0.590], dtype=np.float32)
+
+
+def clamp_sh_chroma(f_rest, limit):
+    """Bound the COLOURED part of each splat's view-dependent term, leaving
+    its brightness part alone.
+
+    The higher SH bands split into a luminance component (the per-coefficient
+    mean over R, G, B) and a chroma component (the rest). With ~10 cameras,
+    a splat's colour is pinned down in ~10 directions; between them the
+    fitted lobes extrapolate into hues the subject does not have, which
+    shows as coloured glints wherever the splat is opaque, worst on dark
+    material. Real view-dependence on skin and cloth is mostly brightness
+    (sheen, specular), so bounding only the chroma removes the glints and
+    keeps the shading. Per splat, the worst-case chroma excursion
+    sum(|chroma_lm| * max|Y_lm|) is scaled down to ``limit`` (colour units).
+
+    Heidi (cumuli-trainer, held-out cam05; close-up orbit, glint pixels per
+    10k subject pixels): no limit 0.94 glints, 36.08 dB, LPIPS 0.0096;
+    limit 0.02 0.14 glints (SH-off floor 0.12), 36.07 dB, LPIPS 0.0096.
+    The absolute --sh_clamp at 0.5 reached 0.21 glints only by costing
+    0.38 dB. limit <= 0 disables."""
+    if f_rest is None or limit <= 0:
+        return f_rest
+    y_max = SH_Y_MAX[:f_rest.shape[1]]
+    lum = f_rest.mean(axis=2, keepdims=True)                           # [N,c,1]
+    chroma = f_rest - lum
+    bound = (np.abs(chroma) * y_max[None, :, None]).sum(axis=1).max(axis=1)  # [N]
+    scale = np.minimum(1.0, limit / np.maximum(bound, 1e-9))
+    print(f'  SH chroma clamp: limited {int((scale < 1.0).sum()):,} / {len(scale):,} splats '
+          f'(max chroma excursion was {bound.max():.2f})')
+    return (lum + chroma * scale[:, None, None]).astype(f_rest.dtype)
+
+
 def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     """Scale down each splat's higher SH bands so its colour stays bounded
     from every view direction.
@@ -249,12 +286,8 @@ def clamp_sh_overshoot(f_dc, f_rest, sh_clamp):
     """
     if f_rest is None or sh_clamp <= 0:
         return f_rest
-    # max |Y_lm| over the sphere for bands 1..3 (l=1: 0.489, l=2: up to 0.630, l=3: up to 0.746)
-    y_max = np.array([0.489, 0.489, 0.489,
-                      0.546, 0.546, 0.630, 0.546, 0.546,
-                      0.590, 0.590, 0.457, 0.746, 0.457, 0.590, 0.590], dtype=np.float32)
     # a degree-1 or degree-2 block carries 3 or 8 coefficients per channel
-    y_max = y_max[:f_rest.shape[1]]
+    y_max = SH_Y_MAX[:f_rest.shape[1]]
     SH_C0 = 0.28209479177387814
     base = np.abs(f_dc * SH_C0 + 0.5)                                  # [N,3]
     bound = (np.abs(f_rest) * y_max[None, :, None]).sum(axis=1)        # [N,3]
@@ -465,6 +498,93 @@ def black_floater_mask(f_dc, opacity_logit, log_scales,
     return ~bad
 
 
+def training_sample_rate(dataset_root, xyz):
+    """[N] the finest sampling of each splat by any training camera, in
+    pixels per scene unit: max over cameras that see it in frame of
+    focal / depth. Splats no camera frames get the median of the rest."""
+    import json
+    root = os.path.expanduser(dataset_root)
+    with open(os.path.join(root, 'transforms_train.json')) as fh:
+        t = json.load(fh)
+    seen = {}
+    for fr in t['frames']:   # a static rig: one pose per camera label
+        lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
+        seen.setdefault(lab, fr)
+    rate = np.zeros(len(xyz), np.float64)
+    for fr in seen.values():
+        c2w = np.asarray(fr['transform_matrix'], np.float64).copy()
+        c2w[:3, 1:3] *= -1.0                       # OpenGL -> OpenCV
+        w2c = np.linalg.inv(c2w)
+        cam = xyz @ w2c[:3, :3].T + w2c[:3, 3]
+        z = cam[:, 2]
+        fx = float(fr.get('fl_x', t.get('fl_x'))); fy = float(fr.get('fl_y', t.get('fl_y')))
+        cx = float(fr.get('cx', t.get('cx'))); cy = float(fr.get('cy', t.get('cy')))
+        w = float(fr.get('w', t.get('w'))); h = float(fr.get('h', t.get('h')))
+        zz = np.maximum(z, 1e-6)
+        u = fx * cam[:, 0] / zz + cx
+        v = fy * cam[:, 1] / zz + cy
+        ok = (z > 1e-3) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        rate = np.where(ok, np.maximum(rate, fx / zz), rate)
+    if (rate > 0).any():
+        rate[rate == 0] = np.median(rate[rate > 0])
+    else:
+        rate[:] = 1.0
+    return rate
+
+
+def smooth_3d(dataset_root, xyz, log_scales, opacity_logit, smooth_px):
+    """Low-pass each splat by an isotropic Gaussian of ``smooth_px`` training
+    pixels: the 3D smoothing filter of Mip-Splatting (Yu et al. 2024), as a
+    bake-time knob rather than a training term.
+
+    Adding sigma^2 I to a covariance keeps its axes, so each scale becomes
+    sqrt(s^2 + sigma^2), with sigma = smooth_px / (finest training sampling
+    rate of that splat). Peak opacity is scaled by s1 s2 s3 / s1' s2' s3'
+    so each splat keeps its integrated density. Thin, noisy splats widen and
+    fade the most; large smooth ones barely change. 0 disables.
+
+    It trades sharpness for calm: on a 10-camera rig the fine detail between
+    cameras is partly noise, and a softer bake reads as cleaner."""
+    if smooth_px <= 0:
+        return log_scales, opacity_logit
+    rate = training_sample_rate(dataset_root, xyz)
+    sigma2 = (smooth_px / rate) ** 2                                    # [N]
+    s2 = np.exp(2.0 * log_scales.astype(np.float64))
+    new_s2 = s2 + sigma2[:, None]
+    new_log_scales = 0.5 * np.log(new_s2)
+    ratio = np.exp((log_scales.astype(np.float64) - new_log_scales).sum(axis=1))  # det ratio^(1/2)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit.astype(np.float64)))
+    new_alpha = np.clip(alpha * ratio, 1e-7, 1 - 1e-7)
+    print(f'  3D smoothing: {smooth_px:g} training px; median filter width '
+          f'{np.median(np.sqrt(sigma2)):.4g} units, median opacity x{np.median(ratio):.3f}')
+    return (new_log_scales.astype(np.float32),
+            np.log(new_alpha / (1.0 - new_alpha)).astype(np.float32))
+
+
+def smooth_time(t_sigma, opacity_logit, smooth_frames, fps):
+    """Low-pass each splat in time by a Gaussian ``smooth_frames`` frames
+    wide: t_sigma becomes sqrt(t_sigma^2 + s^2), and peak opacity scales by
+    t_sigma / t_sigma' so each splat keeps its integral over time. Short-
+    lived splats fade in and out more gently, which reads as steadier
+    playback; long-lived ones barely change. 0 disables.
+
+    Heidi (cumuli-trainer, front-view head frame-to-frame change / held-out
+    cam05 LPIPS): 0 -> 6.08 / 0.0097, 2 frames -> 5.74 / 0.0101,
+    4 frames -> 5.48 / 0.0108. Spatial --smooth_px 1 -> 5.05 / 0.0120.
+    Long smoothing lets a splat drift further along its velocity, so
+    expect ghosting well before the image softens."""
+    if smooth_frames <= 0:
+        return t_sigma, opacity_logit
+    s = smooth_frames / float(fps)
+    ts = t_sigma.astype(np.float64)
+    new_ts = np.sqrt(ts ** 2 + s ** 2)
+    alpha = 1.0 / (1.0 + np.exp(-opacity_logit.astype(np.float64)))
+    new_alpha = np.clip(alpha * ts / new_ts, 1e-7, 1 - 1e-7)
+    print(f'  temporal smoothing: {smooth_frames:g} frames; median lifetime '
+          f'{np.median(ts):.3f}s -> {np.median(new_ts):.3f}s')
+    return new_ts.astype(np.float32), np.log(new_alpha / (1.0 - new_alpha)).astype(np.float32)
+
+
 def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacity_logit,
                           outside_frac=0.5, downscale=4, time_stride=4, k_sigma=2.0,
                           alpha_thresh=0.02):
@@ -661,6 +781,7 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 
 def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, prune_threshold,
                             sh_degree=None, scale_boost=1.0, sh_clamp=1.5, keep_main_cluster=False,
+                            sh_chroma_clamp=0.0, smooth_px=0.0, smooth_frames=0.0,
                             top_k_fraction=1.0, extra_keep_mask_path=None,
                             filter_black_floaters=False, mask_filter_root=None,
                             mask_filter_outside_frac=0.5):
@@ -758,7 +879,7 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
               + features_rest[:, 2 * S + 2:3 * S + 2, :])
     f_rest = truncate_sh(f_rest, sh_degree)
     if f_rest is not None:
-        f_rest = clamp_sh_overshoot(f_dc, f_rest, sh_clamp)
+        f_rest = clamp_sh_overshoot(f_dc, clamp_sh_chroma(f_rest, sh_chroma_clamp), sh_clamp)
 
     if top_k_fraction < 1.0:
         dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
@@ -775,6 +896,11 @@ def convert_from_checkpoint(checkpoint_path, out_path, time_min, time_max, fps, 
                                              t_center[top_mask], t_sigma[top_mask])
         if f_rest is not None:
             f_rest = f_rest[top_mask]
+
+    if smooth_px > 0:
+        log_scales, opacity_logit = smooth_3d(mask_filter_root, xyz, log_scales, opacity_logit, smooth_px)
+    if smooth_frames > 0:
+        t_sigma, opacity_logit = smooth_time(t_sigma, opacity_logit, smooth_frames, fps)
 
     mask_keep = None
     if mask_filter_root:
@@ -837,6 +963,76 @@ def convert_ftgs(save_dict, out_path, time_min, time_max, fps, prune_threshold,
                   means, quats, log_scales.astype(np.float32), opacity_logit,
                   f_dc, f_rest, velocity, times, t_sigma,
                   keep_main_cluster=keep_main_cluster, accel=accel)
+
+
+def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshold,
+                     sh_degree=None, sh_clamp=1.5, keep_main_cluster=False,
+                     sh_chroma_clamp=0.0, smooth_px=0.0, smooth_frames=0.0, top_k_fraction=1.0, filter_black_floaters=False,
+                     mask_filter_root=None, mask_filter_outside_frac=0.5):
+    """4D interchange PLY input: a trainer that already writes spacetime
+    Gaussians (cumuli-trainer) needs no slicing, no temporal-SH fold and no
+    FoV compensation, only the same post-filters the checkpoint path runs.
+    Mirrors convert_from_checkpoint()'s tail exactly, so a PLY and an OMG4
+    checkpoint of the same splats bake to the same output."""
+    from sogst_ply import read_sogst_ply
+
+    print(f"Loading interchange PLY {ply_path} …")
+    _header, fields = read_sogst_ply(ply_path)
+    col = lambda *names: np.stack([fields[n] for n in names], axis=1).astype(np.float32)
+    xyz = col('x', 'y', 'z')
+    quat = col('rot_0', 'rot_1', 'rot_2', 'rot_3')
+    log_scales = col('scale_0', 'scale_1', 'scale_2')
+    opacity_logit = fields['opacity'].astype(np.float32)
+    f_dc = col('f_dc_0', 'f_dc_1', 'f_dc_2')
+    velocity = col('vx', 'vy', 'vz')
+    t_center = fields['t_center'].astype(np.float32)
+    t_sigma = fields['t_sigma'].astype(np.float32)
+    accel = col('ax', 'ay', 'az') if 'ax' in fields else None
+    N = xyz.shape[0]
+    print(f"  {N:,} splats")
+
+    f_rest = None
+    if 'f_rest' in fields:
+        # channel-major [N, 3c] -> [N, c, 3], the layout finish_export writes back
+        n_coeffs = fields['f_rest'].shape[1] // 3
+        f_rest = fields['f_rest'].reshape(N, 3, n_coeffs).transpose(0, 2, 1).astype(np.float32)
+    f_rest = truncate_sh(f_rest, sh_degree)
+    if f_rest is not None:
+        f_rest = clamp_sh_overshoot(f_dc, clamp_sh_chroma(f_rest, sh_chroma_clamp), sh_clamp)
+
+    if top_k_fraction < 1.0:
+        dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
+        peak_weight = np.exp(-0.5 * (dist / np.maximum(t_sigma, 1e-9)) ** 2)
+        peak_alpha = (1.0 / (1.0 + np.exp(-opacity_logit))) * peak_weight
+        k = max(1, min(N, int(round(top_k_fraction * N))))
+        thresh = np.partition(peak_alpha, N - k)[N - k]
+        top = peak_alpha >= thresh
+        print(f"  top_k_fraction={top_k_fraction}: keeping {int(top.sum()):,} / {N:,} "
+              f"highest-visibility splats")
+        xyz, quat, log_scales, opacity_logit = xyz[top], quat[top], log_scales[top], opacity_logit[top]
+        f_dc, velocity, t_center, t_sigma = f_dc[top], velocity[top], t_center[top], t_sigma[top]
+        if f_rest is not None:
+            f_rest = f_rest[top]
+        if accel is not None:
+            accel = accel[top]
+
+    if smooth_px > 0:
+        log_scales, opacity_logit = smooth_3d(mask_filter_root, xyz, log_scales, opacity_logit, smooth_px)
+    if smooth_frames > 0:
+        t_sigma, opacity_logit = smooth_time(t_sigma, opacity_logit, smooth_frames, fps)
+
+    mask_keep = None
+    if mask_filter_root:
+        mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
+                                          t_sigma, opacity_logit,
+                                          outside_frac=mask_filter_outside_frac)
+
+    finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
+                  xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
+                  velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
+                  filter_corrupted=False, filter_dark_occluders=True,
+                  filter_black_floaters=filter_black_floaters,
+                  extra_keep_mask=mask_keep, accel=accel)
 
 
 def convert(xz_path, out_path, time_min, time_max, fps, prune_threshold, sh_degree=None,
@@ -953,20 +1149,39 @@ if __name__ == '__main__':
         description='Bake an OMG4 trainer artifact (comp.xz or chkpntNNNNN.pth) '
                     'into the .sogst container and/or the 4D interchange PLY')
     parser.add_argument('--input', required=True,
-                        help='Trainer artifact: comp.xz (OMG4) or chkpntNNNNN.pth')
+                        help='Trainer artifact: comp.xz (OMG4), chkpntNNNNN.pth, or a 4D '
+                             'interchange .ply (cumuli-trainer; post-filters only)')
     parser.add_argument('--output', default=None,
                         help='Destination .sogst archive. Optional when --emit_ply is '
                              'given, so a bake can produce only the interchange PLY.')
-    parser.add_argument('--time_min', type=float, default=0.0,
-                        help='Training time_duration min in seconds (default: 0.0)')
-    parser.add_argument('--time_max', type=float, default=10.0,
-                        help='Training time_duration max in seconds (default: 10.0)')
-    parser.add_argument('--fps', type=float, default=30.0, help='Advisory fps for UI (default: 30)')
+    parser.add_argument('--time_min', type=float, default=None,
+                        help='Training time_duration min in seconds (default: 0.0; a .ply input '
+                             'carries its own and a disagreeing value is an error)')
+    parser.add_argument('--time_max', type=float, default=None,
+                        help='Training time_duration max in seconds (default: 10.0; a .ply input '
+                             'carries its own and a disagreeing value is an error)')
+    parser.add_argument('--fps', type=float, default=None,
+                        help='Advisory fps for UI (default: 30; a .ply input carries its own)')
     parser.add_argument('--prune_threshold', type=float, default=1.0 / 1024,
                         help='Drop Gaussians whose peak alpha inside the time range is below this (default: 1/1024, 0 disables)')
     parser.add_argument('--keep_main_cluster', action='store_true',
                         help='Drop splats outside the largest connected cluster (removes isolated '
                              'floater blobs, intended for masked single-subject captures)')
+    parser.add_argument('--smooth_frames', type=float, default=0.0,
+                        help='Checkpoint and .ply inputs: widen every splat\'s lifetime by a Gaussian '
+                             'this many frames wide, conserving its integral over time. Gentler '
+                             'fade-in/out, steadier playback; too much ghosts. Default 0: off.')
+    parser.add_argument('--smooth_px', type=float, default=0.0,
+                        help='Checkpoint and .ply inputs: blur every splat by an isotropic Gaussian '
+                             'this many training-camera pixels wide (Mip-Splatting 3D filter), '
+                             'conserving its density. Trades sharpness for a calmer, less noisy '
+                             'look. Needs --mask_filter_root for the training cameras. Default 0: off.')
+    parser.add_argument('--sh_chroma_clamp', type=float, default=0.0,
+                        help='Checkpoint and .ply inputs: bound the coloured part of each splat\'s '
+                             'view-dependent SH term to this many colour units, keeping its '
+                             'brightness part. Removes coloured glints from sparse-camera fits '
+                             '(see clamp_sh_chroma). The pipeline passes 0.02 for cumuli-trainer '
+                             'output. Default 0: off.')
     parser.add_argument('--sh_clamp', type=float, default=1.5,
                         help='Attenuate higher SH bands per splat so total colour excursion stays below '
                              'this (colour units) from every direction. Kills firework artifacts on '
@@ -1003,7 +1218,7 @@ if __name__ == '__main__':
                              'checkpoints use sqrt(1.6942*1.2707) = 1.4672. Models trained with a fixed '
                              'camera (or the FTGS/gsplat variant) need the default 1.0.')
     parser.add_argument('--top_k_fraction', type=float, default=1.0,
-                        help='Only used with --input pointing at a checkpoint (chkpntNNNN.pth), not comp.xz. '
+                        help='Only used with --input pointing at a checkpoint (chkpntNNNN.pth) or a .ply, not comp.xz. '
                              'Keep only this fraction (0.0-1.0) of splats, ranked by peak visibility '
                              '(opacity x temporal-fade weight at each splat\'s own t_center). 1.0 (default) '
                              'keeps every splat: full fidelity, largest file. Size/quality knob that '
@@ -1026,7 +1241,7 @@ if __name__ == '__main__':
                              '(visible as transparency). Same rationale as the checkpoint path, '
                              'which never applies them.')
     parser.add_argument('--mask_filter_root', type=str, default=None,
-                        help='Checkpoint path only: 4DGS dataset root (with transforms_train.json '
+                        help='Checkpoint and .ply inputs only: 4DGS dataset root (with transforms_train.json '
                              'and RGBA realcams frames). Drops Gaussians projecting OUTSIDE the '
                              'subject silhouette in most (time, camera) tests across their visible '
                              'lifetime, not just at t_center. Removes splats that drift off the '
@@ -1084,12 +1299,50 @@ if __name__ == '__main__':
 
     cov2d = tuple(float(v) for v in args.cov2d_scale.split(',')) if args.cov2d_scale else None
 
-    if args.input.endswith('.pth'):
+    if args.smooth_px > 0 and not args.mask_filter_root:
+        sys.exit('--smooth_px needs --mask_filter_root (the dataset with the training cameras)')
+    if args.smooth_frames > 0 and not args.input.endswith(('.ply', '.pth')):
+        sys.exit('--smooth_frames applies to checkpoint and .ply inputs only')
+    if args.smooth_px > 0 and not args.input.endswith(('.ply', '.pth')):
+        sys.exit('--smooth_px applies to checkpoint and .ply inputs only')
+    if args.sh_chroma_clamp > 0 and not args.input.endswith(('.ply', '.pth')):
+        sys.exit('--sh_chroma_clamp applies to checkpoint and .ply inputs only')
+    if not args.input.endswith('.ply'):
+        args.time_min = 0.0 if args.time_min is None else args.time_min
+        args.time_max = 10.0 if args.time_max is None else args.time_max
+        args.fps = 30.0 if args.fps is None else args.fps
+
+    if args.input.endswith('.ply'):
+        from sogst_ply import read_sogst_ply
+        header, _ = read_sogst_ply(args.input)
+        for flag, key in (('time_min', 'time_min'), ('time_max', 'time_max'), ('fps', 'fps')):
+            given = getattr(args, flag)
+            if given is not None and abs(given - header[key]) > 1e-6:
+                sys.exit(f'--{flag} {given} disagrees with the PLY header ({header[key]}). '
+                         'A .ply carries its own clip scalars; drop the flag.')
+        for flag in ('scale_boost', 'aniso_boost', 'cov2d_scale', 'extra_keep_mask'):
+            default = 1.0 if flag == 'scale_boost' else None
+            if getattr(args, flag) != default:
+                sys.exit(f'--{flag} does not apply to a .ply input: it compensates OMG4 '
+                         'checkpoint internals that a spacetime trainer does not have.')
+        if not (0.0 < args.top_k_fraction <= 1.0):
+            sys.exit('--top_k_fraction must be in (0.0, 1.0]')
+        convert_from_ply(args.input, args.output, header['time_min'], header['time_max'],
+                         header['fps'], args.prune_threshold, sh_degree=args.sh_degree,
+                         sh_clamp=args.sh_clamp, keep_main_cluster=args.keep_main_cluster,
+                         sh_chroma_clamp=args.sh_chroma_clamp, smooth_px=args.smooth_px,
+                         smooth_frames=args.smooth_frames, top_k_fraction=args.top_k_fraction,
+                         filter_black_floaters=args.filter_black_floaters,
+                         mask_filter_root=args.mask_filter_root,
+                         mask_filter_outside_frac=args.mask_filter_outside_frac)
+    elif args.input.endswith('.pth'):
         if not (0.0 < args.top_k_fraction <= 1.0):
             sys.exit('--top_k_fraction must be in (0.0, 1.0]')
         convert_from_checkpoint(args.input, args.output, args.time_min, args.time_max, args.fps,
                                 args.prune_threshold, sh_degree=args.sh_degree,
                                 scale_boost=args.scale_boost, sh_clamp=args.sh_clamp,
+                                sh_chroma_clamp=args.sh_chroma_clamp, smooth_px=args.smooth_px,
+                                smooth_frames=args.smooth_frames,
                                 keep_main_cluster=args.keep_main_cluster,
                                 top_k_fraction=args.top_k_fraction,
                                 extra_keep_mask_path=args.extra_keep_mask,

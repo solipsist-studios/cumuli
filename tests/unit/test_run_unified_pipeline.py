@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 
+import argparse
 import json
 import os
 import sys
@@ -1078,11 +1079,11 @@ def test_stage_dataset4d_keeps_hull_min_views_on_a_full_rig(monkeypatch, tmp_pat
 
 
 def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
-                  eval_camera="05", skip_eval=False):
+                  eval_camera="05", skip_eval=False, trainer="omg4"):
     repo = tmp_path / "omg4repo"
     repo.mkdir(parents=True, exist_ok=True)
     (repo / "train_scratch.py").write_text("# stub")
-    return NS(trainer_repo=repo, total_train_iters=iters,
+    return NS(trainer=trainer, trainer_repo=repo, total_train_iters=iters,
               train_window=8, train_fps=30.0, t_init_div=t_init_div,
               num_pts=100000, batch_size4d=2, densify_until_iter=150,
               densify_until_num_points=1000, trainer_config=trainer_config,
@@ -1171,3 +1172,144 @@ def test_stage_train4d_missing_trainer_repo_is_a_stage_error(monkeypatch, tmp_pa
     (args.trainer_repo / "train_scratch.py").unlink()
     with pytest.raises(unified.StageError, match="trainer entry point"):
         unified.stage_train4d(args, unified.build_layout(tmp_path / "out"))
+
+
+def _capture_modules(monkeypatch, on_run=None):
+    calls = []
+
+    def fake_run_module(module, args, extra_env=None, label=None):
+        calls.append({"module": module, "args": [str(a) for a in args]})
+        if on_run:
+            on_run()
+    monkeypatch.setattr(unified, "run_module", fake_run_module)
+    return calls
+
+
+def test_stage_train4d_cumuli_writes_config_trains_and_bakes_the_ply(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    scripts = _capture_runs(monkeypatch)
+    args = _train4d_args(tmp_path, iters=200, trainer="cumuli")
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
+    ply = L["train4d_model"] / "splat_4d.ply"
+
+    def write_ply():
+        L["train4d_model"].mkdir(parents=True, exist_ok=True)
+        ply.write_bytes(b"ply")
+    modules = _capture_modules(monkeypatch, on_run=write_ply)
+
+    unified.stage_train4d(args, L)
+
+    config = json.loads(L["train4d_config"].read_text())
+    assert config == {
+        "source_path": str(L["dataset4d"].resolve()),
+        "model_path": str(L["train4d_model"].resolve()),
+        "time_duration": [0.0, 0.233333],     # (window - 1) / fps = 7/30
+        "fps": 30.0, "iterations": 200,
+        "test_iterations": [200], "save_iterations": [200], "t_init_div": 100}
+    assert modules == [{"module": "cumuli_trainer",
+                        "args": ["--config", str(L["train4d_config"])]}]
+    # OMG4 never runs, and the bake reads the PLY's own clip scalars
+    assert not any(Path(c["script"]).name == "train_scratch.py" for c in scripts)
+    bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")
+    a = bake["args"]
+    assert a[a.index("--input") + 1] == str(ply)
+    assert "--time_max" not in a and "--fps" not in a
+    assert a[a.index("--sh_chroma_clamp") + 1] == "0.02"
+    assert "--mask_filter_root" in a
+    assert any(Path(c["script"]).name == "eval_render.py" for c in scripts)
+
+
+def test_stage_train4d_cumuli_skips_training_when_the_ply_exists(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    _capture_runs(monkeypatch)
+    modules = _capture_modules(monkeypatch)
+    args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True, t_init_div=0)
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+
+    unified.stage_train4d(args, L)
+    assert modules == []
+    assert "t_init_div" not in json.loads(L["train4d_config"].read_text())
+
+
+def test_stage_train4d_cumuli_missing_ply_is_a_stage_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    _capture_runs(monkeypatch)
+    _capture_modules(monkeypatch)
+    args = _train4d_args(tmp_path, trainer="cumuli")
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_config"].parent.mkdir(parents=True, exist_ok=True)
+    with pytest.raises(unified.StageError, match="splat_4d.ply does not exist"):
+        unified.stage_train4d(args, L)
+
+
+def test_trainer_flag_defaults_to_omg4_and_is_configurable():
+    parser = argparse.ArgumentParser()
+    unified.add_train4d_args(parser)
+    assert parser.parse_args([]).trainer == "omg4"
+    assert parser.parse_args(["--trainer", "cumuli"]).trainer == "cumuli"
+    assert "trainer" in unified.CONFIGURABLE_DEFAULTS
+
+
+def test_stage_train4d_cumuli_passes_export_min_contribution(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    _capture_runs(monkeypatch)
+    _capture_modules(monkeypatch)
+    for value, expected in ((None, None), (0.0, 0.0), (8.0, 8.0)):
+        args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+        args.export_min_contribution = value
+        L = unified.build_layout(tmp_path / f"out{value}")
+        L["train4d_model"].mkdir(parents=True, exist_ok=True)
+        (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+        unified.stage_train4d(args, L)
+        config = json.loads(L["train4d_config"].read_text())
+        assert config.get("export_min_contribution") == expected
+
+
+def test_export_min_contribution_flag_defaults_to_the_trainer():
+    parser = argparse.ArgumentParser()
+    unified.add_train4d_args(parser)
+    assert parser.parse_args([]).export_min_contribution is None
+    assert parser.parse_args(["--export_min_contribution", "0"]).export_min_contribution == 0.0
+
+
+def test_stage_train4d_cumuli_passes_smooth_px_to_the_bake(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    for value, present in ((0.0, False), (1.0, True)):
+        scripts = _capture_runs(monkeypatch)
+        _capture_modules(monkeypatch)
+        args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+        args.smooth_px = value
+        L = unified.build_layout(tmp_path / f"o{value}")
+        L["train4d_model"].mkdir(parents=True, exist_ok=True)
+        (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+        unified.stage_train4d(args, L)
+        bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")["args"]
+        assert ("--smooth_px" in bake) == present
+        if present:
+            assert bake[bake.index("--smooth_px") + 1] == "1.0"
+
+
+def test_stage_train4d_cumuli_passes_smooth_frames_to_the_bake(monkeypatch, tmp_path):
+    monkeypatch.setattr(unified, "gpu_available", lambda: True)
+    scripts = _capture_runs(monkeypatch)
+    _capture_modules(monkeypatch)
+    args = _train4d_args(tmp_path, iters=7, trainer="cumuli", skip_eval=True)
+    args.smooth_frames = 2.0
+    L = unified.build_layout(tmp_path / "out")
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(b"ply")
+    unified.stage_train4d(args, L)
+    bake = next(c for c in scripts if Path(c["script"]).name == "bake_sogst.py")["args"]
+    assert bake[bake.index("--smooth_frames") + 1] == "2.0"
+
+
+def test_smoothing_defaults_are_the_heidi_pick():
+    parser = argparse.ArgumentParser()
+    unified.add_train4d_args(parser)
+    args = parser.parse_args([])
+    assert (args.smooth_px, args.smooth_frames) == (0.5, 2.0)
+    off = parser.parse_args(["--smooth_px", "0", "--smooth_frames", "0"])
+    assert (off.smooth_px, off.smooth_frames) == (0.0, 0.0)
