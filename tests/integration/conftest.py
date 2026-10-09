@@ -87,7 +87,7 @@ def _check_conda_envs(cpu_pipeline):
     return None
 
 
-def _check_trainer_repo(cpu_pipeline):
+def _check_trainer(cpu_pipeline):
     if cpu_pipeline:
         # The CPU subset never reaches train4d, so the trainer is not needed.
         return None
@@ -153,7 +153,7 @@ def pipeline_prereqs(sapiens_checkpoint_root, cpu_pipeline):
         _check_ffmpeg(),
         _check_gpu(cpu_pipeline),
         _check_conda_envs(cpu_pipeline),
-        _check_trainer_repo(cpu_pipeline),
+        _check_trainer(cpu_pipeline),
         _check_sapiens_checkpoints(sapiens_checkpoint_root),
         _check_fixture(),
     ]))

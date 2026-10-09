@@ -313,10 +313,13 @@ matters. `--skip_existing` resumes an interrupted render, and
 
 A 12-frame ground-truth smoke run scores LPIPS 0.0052 and 38.8 dB on its
 four eval cameras after only 3000 iterations, against the trainer's own
-38.9 dB on the same views. Those two numbers agreeing is the check worth
-repeating: they come from different rasterizers reading different files,
-so agreement means the bake and the eval both faithfully represent what
-was trained.
+38.9 dB on the same views (measured with the earlier OMG4 trainer). Those
+two numbers agreeing is the check worth repeating. The trainer scores its
+own Gaussians; eval_render.py reads the baked .sogst after the bake's
+filters and smoothing, so agreement means the bake and the eval both
+faithfully represent what was trained. With cumuli-trainer on Heidi, an
+unsmoothed bake moved PSNR by under 0.02 dB; the default --smooth_px 0.5
+--smooth_frames 2 moves LPIPS by about 0.001 by design.
 
 ## Long Clips: Train in Windows, Ship One File
 
