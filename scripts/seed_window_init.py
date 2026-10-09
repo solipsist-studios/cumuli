@@ -19,19 +19,14 @@ Its architecture does not fit here, because it decodes Gaussians through a
 hash grid and an MLP at render time and nothing bakes to .sogst. The idea
 does fit, in the form the trainer already accepts.
 
-The obvious route, resuming from the previous window's checkpoint, is a trap.
-The trainer (train_scratch.py) restores `first_iter` from the checkpoint,
-while densification is gated on `iteration < densify_until_iter`, so a
-resume at 30k lands past the densification window: the model inherits a full
-splat set, never re-densifies, and saturates the cap immediately.
-
-Seeding the point cloud avoids all of that. readNerfSyntheticInfo reads
-points3d.ply and, when it holds more points than --num_pts, randomly
-subsamples to that budget (in the trainer's scene/dataset_readers.py). Hand it a cloud
+Seeding the point cloud is how a window inherits that structure.
+cumuli-trainer initialises from the dataset's points3d.ply (subsampled to
+--num_pts, its max_init_points, when the cloud is larger). Hand it a cloud
 drawn from the previous window's trained splats and the next window starts
-sparse but structurally correct, with the densification schedule running from
-iteration 0 exactly as it does now. No trainer patch, no checkpoint surgery,
-no cap.
+sparse but structurally correct, with its MCMC schedule running from
+iteration 0 exactly as for a fresh window. No checkpoint surgery and no
+inherited budget: resuming a finished run would start past the relocation
+window with a full set of Gaussians.
 
 The cloud is a mix, because the two halves know different things. The hull
 carving is coarse but it is carved from THIS window's own masks and carries a
