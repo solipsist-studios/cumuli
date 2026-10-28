@@ -28,8 +28,9 @@ writers a fresh bake uses, which recompute the offsets to a fixed point and
 verify them against the written file.
 
 Only ZIP archives are migratable.  The binary containers that shared the
-.omg4 extension are gone.  Assets in that form have to be re-baked from a
-trainer checkpoint with bake_sogst.py.
+.omg4 extension are gone.  Assets in that form have to be retrained:
+bake_sogst.py reads only the trainer's 4D interchange PLY, not the old
+trainer checkpoints they were baked from.
 """
 
 import argparse

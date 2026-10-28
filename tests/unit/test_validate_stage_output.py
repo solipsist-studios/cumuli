@@ -510,38 +510,42 @@ def _write_sogst_zip(path, count=5, fmt="sogst"):
         zf.writestr("meta.json", json.dumps({"version": 1, "format": fmt, "count": count}))
 
 
+def _write_model_ply(L, n=5):
+    L["train4d_model"].mkdir(parents=True, exist_ok=True)
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(
+        f"ply\nformat binary_little_endian 1.0\nelement vertex {n}\nproperty float x\nend_header\n"
+        .encode() + b"\x00" * 4 * n)
+
+
 def test_validate_train4d_passes_when_complete(tmp_path):
     L = layout4d(tmp_path)
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_model_ply(L)
     _write_sogst_zip(L["sogst_out"])
 
     vso.validate_train4d(L, REAL_CAMERAS)  # should not raise
 
 
-def test_validate_train4d_fails_without_checkpoint(tmp_path):
+def test_validate_train4d_fails_without_the_model_ply(tmp_path):
     L = layout4d(tmp_path)
     L["train4d_model"].mkdir(parents=True, exist_ok=True)
     _write_sogst_zip(L["sogst_out"])
 
-    with pytest.raises(vso.ValidationError, match="no chkpnt"):
+    with pytest.raises(vso.ValidationError, match="no splat_4d.ply"):
         vso.validate_train4d(L, REAL_CAMERAS)
 
 
-def test_validate_train4d_fails_on_undersized_checkpoint(tmp_path):
+def test_validate_train4d_fails_on_an_empty_model(tmp_path):
     L = layout4d(tmp_path)
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 1024)
+    _write_model_ply(L, n=0)
     _write_sogst_zip(L["sogst_out"])
 
-    with pytest.raises(vso.ValidationError, match="truncated checkpoint"):
+    with pytest.raises(vso.ValidationError, match="zero Gaussians"):
         vso.validate_train4d(L, REAL_CAMERAS)
 
 
 def test_validate_train4d_fails_on_invalid_zip(tmp_path):
     L = layout4d(tmp_path)
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_model_ply(L)
     L["sogst_out"].write_bytes(b"not a zip")
 
     with pytest.raises(vso.ValidationError, match="not a readable .sogst"):
@@ -550,8 +554,7 @@ def test_validate_train4d_fails_on_invalid_zip(tmp_path):
 
 def test_validate_train4d_fails_on_zero_splats(tmp_path):
     L = layout4d(tmp_path)
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_model_ply(L)
     _write_sogst_zip(L["sogst_out"], count=0)
 
     with pytest.raises(vso.ValidationError, match="zero splats"):
@@ -560,8 +563,7 @@ def test_validate_train4d_fails_on_zero_splats(tmp_path):
 
 def test_validate_train4d_fails_on_wrong_format(tmp_path):
     L = layout4d(tmp_path)
-    L["train4d_model"].mkdir(parents=True, exist_ok=True)
-    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"\x00" * 2_000_000)
+    _write_model_ply(L)
     _write_sogst_zip(L["sogst_out"], fmt="sog")
 
     with pytest.raises(vso.ValidationError, match="expected 'sogst'"):

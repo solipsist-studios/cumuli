@@ -2,7 +2,7 @@ name: Integration tests (GPU, manual)
 
 # Real, unmocked pipeline run against the committed take01_11cam fixture --
 # see tests/integration/. This needs a real CUDA GPU (the train4d stage),
-# the single cumuli conda env (scripts/setup_cumuli_env.sh), the deps/OMG4 trainer
+# the single cumuli conda env (scripts/setup_cumuli_env.sh), the deps/cumuli-trainer
 # submodule, and Sapiens checkpoints -- none of which exist on a
 # GitHub-hosted runner, hence `runs-on: [self-hosted, gpu]` below.
 #
@@ -52,13 +52,12 @@ jobs:
           submodules: false
 
       - name: Fetch the pipeline submodules plus the trainer
-        # The capture-pipeline submodules, plus deps/OMG4 (train4d's
-        # trainer entry point lives there). deps/4d-gaussian-splatting is
-        # NOT needed: the stage drives the OMG4 clone.
+        # The capture-pipeline submodules, plus cumuli-core and
+        # cumuli-trainer (train4d's trainer, installed by the setup script).
         run: |
           git submodule update --init \
             deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
-            deps/sapiens deps/OMG4
+            deps/sapiens deps/cumuli-core deps/cumuli-trainer
 
       - name: Install dev dependencies
         run: pip install -r requirements-dev.txt

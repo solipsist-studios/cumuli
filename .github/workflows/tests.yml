@@ -22,6 +22,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Fetch the cumuli-core submodule
+        # scripts/sogst_ply.py and eval_render.py import cumuli_core; when
+        # it is not installed, cumuli_core_path.py adds deps/cumuli-core/src.
+        run: git submodule update --init deps/cumuli-core
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -47,6 +52,11 @@ jobs:
       # monkeypatches subprocess.run before any deps/ path is touched. A test
       # that imports from deps/ directly will need `submodules: true` here.
       - uses: actions/checkout@v4
+
+      - name: Fetch the cumuli-core submodule
+        # scripts/sogst_ply.py and eval_render.py import cumuli_core; when
+        # it is not installed, cumuli_core_path.py adds deps/cumuli-core/src.
+        run: git submodule update --init deps/cumuli-core
 
       - uses: actions/setup-python@v5
         with:

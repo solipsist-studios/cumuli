@@ -2,8 +2,8 @@
 tests/integration/conftest.py
 
 Real, unmocked pipeline tests need real conda envs, Sapiens checkpoints,
-and (for the training stage) a CUDA GPU plus the deps/OMG4 trainer
-submodule -- none of which exist on a plain GitHub-hosted CI runner.
+and (for the training stage) a CUDA GPU plus cumuli-trainer installed in
+the `cumuli` env -- none of which exist on a plain GitHub-hosted CI runner.
 Rather than skip the whole suite via CI-side conditionals, every test
 here goes through `pipeline_prereqs` (autouse), which probes for what it
 actually needs and skips with a specific reason when something is
@@ -15,8 +15,8 @@ VCP_CPU_PIPELINE=1 selects the CPU-capable pipeline subset: the run stops
 after the dataset4d stage (--stop_after_stage dataset4d), so no GPU, no
 trainer env, and no trainer submodule are required. GPU mode (the toggle
 unset) runs the full pipeline through train4d, which additionally needs
-the `cumuli` conda env and an initialised deps/OMG4 submodule
-(train_scratch.py is the trainer entry point).
+the `cumuli` conda env with cumuli-trainer installed from deps/cumuli-trainer
+(python -m cumuli_trainer is the trainer entry point).
 """
 
 import json
@@ -87,26 +87,20 @@ def _check_conda_envs(cpu_pipeline):
     return None
 
 
-def _check_trainer_repo(cpu_pipeline):
+def _check_trainer(cpu_pipeline):
     if cpu_pipeline:
-        # The CPU subset never reaches train4d, so the trainer submodule
-        # is not needed.
+        # The CPU subset never reaches train4d, so the trainer is not needed.
         return None
-    train_script = REPO_ROOT / "deps" / "OMG4" / "train_scratch.py"
-    if not train_script.is_file():
-        return (f"trainer entry point not found at {train_script} -- initialise the "
-                f"submodule (git submodule update --init deps/OMG4)")
-    # The trainer's CUDA extensions are built into the env by
-    # scripts/setup_cumuli_env.sh, not installable from the yml -- a fresh
-    # `conda env create` alone leaves them missing and training fails deep
-    # inside the first iteration instead of here.
+    # cumuli-trainer is installed into the env by scripts/setup_cumuli_env.sh
+    # from deps/cumuli-trainer, not from the yml -- a fresh `conda env
+    # create` alone leaves it missing and train4d fails on launch.
     probe = subprocess.run(
-        ["conda", "run", "-n", "cumuli", "python", "-c",
-         "import diff_gaussian_rasterization, simple_knn"],
+        ["conda", "run", "-n", "cumuli", "python", "-c", "import cumuli_trainer, gsplat"],
         capture_output=True, text=True)
     if probe.returncode != 0:
-        return ("cumuli env lacks the trainer CUDA extensions -- provision with "
-                "scripts/setup_cumuli_env.sh (not conda env create alone)")
+        return ("cumuli env lacks cumuli-trainer or gsplat -- provision with "
+                "scripts/setup_cumuli_env.sh (git submodule update --init "
+                "deps/cumuli-trainer first)")
     return None
 
 
@@ -159,7 +153,7 @@ def pipeline_prereqs(sapiens_checkpoint_root, cpu_pipeline):
         _check_ffmpeg(),
         _check_gpu(cpu_pipeline),
         _check_conda_envs(cpu_pipeline),
-        _check_trainer_repo(cpu_pipeline),
+        _check_trainer(cpu_pipeline),
         _check_sapiens_checkpoints(sapiens_checkpoint_root),
         _check_fixture(),
     ]))

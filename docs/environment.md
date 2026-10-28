@@ -9,10 +9,11 @@ Precise setup instructions for the single `cumuli` conda environment
 and system tools this pipeline needs, plus the known-good versions this
 has actually been tested against. Provision it with
 `bash scripts/setup_cumuli_env.sh`, NOT `conda env create` alone:
-`environment.yml` is the package manifest, and the script adds four
+`environment.yml` is the package manifest, and the script adds the
 installs a yml cannot express (an editable, submodule-recursive hloc
-checkout, easyvolcap `--no-deps`, the OMG4 trainer's CUDA extensions,
-and the optional cupy/cuml SPM accelerators).
+checkout, easyvolcap `--no-deps`, and the cumuli-core and cumuli-trainer
+packages editable from `deps/`). On a GPU machine it also triggers
+gsplat's one-time CUDA JIT build, then verifies every import.
 
 ## Requirements
 
@@ -47,24 +48,66 @@ LPIPS identical to 4 decimals):
 - numpy 2.4.6, scipy 1.17.1, Pillow 12.2.0, opencv-python 4.13.0.92
 - pycolmap 4.0.4, hloc @c13273b (editable, --no-deps, submodules),
   lightglue @eb42fee, sapiens @7e5bae8, easyvolcap @4cb3c00 (--no-deps)
-- gsplat, torchmetrics, lpips, dahuffman, open3d 0.19.0, and the
-  trainer CUDA extensions built by the setup script
+- gsplat 1.5.3, torchmetrics, lpips, open3d 0.19.0
+- cumuli-core and cumuli-trainer (editable from `deps/`, `--no-deps`).
+  These replaced the OMG4 trainer after the 2026-08-20 run.
 
-The anchor pin is torch 2.13.0+cu130: the trainer's CUDA extensions are
-ABI-compiled against it, and cupy/cuml come from the CUDA-13 wheel
-family. Changing torch means rebuilding the extensions (rerun the setup
-script).
+The anchor pins are torch 2.13.0+cu130 and gsplat 1.5.3, the pair
+cumuli-trainer was validated on (RTX 5090, sm_120). gsplat compiles its
+CUDA kernels against the env's torch on first use, and the setup script
+triggers that build once (`TORCH_CUDA_ARCH_LIST` defaults to the
+compute capability `nvidia-smi` reports). Changing torch means rerunning
+the setup script.
 
 A CUDA GPU is required for the `train4d` stage only. Every stage before
 it, including the full 4D dataset build, runs on CPU
 (`--stop_after_stage dataset4d`). The setup script's `--cpu` mode
-provisions a CPU-wheel variant without the extensions, which is what CI
-uses.
+provisions a CPU-wheel variant and skips the gsplat build, which is what
+CI uses.
 
 Sapiens checkpoints are separate from the env: set
 `SAPIENS_CHECKPOINT_ROOT` (or `--sapiens_checkpoint_root`) to a
 directory holding `detector/` (facebook/detr-resnet-101-dc5 snapshot)
 and `pose/sapiens2_<size>_pose.safetensors`.
+
+## cumuli-core
+
+`deps/cumuli-core` is Solipsist's shared library for the 4D splatting
+stack, a private submodule
+(https://github.com/solipsist-studios/cumuli-core). It holds the 4D
+interchange PLY reader and writer (`cumuli_core.ply`), the .sogst
+decoder, the transforms.json camera loader, the spacetime slice, the
+gsplat render wrapper and the PSNR/SSIM/LPIPS metrics. `sogst_ply.py`,
+`sogst_io.py` and `eval_render.py` import from it, and cumuli-trainer
+shares it.
+
+## cumuli-trainer
+
+`deps/cumuli-trainer` is the 4D trainer, a private submodule
+(https://github.com/solipsist-studios/cumuli-trainer). It is Solipsist's
+own code under the PolyForm Noncommercial license. The `train4d` stage
+runs it as `python -m cumuli_trainer --config <json>` and bakes the
+`splat_4d.ply` it writes. The setup script installs it the same way as
+cumuli-core. By hand:
+
+```bash
+git submodule update --init deps/cumuli-trainer
+conda run -n cumuli pip install --no-deps -e deps/cumuli-trainer
+```
+
+The setup script installs it with `pip install --no-deps -e
+deps/cumuli-core`, so edits in the submodule take effect without a
+reinstall, and torch/gsplat stay at the yml pins. To add it to an
+existing env by hand:
+
+```bash
+git submodule update --init deps/cumuli-core
+conda run -n cumuli pip install --no-deps -e deps/cumuli-core
+```
+
+If it is not installed but the submodule is checked out,
+`scripts/cumuli_core_path.py` puts `deps/cumuli-core/src` on `sys.path`,
+so the scripts and the unit suite still run from a bare python.
 
 ## System-level tools (no conda env)
 

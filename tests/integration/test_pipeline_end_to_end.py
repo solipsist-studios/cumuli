@@ -11,8 +11,8 @@ cameras is more robust: clean HLOC registration every time, where a
 
 Two modes:
 
-  - GPU mode (default): the full pipeline, ending in rotor 4DGS training
-    (train_scratch.py in deps/OMG4), a baked .sogst, and eval_render.py
+  - GPU mode (default): the full pipeline, ending in 4DGS training
+    (cumuli-trainer), a baked .sogst, and eval_render.py
     scoring of a held-out camera (eval_4d.json). Checks structure AND
     quality: reprojection error and mask coverage against the golden
     baseline, plus the eval4d metrics once a baseline for them exists

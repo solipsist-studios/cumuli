@@ -13,7 +13,6 @@ so these tests check values, not just shapes.
 
 import numpy as np
 import pytest
-import torch
 
 import bake_sogst
 import make_sogst_fixture as fixture
@@ -104,54 +103,3 @@ def test_overshoot_clamp_accepts_lower_degrees():
         assert out.shape == f_rest.shape
 
 
-def write_checkpoint(path, n, model_degree, rng):
-    """A minimal train_scratch.py checkpoint: the model_args tuple
-    convert_from_checkpoint() unpacks, with features_rest laid out as the
-    3S+2 temporal copies a rotor 4DGS model stores."""
-    S = (model_degree + 1) ** 2 - 1
-    def t(a):
-        return torch.from_numpy(np.asarray(a, dtype=np.float32))
-
-    ident = np.tile([1.0, 0.0, 0.0, 0.0], (n, 1))
-    features_dc = rng.uniform(0.5, 1.0, (n, 1, 3))
-    features_rest = rng.normal(0.0, 0.05, (n, 3 * S + 2, 3))
-    model_args = (
-        model_degree, t(rng.normal(0, 0.1, (n, 3))), t(features_dc), t(features_rest),
-        t(np.full((n, 3), -4.0)), t(ident), t(np.full((n, 1), 3.0)),
-        None, None, None, None, None, 1.0,
-        t(rng.uniform(0.2, 0.8, (n, 1))), t(np.full((n, 1), -1.0)), t(ident),
-        True, None, 2)
-    torch.save((model_args, 1000), path)
-    return features_dc[:, 0, :], features_rest, S
-
-
-@pytest.mark.parametrize("model_degree, sh_degree", [
-    (3, None), (3, 2), (3, 1), (3, 0), (2, None), (2, 1)])
-def test_checkpoint_bake_at_each_degree(tmp_path, monkeypatch, model_degree, sh_degree):
-    rng = np.random.default_rng(model_degree)
-    n = 64
-    ckpt = tmp_path / "chkpnt1000.pth"
-    features_dc, features_rest, S = write_checkpoint(ckpt, n, model_degree, rng)
-    ply = tmp_path / "out.ply"
-    monkeypatch.setattr(bake_sogst, "PLY_EXPORT_PATH", str(ply))
-    monkeypatch.setattr(bake_sogst, "SOGST_EXPORT_OPTIONS", None)
-
-    bake_sogst.convert_from_checkpoint(str(ckpt), None, 0.0, 1.0, 30.0, 0.0,
-                                       sh_degree=sh_degree, sh_clamp=0.0)
-    _header, fields = read_sogst_ply(str(ply))
-    assert len(fields["x"]) == n
-
-    # every temporal DC copy folds into f_dc, whatever degree is baked
-    want_dc = features_dc + features_rest[:, S] + features_rest[:, 2 * S + 1]
-    got_dc = np.stack([fields[f"f_dc_{c}"] for c in range(3)], axis=1)
-    np.testing.assert_allclose(got_dc, want_dc, rtol=1e-5, atol=1e-6)
-
-    degree = model_degree if sh_degree is None else sh_degree
-    if degree == 0:
-        assert "f_rest" not in fields
-        return
-    coeffs = (degree + 1) ** 2 - 1
-    folded = (features_rest[:, 0:S] + features_rest[:, S + 1:2 * S + 1]
-              + features_rest[:, 2 * S + 2:3 * S + 2])[:, :coeffs]      # [n, coeffs, 3]
-    want = folded.transpose(0, 2, 1).reshape(n, 3 * coeffs)            # channel-major
-    np.testing.assert_allclose(fields["f_rest"], want, rtol=1e-5, atol=1e-6)

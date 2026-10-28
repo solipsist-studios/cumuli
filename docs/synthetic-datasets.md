@@ -313,10 +313,13 @@ matters. `--skip_existing` resumes an interrupted render, and
 
 A 12-frame ground-truth smoke run scores LPIPS 0.0052 and 38.8 dB on its
 four eval cameras after only 3000 iterations, against the trainer's own
-38.9 dB on the same views. Those two numbers agreeing is the check worth
-repeating: they come from different rasterizers reading different files,
-so agreement means the bake and the eval both faithfully represent what
-was trained.
+38.9 dB on the same views (measured with the earlier OMG4 trainer). Those
+two numbers agreeing is the check worth repeating. The trainer scores its
+own Gaussians; eval_render.py reads the baked .sogst after the bake's
+filters and smoothing, so agreement means the bake and the eval both
+faithfully represent what was trained. With cumuli-trainer on Heidi, an
+unsmoothed bake moved PSNR by under 0.02 dB; the default --smooth_px 0.5
+--smooth_frames 2 moves LPIPS by about 0.001 by design.
 
 ## Long Clips: Train in Windows, Ship One File
 
@@ -583,23 +586,18 @@ model rather than from the visual hull alone. It is the idea behind ATGS
 so no primitive has to track long-range motion, in the form this trainer
 already accepts.
 
-The obvious route is a trap worth writing down. `train_scratch.py` restores
-`first_iter` from the checkpoint (line 124) while densification is gated on
-`iteration < densify_until_iter` (line 354), so resuming a 30k checkpoint
-lands past the densification window: the model inherits a full splat set,
-never re-densifies, and saturates the cap immediately.
-
-Seeding the point cloud avoids all of it. `readNerfSyntheticInfo` reads
-`points3d.ply` and, when it holds more points than `--num_pts`, randomly
-subsamples to that budget (`scene/dataset_readers.py:311-330`). A cloud drawn
-from the previous window's splats, advanced to the handover instant by
+Seeding the point cloud is how a window inherits that structure.
+cumuli-trainer initialises from the dataset's `points3d.ply`, subsampled to
+`--num_pts` when the cloud is larger. A cloud drawn from the previous
+window's splats, advanced to the handover instant by
 `xyz + v * (t - t_center)` and sampled by their opacity there, starts the
-next window sparse but structurally correct, with the schedule running from
-iteration 0. The cloud is half seeded and half hull by default, because the
-hull is coarse but is carved from this window's own masks and carries a time
-per point spanning the window, while the seeded half is accurate only at the
-instant it was evaluated. Keep the total above `--num_pts`: the trainer only
-subsamples clouds longer than its budget.
+next window sparse but structurally correct, with the training schedule
+running from iteration 0. Resuming the previous window's finished run
+instead would start past the growth phase with a full set of Gaussians. The
+cloud is half seeded and half hull by default, because the hull is coarse
+but is carved from this window's own masks and carries a time per point
+spanning the window, while the seeded half is accurate only at the instant
+it was evaluated.
 
 `scripts/run_window_plan.py` runs a whole plan, symlinking each window's
 frames out of the master run so nothing is re-rendered, seeding when asked,
@@ -644,7 +642,8 @@ Gaussian-Splatting licence, research and evaluation only. And it pins
 cudatoolkit 11.8 with torch 2.2.0, which cannot target an RTX 5090 at all:
 compute capability 12.0 needs CUDA 12.8 or newer, so the shipped `env.yml`
 produces an environment that does not run on this machine. Porting it means
-the same treatment `setup_cumuli_env.sh` gives OMG4, plus sourcing
+building its CUDA extensions against the env's torch (as the setup script
+once did for the previous trainer), plus sourcing
 `diff-gaussian-rasterization` and `simple-knn` from the 3DGS repo (the clone
 has no `submodules/` directory) and swapping mmcv for mmengine, which is used
 only for `Config.fromfile`.

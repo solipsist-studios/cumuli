@@ -99,7 +99,7 @@ def _build_good_run(out_dir, with_metrics_data=False):
 
     # train4d: a checkpoint and a valid .sogst archive.
     L["train4d_model"].mkdir(parents=True)
-    (L["train4d_model"] / "chkpnt2000.pth").write_bytes(b"x")
+    (L["train4d_model"] / "splat_4d.ply").write_bytes(b"x")
     _write_minimal_sogst(L["sogst_out"])
 
     log = "Median residual: 30.00px -> 5.00px\n"
