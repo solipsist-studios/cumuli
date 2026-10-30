@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Fetch the cumuli-core submodule
-        # scripts/sogst_ply.py and eval_render.py import cumuli_core; when
+        # Scripts and tests import cumuli_core; when
         # it is not installed, cumuli_core_path.py adds deps/cumuli-core/src.
         run: git submodule update --init deps/cumuli-core
 
@@ -54,7 +54,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Fetch the cumuli-core submodule
-        # scripts/sogst_ply.py and eval_render.py import cumuli_core; when
+        # Scripts and tests import cumuli_core; when
         # it is not installed, cumuli_core_path.py adds deps/cumuli-core/src.
         run: git submodule update --init deps/cumuli-core
 

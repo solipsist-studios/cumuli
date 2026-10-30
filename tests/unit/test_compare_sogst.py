@@ -51,7 +51,7 @@ def reference(packer):
 
 def test_packed_archive_declares_sogst_v1(reference):
     """The container is version 1 and self-identifies. The development-era
-    numbering ("3") and the .omg4 magic are gone, not deprecated. Nothing
+    numbering ("3") is gone, not deprecated. Nothing
     was ever released that a reader would need to accept."""
     import json
     import zipfile
@@ -83,7 +83,8 @@ def test_identical_input_passes(packer, reference, capsys):
 def test_source_ply_against_its_own_pack_passes(tmp_path, source, packer, reference, capsys):
     """A PLY is in producer order and an archive is in packing order. The
     tool must reorder before comparing, or every field reads as wrong."""
-    from sogst_ply import write_sogst_ply
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import write_sogst_ply
 
     fields, meta = source
     ply = tmp_path / "source.ply"
@@ -311,7 +312,8 @@ def test_blocks_fixture_round_trips(tmp_path, capsys):
     """The block fixture must pass PLY-vs-archive. It did not before the
     repair existed: 2 splats in 8,192 produced six field failures and a
     spurious membership divergence."""
-    from sogst_ply import write_sogst_ply
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import write_sogst_ply
 
     fields, meta = _blocks()
     ply = tmp_path / "blocks.ply"
@@ -374,7 +376,8 @@ def test_catches_archive_disagreeing_with_its_own_source_ply(tmp_path, capsys):
     boundary bucket one way at float64 and the other after a float32 PLY
     round-trip, silently moving a plateau of splats between two adjacent
     segments. This passed before the fix."""
-    from sogst_ply import write_sogst_ply
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import write_sogst_ply
 
     fields, meta = fixture.build_fixture(count=1500, degree=1, include_sh=False,
                                          seed=5, gap=(0.7, 1.3), blocks=True)

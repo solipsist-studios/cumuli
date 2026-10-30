@@ -19,7 +19,8 @@ import make_sogst_fixture as fixture
 from eval_render import decode_sogst_fields
 from sogst_io import SOGST_SHN_WIDTHS, shn_bands_for_width
 from sogst_pack import compute_sogst_order, pack_sogst
-from sogst_ply import read_sogst_ply
+import cumuli_core_path  # noqa: F401
+from cumuli_core.ply import read_sogst_ply
 
 
 def lower_bands(f_rest, coeffs):

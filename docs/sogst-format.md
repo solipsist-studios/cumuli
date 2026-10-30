@@ -45,8 +45,7 @@ The reference implementation is `scripts/sogst_pack.py` (encoder),
 `cumuli_core.sogst` (the `deps/cumuli-core` submodule, re-exported by
 `scripts/eval_render.py`). That decoder is the only complete inverse of the
 encoder. Use it as the oracle when you validate an independent implementation.
-`cumuli_core.ply` (re-exported by `scripts/sogst_ply.py`) reads and writes the
-interchange PLY of §7.
+`cumuli_core.ply` reads and writes the interchange PLY of §7.
 
 ## 1. The representation
 
@@ -995,8 +994,6 @@ renumbered from 3 to **1**.
   player MUST reject anything else. Revision 3 kept `version: 3` and tolerated
   a missing `format` to protect deployed assets. There are none, so that
   tolerance only widened the surface a second implementation had to get right.
-- §2 no longer mentions the `OMG4` magic: the binary containers it identified
-  have been deleted, not deprecated.
 - §8 is now a history note rather than a compatibility section, and records how
   already-baked archives were migrated by manifest rewrite rather than re-bake.
 - §9's player checklist replaces "accepts the legacy forms" with "rejects

@@ -39,8 +39,7 @@ therefore keeps most of windowing's gain in one asset. The residue is
 concentrated within about 0.15 s of a seam, where adjacent windows
 disagree; views a second away from any seam score 0.0076.
 
-Two seam treatments, following merge_omg4_segments.py in 4dgs-utils, which
-did the same job for the older .omg4 format:
+Two seam treatments:
 
   hard  each window keeps only splats whose t_center lies in its slot. One
         model is responsible for any instant. Simple, and the seam can show

@@ -21,7 +21,7 @@ Three entry points, all writers:
     write_sogst_streamed() - per-group texture sets in play order
 
 Quantization itself lives in sogst_pack.py.  The per-splat interchange
-format that feeds it is the 4D PLY in sogst_ply.py: the single
+format that feeds it is the 4D PLY in cumuli_core.ply: the single
 intermediate between a bake and the container.
 
 Numpy only: no torch, no PIL (the packer brings PIL for webp encoding).

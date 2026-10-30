@@ -17,7 +17,8 @@ import pytest
 
 import bake_sogst
 import make_sogst_fixture as fixture
-from sogst_ply import read_sogst_ply, write_sogst_ply
+import cumuli_core_path  # noqa: F401
+from cumuli_core.ply import read_sogst_ply, write_sogst_ply
 
 SCRIPT = Path(bake_sogst.__file__)
 
