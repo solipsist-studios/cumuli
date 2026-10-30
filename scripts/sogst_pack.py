@@ -4,7 +4,7 @@
 
 """sogst_pack.py - quantize per-splat arrays into the .sogst container.
 
-Takes the 4D interchange PLY (sogst_ply.py) and writes the SOG-compressed
+Takes the 4D interchange PLY (cumuli_core.ply) and writes the SOG-compressed
 ZIP container: webp attribute textures plus k-means codebooks.
 docs/sogst-format.md is the authoritative spec.
 
@@ -588,7 +588,7 @@ def verify_sogst(v3_path: str, fields: dict, order: np.ndarray):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--input', required=True,
-                        help='4D interchange .ply (see sogst_ply.py / spec section 7)')
+                        help='4D interchange .ply (see cumuli_core.ply / spec section 7)')
     parser.add_argument('--output', required=True, help='Destination .sogst archive')
     parser.add_argument('--shn-count', type=int, default=65536,
                         help='VQ centroid count for higher-order SH (default 65536)')
@@ -609,7 +609,8 @@ def main():
     # Interchange PLY -> container. This is the path the TypeScript encoder
     # mirrors, so packing the same PLY both ways is the cross-implementation
     # equivalence check (docs/sogst-format.md section 10).
-    from sogst_ply import read_sogst_ply
+    import cumuli_core_path  # noqa: F401  (adds deps/cumuli-core/src if needed)
+    from cumuli_core.ply import read_sogst_ply
     header, fields = read_sogst_ply(args.input)
     n = header['count']
     has_sh = 'f_rest' in fields

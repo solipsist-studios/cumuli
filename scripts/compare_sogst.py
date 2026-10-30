@@ -79,7 +79,8 @@ def load(path):
             meta = json.loads(zf.read('meta.json'))
         return meta, fields
     if path.endswith('.ply'):
-        from sogst_ply import read_sogst_ply
+        import cumuli_core_path  # noqa: F401  (adds deps/cumuli-core/src if needed)
+        from cumuli_core.ply import read_sogst_ply
         _header, fields = read_sogst_ply(path, require_scalars=False)
         return None, fields
     raise ValueError(f'{path}: expected a .sogst archive or a 4D interchange .ply')

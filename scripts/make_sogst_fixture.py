@@ -49,7 +49,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from sogst_ply import write_sogst_ply, write_sogst_sidecar  # noqa: E402
+import cumuli_core_path  # noqa: E402,F401  (adds deps/cumuli-core/src if needed)
+from cumuli_core.ply import write_sogst_ply, write_sogst_sidecar  # noqa: E402
 
 FIXTURE_SEED = 20260813
 GRAVITY = -9.81           # scene units / s^2, the fixture's known constant
@@ -306,7 +307,7 @@ def main():
 
     if args.pack:
         from sogst_pack import pack_sogst
-        from sogst_ply import read_sogst_ply
+        from cumuli_core.ply import read_sogst_ply
         # Pack from the PLY we just wrote, not from the in-memory float64
         # arrays. The PLY is float32, and re-reading it is what makes the
         # shipped pair consistent by construction: packing from memory let

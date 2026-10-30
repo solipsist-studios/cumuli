@@ -479,7 +479,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
             fields[name] = arrays[cursor + i]
 
     if PLY_EXPORT_PATH is not None:
-        from sogst_ply import write_sogst_ply, write_sogst_sidecar
+        import cumuli_core_path  # noqa: F401  (adds deps/cumuli-core/src if needed)
+        from cumuli_core.ply import write_sogst_ply, write_sogst_sidecar
         n_ply = write_sogst_ply(PLY_EXPORT_PATH, fields, time_min, time_max, fps,
                                 cov2d_scale=cov2d_scale,
                                 generator='volumetric-capture-pipeline bake_sogst')
@@ -500,7 +501,8 @@ def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshol
                      mask_filter_root=None, mask_filter_outside_frac=0.5):
     """Bake a 4D interchange PLY: SH truncation and clamps, top-k, smoothing,
     the mask-consistency filter, then finish_export's filters and writers."""
-    from sogst_ply import read_sogst_ply
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import read_sogst_ply
 
     print(f"Loading interchange PLY {ply_path} …")
     _header, fields = read_sogst_ply(ply_path)
@@ -658,7 +660,8 @@ if __name__ == '__main__':
     if not (0.0 < args.top_k_fraction <= 1.0):
         sys.exit('--top_k_fraction must be in (0.0, 1.0]')
 
-    from sogst_ply import read_sogst_ply
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import read_sogst_ply
     header, _ = read_sogst_ply(args.input)
     convert_from_ply(args.input, args.output, header['time_min'], header['time_max'],
                      header['fps'], args.prune_threshold, sh_degree=args.sh_degree,

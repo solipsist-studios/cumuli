@@ -77,9 +77,8 @@ stack, a private submodule
 (https://github.com/solipsist-studios/cumuli-core). It holds the 4D
 interchange PLY reader and writer (`cumuli_core.ply`), the .sogst
 decoder, the transforms.json camera loader, the spacetime slice, the
-gsplat render wrapper and the PSNR/SSIM/LPIPS metrics. `sogst_ply.py`,
-`sogst_io.py` and `eval_render.py` import from it, and cumuli-trainer
-shares it.
+gsplat render wrapper and the PSNR/SSIM/LPIPS metrics. The bake, pack and
+eval scripts import from it, and cumuli-trainer shares it.
 
 ## cumuli-trainer
 
