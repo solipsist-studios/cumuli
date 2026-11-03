@@ -7,7 +7,8 @@
 Decodes a .sogst archive (or a 4D interchange PLY) exactly as the shipping
 viewer would, evaluates the temporal model at each test camera's timestamp
 
-    mean(t)  = xyz + v * (t - t_center)
+    mean(t)  = xyz + v * (t - t_center)                         (degree 1)
+    mean(t)  = xyz + v * (t - t_center) + a * (t - t_center)^2  (degree 2)
     alpha(t) = sigmoid(opacity) * exp(-0.5 * ((t - t_center) / t_sigma)^2)
 
 rasterizes with gsplat, and scores PSNR / SSIM / LPIPS against ground-truth

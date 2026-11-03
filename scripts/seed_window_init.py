@@ -70,18 +70,25 @@ def temporal_alpha(fields, t):
 
 
 def advance(fields, t):
-    """Where each splat sits at time `t`: xyz + v * (t - t_center).
+    """Where each splat sits at time `t`: xyz + v * dt, with dt = t - t_center,
+    plus a * dt^2 for a degree-2 model.
 
     The inverse of the shift merge_sogst_segments.load_segment applies when
     it moves a window into global time, and the reason a splat evaluated far
     outside its own window streaks across the room."""
     centre = np.asarray(fields["t_center"], dtype=np.float64)
     delta = t - centre
-    return np.stack([
+    points = np.stack([
         np.asarray(fields[axis], dtype=np.float64)
         + np.asarray(fields[vel], dtype=np.float64) * delta
         for axis, vel in (("x", "vx"), ("y", "vy"), ("z", "vz"))
     ], axis=1)
+    if "ax" in fields:
+        points = points + np.stack([
+            np.asarray(fields[acc], dtype=np.float64) * delta * delta
+            for acc in ("ax", "ay", "az")
+        ], axis=1)
+    return points
 
 
 def splat_colours(fields):
