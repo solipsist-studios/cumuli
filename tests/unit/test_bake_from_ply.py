@@ -247,6 +247,7 @@ def _write_half_mask_dataset(root, times=(0.0, 0.25, 0.5, 0.75, 1.0), size=64):
     """One camera at the origin looking down -z, with a silhouette covering
     the image's left half: from depth 2, x < 0 is inside and x > 0 is out."""
     import json
+
     from PIL import Image
     frames = []
     (root / "realcams").mkdir(parents=True, exist_ok=True)
@@ -320,6 +321,7 @@ def test_mask_filter_and_smooth_px_keep_rows_aligned(monkeypatch, tmp_path):
 def test_cli_writes_degree_2_to_the_archive_ply_and_sidecar(tmp_path, segment_flags, groups):
     import json
     import zipfile
+
     from eval_render import decode_sogst_fields
 
     ply, fields, meta = _degree2_ply(tmp_path)

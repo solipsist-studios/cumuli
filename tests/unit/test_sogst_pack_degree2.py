@@ -8,11 +8,13 @@ file, and a re-anchor that forgets a term only bends trajectories, so nothing
 errors. The parabola fixture carries genuine second-order motion.
 """
 
+import io
 import json
 import zipfile
 
 import numpy as np
 import pytest
+from PIL import Image
 
 import make_sogst_fixture as fixture
 import sogst_pack
@@ -114,8 +116,6 @@ def test_accel_uses_the_split16_log_encoding_of_the_spec(tmp_path):
     fields, meta = scene(256, spread=True)
     path = tmp_path / "x.sogst"
     written = pack(path, fields, meta, segment_duration=0.0)
-    from PIL import Image
-    import io
     with zipfile.ZipFile(path) as zf:
         lo = np.asarray(Image.open(io.BytesIO(zf.read("accel_l.webp"))).convert("RGBA"))
         hi = np.asarray(Image.open(io.BytesIO(zf.read("accel_u.webp"))).convert("RGBA"))
