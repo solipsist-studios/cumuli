@@ -17,19 +17,20 @@ Each window is trained standalone with its own time origin, so merging is
 five steps:
 
   1. Shift every splat's t_center into global time. A splat's position is
-     xyz + v * (t - t_center); substituting t_local = t_global - offset
-     shows only t_center moves. Velocity and sigma are unchanged.
+     xyz + v * dt, plus a * dt^2 at degree 2, with dt = t - t_center;
+     substituting t_local = t_global - offset leaves dt alone, so only
+     t_center moves. Velocity, accel and sigma are unchanged.
   2. Partition on t_center at the seams, so exactly one window owns each
      instant.
   3. Gate each splat's temporal tail (see gate_tails). Partitioning alone is
      not enough: a splat still renders wherever its temporal Gaussian is
-     non-zero, and position extrapolates linearly, so a window's splats
-     streak across every other window's frames. Skipping this step scored
+     non-zero, and position extrapolates along its motion, so a window's
+     splats streak across every other window's frames. Skipping this step scored
      LPIPS 0.0164 against 0.0079 with it, on a stitch whose windows scored
      0.0071 apiece.
-  4. Snap t_center onto the packer's codebook and slide xyz to match (see
-     snap_time_centers), so the archive's 256 time codes cost no position
-     error over the wider merged range.
+  4. Snap t_center onto the packer's codebook and re-anchor position (and
+     velocity at degree 2) to match (see snap_time_centers), so the archive's
+     256 time codes cost no position error over the wider merged range.
   5. Concatenate and repack as one archive over the global time range.
 
 Measured on the 5.00 s take: the stitched file scores LPIPS 0.00789 and
@@ -63,6 +64,10 @@ Usage:
 
 Offsets are each window's start in global seconds: the source frame index
 its local frame 0 came from, divided by fps.
+
+Degree-2 windows (docs/sogst-format.md section 4.8) stitch into a degree-2
+clip with no extra flags. Every window must have the same degree: spec
+section 4.8 forbids synthesising accel, so a mixed set is refused.
 """
 
 import argparse
@@ -78,7 +83,13 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from eval_render import decode_sogst_fields  # noqa: E402
 from sogst_io import SOGST_FIELDS  # noqa: E402
-from sogst_pack import kmeans_1d, pack_sogst  # noqa: E402
+from sogst_pack import (  # noqa: E402
+    ACCEL_FIELDS,
+    kmeans_1d,
+    motion_degree,
+    pack_sogst,
+    snap_degree2_to_codebook,
+)
 
 # Opacity logit for a splat ramped fully off. sigmoid(-30) is ~1e-13, which
 # the packer's prune threshold discards rather than storing a dead splat.
@@ -123,6 +134,29 @@ def segments_from_plan(path, model_name="splat_4d.sogst"):
             "not say where their models are. Re-plan with --out_dir_template, "
             "or pass --segment explicitly.")
     return pairs, [float(t) for t in plan.get("seams_seconds", [])]
+
+
+def check_motion_degrees(segments):
+    """The degree every segment shares, or a refusal naming each one's degree.
+
+    Concatenating degree-1 with degree-2 would need zeros for the degree-1
+    windows' accel. Spec section 4.8 forbids synthesising it, and dropping
+    the genuine accel of the others would bend their trajectories."""
+    degrees = []
+    for seg in segments:
+        try:
+            degrees.append(motion_degree(seg["fields"]))
+        except ValueError as error:
+            raise SystemExit(f"{seg['path']}: {error}") from error
+    if len(set(degrees)) > 1:
+        listing = ", ".join(f"{seg['path']} is degree {degree}"
+                            for seg, degree in zip(segments, degrees))
+        raise SystemExit(
+            f"the segments mix motion degrees: {listing}. Accel cannot be "
+            "synthesised for the degree-1 windows (docs/sogst-format.md section "
+            "4.8), and dropping it from the degree-2 windows would bend their "
+            "trajectories. Train or bake every window at one degree.")
+    return degrees[0]
 
 
 def default_seams(segments):
@@ -170,8 +204,10 @@ def select_fade(segment, lo, hi, fade):
 def gate_tails(fields, lo, hi, k, floor, cap_abs=0.0):
     """Cap each splat's temporal sigma so it cannot render outside its slot.
 
-    A splat's position is xyz + v * (t - t_center), so evaluating one far
-    outside the window it trained on extrapolates it across the room. Alpha
+    A splat's position is xyz + v * dt, plus a * dt^2 at degree 2, with
+    dt = t - t_center, so evaluating one far outside the window it trained on
+    extrapolates it across the room, and quadratically so at degree 2. The
+    cap is on time alone, so it needs no change for either degree. Alpha
     there is small, but a faint splat in the wrong place is a streak, and
     that is what a perceptual metric punishes: the first stitch of a 5 s
     take rendered every window's far tail into every other window's frames
@@ -216,6 +252,7 @@ def apply_weight(fields, weight):
 
 def merge(segments, seams, mode, fade, tail_k=2.0, tail_floor=0.4, tail_cap=0.0):
     """Concatenated field arrays plus a per-segment report."""
+    check_motion_degrees(segments)
     bounds = slot_bounds(segments, seams)
     kept, report = [], []
     for seg, (lo, hi) in zip(segments, bounds):
@@ -265,7 +302,16 @@ def snap_time_centers(merged):
     Rewriting xyz by v * (t_center_new - t_center_old) leaves the position
     at every instant exactly where it was, so the snap is free. Only the
     alpha envelope shifts, by well under a typical t_sigma.
+
+    At degree 2 that rewrite is wrong: xyz, velocity and accel must move
+    together (spec section 7), which sogst_pack.snap_degree2_to_codebook
+    does. pack_sogst keeps a degree-2 model's snapped levels exactly, so
+    the snap holds in the archive too. The degree-1 branch below keeps its
+    float32 arithmetic and the packer's re-clustering, so that its archives
+    do not change.
     """
+    if motion_degree(merged) == 2:
+        return snap_degree2_to_codebook(merged)
     tc = merged["t_center"].astype(np.float64)
     codebook, idx = kmeans_1d(tc)
     snapped = codebook[idx]
@@ -284,8 +330,15 @@ def to_pack_fields(merged):
     for the split names finds nothing, silently drops every view-dependent
     coefficient, and produces a flat-shaded model: that mistake cost 0.0186
     LPIPS against 0.0071 on the first attempt at this merge. Carry the block
-    through, and refuse to write a model that lost SH the inputs had."""
+    through, and refuse to write a model that lost SH the inputs had.
+
+    Accel is not in SOGST_FIELDS either, and has the same failure mode: lose
+    it and a degree-2 clip comes out as a degree-1 one that plays with bent
+    trajectories."""
     fields = {k: merged[k].astype(np.float32) for k in SOGST_FIELDS}
+    if motion_degree(merged) == 2:
+        for k in ACCEL_FIELDS:
+            fields[k] = merged[k].astype(np.float32)
     if "f_rest" in merged:
         fields["f_rest"] = np.asarray(merged["f_rest"], dtype=np.float32)
     else:
@@ -326,7 +379,9 @@ def main():
                          "on a seam keep a usable life; default 0.4")
     ap.add_argument("--no_snap_time", action="store_true",
                     help="skip moving t_center onto the packer's codebook; the "
-                         "snap is exact for position, so this is a debug switch")
+                         "snap is exact for position, so this is a debug switch. "
+                         "At degree 2 the archive then carries the full codebook "
+                         "error in its trajectories")
     ap.add_argument("--tail_cap", type=float, default=0.0,
                     help="an absolute ceiling in seconds on temporal sigma, "
                          "applied on top of the seam-distance rule; 0 disables")
@@ -380,11 +435,18 @@ def main():
             "the segments carry higher-order spherical harmonics but the "
             "merged fields do not: the merge would write a flat-shaded model. "
             "This is a bug in to_pack_fields, not in the inputs.")
+    # The same guard for motion: degree-2 inputs must make a degree-2 output.
+    degree = check_motion_degrees(segments)
+    if motion_degree(fields) != degree:
+        raise SystemExit(
+            f"the segments are degree {degree} but the merged fields are degree "
+            f"{motion_degree(fields)}: the merge would change every trajectory. "
+            "This is a bug in to_pack_fields, not in the inputs.")
     t_min = min(s["t_lo"] for s in segments)
     t_max = max(s["t_hi"] for s in segments)
     fps = args.fps or next((s["fps"] for s in segments if s["fps"]), 24.0)
 
-    print(f"merging {len(segments)} segments, mode {args.mode}")
+    print(f"merging {len(segments)} segments, mode {args.mode}, motion degree {degree}")
     for r in report:
         slot = ("(-inf" if r["slot"][0] is None else f"[{r['slot'][0]:.4f}")
         slot += ", inf)" if r["slot"][1] is None else f", {r['slot'][1]:.4f})"
@@ -405,7 +467,7 @@ def main():
             {"mode": args.mode, "fade": args.fade, "seams": seams,
              "tail_k": args.tail_k, "tail_floor": args.tail_floor,
              "tail_cap": args.tail_cap,
-             "time": [t_min, t_max], "fps": fps,
+             "time": [t_min, t_max], "fps": fps, "motion_degree": degree,
              "splats_out": int(meta["count"]), "megabytes": size,
              "segments": report}, indent=2))
 
