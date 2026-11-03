@@ -48,6 +48,9 @@ SQRT2 = math.sqrt(2.0)
 # gets an entry whether or not it holds splats, so this bounds meta.json.
 MAX_SEGMENTS = 65536
 
+# Degree-2 motion columns (spec sections 4.8 and 7.2): all three or none.
+ACCEL_FIELDS = ('ax', 'ay', 'az')
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -178,6 +181,77 @@ def vq_vectors(data: np.ndarray, k: int, iters: int = 8,
 
     labels = assign(full)
     return centroids.cpu().numpy(), labels.cpu().numpy().astype(np.uint32)
+
+
+def motion_degree(fields: dict) -> int:
+    """The motion degree a field dict carries: 2 with ax/ay/az, else 1.
+
+    Accel is all-or-nothing (spec section 4.8).  A partial set is refused
+    rather than read as degree 1, which would silently drop what is there."""
+    present = [name for name in ACCEL_FIELDS if name in fields]
+    if present and len(present) != len(ACCEL_FIELDS):
+        raise ValueError(f'accel is all-or-nothing, but only {present} are present')
+    return 2 if present else 1
+
+
+def reanchor_degree2(fields: dict, new_t_center: np.ndarray) -> dict:
+    """Move each degree-2 splat's t_center without moving its trajectory.
+
+    With delta = new_t_center - t_center, substituting into
+    mean(t) = x + v*(t - t_center) + a*(t - t_center)^2 gives
+    x' = x + v*delta + a*delta^2, v' = v + 2*a*delta and a' = a.  Spec section
+    7 requires the three to be recomputed together.  Only the temporal
+    envelope moves, by delta.
+
+    delta is taken against the float32 value that will be stored, so the
+    rounding of t_center is compensated as well.  Returns a new dict."""
+    stored = np.asarray(new_t_center, dtype=np.float32)
+    delta = stored.astype(np.float64) - np.asarray(fields['t_center'], dtype=np.float64)
+    out = dict(fields)
+    for pos, vel, acc in (('x', 'vx', 'ax'), ('y', 'vy', 'ay'), ('z', 'vz', 'az')):
+        p = np.asarray(fields[pos], dtype=np.float64)
+        v = np.asarray(fields[vel], dtype=np.float64)
+        a = np.asarray(fields[acc], dtype=np.float64)
+        out[pos] = (p + v * delta + a * delta * delta).astype(np.float32)
+        out[vel] = (v + 2.0 * a * delta).astype(np.float32)
+    out['t_center'] = stored
+    return out
+
+
+def snap_degree2_to_codebook(fields: dict):
+    """Re-anchor a degree-2 model onto the time codebook pack_sogst will keep.
+
+    pack_sogst stores t_center through a 256-entry codebook and does not
+    touch position, so the codebook error shows up as a trajectory error of
+    about delta * (v + 2*a*dt).  Doing this first makes that error zero: the
+    result has at most 256 t_center levels, and time_center_codes keeps such
+    levels exactly.  Returns (new fields, mean |move| in seconds)."""
+    tc = np.asarray(fields['t_center'], dtype=np.float64)
+    codebook, idx = kmeans_1d(tc)
+    out = reanchor_degree2(fields, codebook[idx])
+    return out, float(np.abs(out['t_center'].astype(np.float64) - tc).mean())
+
+
+def time_center_codes(t_center: np.ndarray, degree: int):
+    """The t_center codebook and each splat's index into it.
+
+    Normally this is 1-D k-means.  A degree-2 model already on at most 256
+    levels keeps them exactly, because it has been re-anchored onto them and
+    k-means would undo that: its quantile init collapses sparse levels into
+    their neighbours, moving those splats without compensation (measured on
+    a real model: 1,539 of 139,855 splats, by up to 0.22 s).
+
+    Degree 1 always clusters, which keeps its archives unchanged."""
+    if degree == 2:
+        levels = np.unique(t_center)
+        if len(levels) <= SOGST_CODEBOOK_SIZE:
+            spare = SOGST_CODEBOOK_SIZE - len(levels)
+            # Never indexed.  The codebook still has its 256 entries, and the
+            # same 1e-12 spacing kmeans_1d uses keeps them distinct.
+            pad = float(levels[-1]) + np.arange(1, spare + 1) * 1e-12
+            codebook = np.concatenate([levels.astype(np.float64), pad])
+            return codebook, np.searchsorted(levels, t_center).astype(np.uint8)
+    return kmeans_1d(t_center)
 
 
 def compute_sogst_order(fields: dict, time_min: float, time_max: float,
@@ -359,10 +433,18 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     """Quantize per-splat field arrays and write a version-1 .sogst archive.
 
     `fields` maps SOGST_FIELDS names to float32[N] arrays, plus optional
-    'f_rest' as float32[N, 3 * coeffs] (9, 24 or 45 columns for 1-3 bands).  `order_segments` accepts a precomputed
+    'f_rest' as float32[N, 3 * coeffs] (9, 24 or 45 columns for 1-3 bands)
+    and optional 'ax', 'ay', 'az' float32[N] for degree-2 motion, all three
+    or none.  `order_segments` accepts a precomputed
     (order, segments) pair from compute_sogst_order() (the CLI shares it
     with verify_sogst).  Otherwise it is computed here.  Returns the
     written meta.
+
+    Positions, velocities and accels are stored as given.  t_center goes
+    through its codebook with no compensation in position, which keeps
+    decoded split-plane fields fully determined by the input (spec section
+    10).  A caller that wants the trajectory exact re-anchors first: see
+    snap_degree2_to_codebook.
 
     With stream=True (and segmentation on), the archive uses the streamed
     layout: one webp texture set per group (persistent, then one per
@@ -372,6 +454,7 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     and are shared by every group.
     """
     n = len(fields['x'])
+    degree = motion_degree(fields)
     if order_segments is None:
         order_segments = compute_sogst_order(fields, time_min, time_max, segment_duration)
     order, segments = order_segments
@@ -396,12 +479,12 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
 
     accel_kwargs = {}
     a_lo = a_hi = None
-    if 'ax' in fields:
-        accel = np.stack([fields['ax'], fields['ay'], fields['az']], axis=1)
+    if degree == 2:
+        accel = np.stack([fields[name] for name in ACCEL_FIELDS], axis=1)
         a_lo, a_hi, a_mins, a_maxs = compute_split16_planes(accel)
         accel_kwargs = {'accel_mins': a_mins, 'accel_maxs': a_maxs}
 
-    tc_cb, tc_idx = kmeans_1d(fields['t_center'])
+    tc_cb, tc_idx = time_center_codes(fields['t_center'], degree)
     ts_cb, ts_idx = kmeans_1d(fields['t_sigma'], log_domain=True)
 
     shn_kwargs = {}
