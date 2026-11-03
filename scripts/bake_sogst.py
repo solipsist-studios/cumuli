@@ -7,8 +7,9 @@ bake_sogst.py  -  Bake a trained 4D interchange PLY into the .sogst container
 and/or a filtered interchange PLY.
 
 Input is cumuli-trainer's splat_4d.ply: spacetime Gaussians with a position
-at t_center, a velocity, a Gaussian temporal envelope (t_sigma), constant
-rotation and scale, and SH colour (docs/sogst-format.md section 7). The
+at t_center, a velocity, optionally a degree-2 accel, a Gaussian temporal
+envelope (t_sigma), constant rotation and scale, and SH colour
+(docs/sogst-format.md section 7). The
 bake post-filters and optionally smooths those splats, then writes a .sogst
 archive (--output), a filtered interchange PLY (--emit_ply), or both, from
 the same arrays so the two cannot disagree. The PLY carries its own clip
@@ -302,7 +303,7 @@ def smooth_time(t_sigma, opacity_logit, smooth_frames, fps):
     Heidi (cumuli-trainer, front-view head frame-to-frame change / held-out
     cam05 LPIPS): 0 -> 6.08 / 0.0097, 2 frames -> 5.74 / 0.0101,
     4 frames -> 5.48 / 0.0108. Spatial --smooth_px 1 -> 5.05 / 0.0120.
-    Long smoothing lets a splat drift further along its velocity, so
+    Long smoothing lets a splat drift further along its trajectory, so
     expect ghosting well before the image softens."""
     if smooth_frames <= 0:
         return t_sigma, opacity_logit
@@ -318,7 +319,7 @@ def smooth_time(t_sigma, opacity_logit, smooth_frames, fps):
 
 def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacity_logit,
                           outside_frac=0.5, downscale=4, time_stride=4, k_sigma=2.0,
-                          alpha_thresh=0.02):
+                          alpha_thresh=0.02, accel=None):
     """Keep-mask from multi-view silhouette consistency, evaluated across each
     splat's visible lifetime rather than only at its temporal centre.
 
@@ -349,7 +350,8 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
     from PIL import Image
 
     root = os.path.expanduser(dataset_root)
-    t = json.load(open(os.path.join(root, 'transforms_train.json')))
+    with open(os.path.join(root, 'transforms_train.json')) as fh:
+        t = json.load(fh)
     cams = {}
     for fr in t['frames']:
         lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
@@ -375,7 +377,10 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
         live = np.where(w > alpha_thresh)[0]
         if not len(live):
             continue
-        pts = xyz[live] + velocity[live] * (tt - t_center[live])[:, None]
+        dt = (tt - t_center[live])[:, None]
+        pts = xyz[live] + velocity[live] * dt
+        if accel is not None:
+            pts = pts + accel[live] * dt * dt
         for lab in labels:
             m = cams[lab]['meta']
             mask = masks[(lab, tt)]
@@ -553,7 +558,8 @@ def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshol
     if mask_filter_root:
         mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
                                           t_sigma, opacity_logit,
-                                          outside_frac=mask_filter_outside_frac)
+                                          outside_frac=mask_filter_outside_frac,
+                                          accel=accel)
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
