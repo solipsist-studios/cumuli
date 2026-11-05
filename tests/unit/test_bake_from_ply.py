@@ -358,3 +358,108 @@ def test_degree_1_bake_stays_degree_1(monkeypatch, tmp_path):
     header, out = _bake(monkeypatch, tmp_path, ply, smooth_frames=1.0, top_k_fraction=0.9)
     assert header["motion_degree"] == 1
     assert not any(name in out for name in ACCEL)
+# --- the dark-occluder filter: on by default, optional, configurable ----------
+
+PLANTED = 16
+
+
+def _ply_with_planted_occluders(tmp_path, count=512):
+    """A trained PLY whose first PLANTED splats match the dark-occluder test
+    exactly: black, opaque, and larger than every other splat."""
+    fields, meta = fixture.build_fixture(count=count, degree=2)
+    fields = {k: np.array(v) for k, v in fields.items() if k not in ("ax", "ay", "az")}
+    big = max(float(fields[f"scale_{i}"].max()) for i in range(3)) + 1.0
+    for i in range(PLANTED):
+        for channel in range(3):
+            fields[f"f_dc_{channel}"][i] = -3.0       # colour clips to black
+        fields["opacity"][i] = 6.0                    # sigmoid is about 0.9975
+        fields["scale_0"][i] = big                    # the largest axis of any splat
+    path = tmp_path / "planted.ply"
+    write_sogst_ply(str(path), fields, meta["time_min"], meta["time_max"], meta["fps"])
+    return path, count, big
+
+
+def _planted_survivors(out, big):
+    return int(np.isclose(out["scale_0"], big).sum())
+
+
+def test_dark_occluder_filter_is_on_by_default(monkeypatch, tmp_path):
+    ply, count, big = _ply_with_planted_occluders(tmp_path)
+    _, out = _bake(monkeypatch, tmp_path, ply)
+    assert _planted_survivors(out, big) == 0
+    assert count - len(out["x"]) >= PLANTED
+
+
+def test_dark_occluder_filter_can_be_turned_off(monkeypatch, tmp_path):
+    ply, count, big = _ply_with_planted_occluders(tmp_path)
+    _, out = _bake(monkeypatch, tmp_path, ply, dark_occluder=False)
+    assert len(out["x"]) == count
+    assert _planted_survivors(out, big) == PLANTED
+
+
+@pytest.mark.parametrize("params", [{"size_percentile": 100.0},     # nothing exceeds the largest splat
+                                    {"brightness_thresh": 0.0},     # nothing is darker than black
+                                    {"opacity_thresh": 1.0}])       # nothing is more opaque than 1
+def test_dark_occluder_thresholds_reach_the_filter(monkeypatch, tmp_path, params):
+    ply, count, big = _ply_with_planted_occluders(tmp_path)
+    _, out = _bake(monkeypatch, tmp_path, ply, dark_occluder_params=params)
+    assert len(out["x"]) == count
+    assert _planted_survivors(out, big) == PLANTED
+
+
+def test_dark_occluder_thresholds_can_widen_the_filter(monkeypatch, tmp_path):
+    ply, count, _ = _ply_with_planted_occluders(tmp_path)
+    _, default = _bake(monkeypatch, tmp_path, ply)
+    _, wider = _bake(monkeypatch, tmp_path, ply, dark_occluder_params={
+        "brightness_thresh": 1.1, "opacity_thresh": 0.0, "size_percentile": 0.0})
+    assert len(wider["x"]) < len(default["x"])
+
+
+def test_cli_no_dark_occluder_filter_keeps_every_splat(tmp_path):
+    ply, count, big = _ply_with_planted_occluders(tmp_path)
+    out = tmp_path / "cli.ply"
+    result = _run_cli("--input", ply, "--emit_ply", out, "--prune_threshold", 0,
+                      "--no_dark_occluder_filter")
+    assert result.returncode == 0, result.stderr
+    assert "Dark-occluder filter: off" in result.stdout
+    _, baked = read_sogst_ply(str(out))
+    assert len(baked["x"]) == count
+    assert _planted_survivors(baked, big) == PLANTED
+
+
+def test_cli_dark_occluder_filter_is_on_without_the_flag(tmp_path):
+    ply, count, big = _ply_with_planted_occluders(tmp_path)
+    out = tmp_path / "cli.ply"
+    result = _run_cli("--input", ply, "--emit_ply", out, "--prune_threshold", 0)
+    assert result.returncode == 0, result.stderr
+    assert "Dark-occluder filter: dropping" in result.stdout
+    _, baked = read_sogst_ply(str(out))
+    assert _planted_survivors(baked, big) == 0
+
+
+def test_cli_dark_occluder_thresholds_reach_the_filter(tmp_path):
+    ply, count, big = _ply_with_planted_occluders(tmp_path)
+    out = tmp_path / "cli.ply"
+    result = _run_cli("--input", ply, "--emit_ply", out, "--prune_threshold", 0,
+                      "--dark_occluder_size_percentile", 100)
+    assert result.returncode == 0, result.stderr
+    _, baked = read_sogst_ply(str(out))
+    assert len(baked["x"]) == count
+
+
+def test_cli_refuses_dark_occluder_thresholds_with_the_filter_off(tmp_path):
+    ply, _, _ = _ply_with_planted_occluders(tmp_path)
+    result = _run_cli("--input", ply, "--emit_ply", tmp_path / "x.ply",
+                      "--no_dark_occluder_filter", "--dark_occluder_opacity", "0.5")
+    assert result.returncode != 0
+    assert "has no effect with --no_dark_occluder_filter" in result.stderr
+
+
+@pytest.mark.parametrize("flag,value", [("--dark_occluder_brightness", "1.5"),
+                                        ("--dark_occluder_opacity", "-0.1"),
+                                        ("--dark_occluder_size_percentile", "101")])
+def test_cli_refuses_out_of_range_dark_occluder_thresholds(tmp_path, flag, value):
+    ply, _, _ = _ply_with_planted_occluders(tmp_path)
+    result = _run_cli("--input", ply, "--emit_ply", tmp_path / "x.ply", flag, value)
+    assert result.returncode != 0
+    assert f"{flag} must be in" in result.stderr
