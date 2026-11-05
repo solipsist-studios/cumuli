@@ -369,6 +369,14 @@ What the flags mean:
   face 13% steadier (frame-to-frame change 19.90 to 17.23) on Heidi at 0.5 px + 2 frames (the shipped default is now gentler, by eye on Tatum), at
   held-out 36.20 dB / LPIPS 0.0110 against 36.09 / 0.0097 unsmoothed.
   Set either to 0 to turn it off.
+  The bake also runs a dark-occluder filter, on by default, that drops
+  oversized, near-black, opaque splats as "shadow-fillers". "Oversized" is
+  relative to the file's own splats, so on a subject with large dark
+  regions (black hair, dark clothing) it can remove real surface.
+  `--no_dark_occluder_filter` turns it off; `--dark_occluder_brightness`
+  (default 0.05), `--dark_occluder_opacity` (0.7) and
+  `--dark_occluder_size_percentile` (75) retune it. Judge a bake of such a
+  subject over a light background as well as a dark one.
 
 The masks are baked into the dataset's RGBA alpha during the dataset
 build, so alpha supervision is part of training by construction. The
