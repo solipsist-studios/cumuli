@@ -353,15 +353,19 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
     with open(os.path.join(root, 'transforms_train.json')) as fh:
         t = json.load(fh)
     cams = {}
+    metas = {}  # (camera, time) -> that frame's own record: cropped rigs move cx/cy per frame
     for fr in t['frames']:
         lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
         cams.setdefault(lab, {'meta': fr, 'frames': {}})['frames'][round(fr['time'], 4)] = fr['file_path']
+        metas[(lab, round(fr['time'], 4))] = fr
     labels = sorted(cams)
     times = sorted(cams[labels[0]]['frames'])[::max(1, time_stride)]
 
     masks = {}
     for lab in labels:
         for tt in times:
+            if tt not in cams[lab]['frames']:
+                continue  # a camera may lack a timestamp the reference camera has
             a = Image.open(os.path.join(root, cams[lab]['frames'][tt] + '.png')).split()[3]
             if downscale > 1:
                 a = a.resize((a.width // downscale, a.height // downscale), Image.BILINEAR)
@@ -382,7 +386,9 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
         if accel is not None:
             pts = pts + accel[live] * dt * dt
         for lab in labels:
-            m = cams[lab]['meta']
+            if (lab, tt) not in masks:
+                continue
+            m = metas[(lab, tt)]
             mask = masks[(lab, tt)]
             c2w = np.asarray(m['transform_matrix'], np.float64).copy()
             c2w[:3, 1:3] *= -1
@@ -503,7 +509,8 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshold,
                      sh_degree=None, sh_clamp=1.5, keep_main_cluster=False,
                      sh_chroma_clamp=0.0, smooth_px=0.0, smooth_frames=0.0, top_k_fraction=1.0, filter_black_floaters=False,
-                     mask_filter_root=None, mask_filter_outside_frac=0.5):
+                     mask_filter_root=None, mask_filter_outside_frac=0.5,
+                     mask_filter_time_stride=4, mask_filter_downscale=4):
     """Bake a 4D interchange PLY: SH truncation and clamps, top-k, smoothing,
     the mask-consistency filter, then finish_export's filters and writers."""
     import cumuli_core_path  # noqa: F401
@@ -559,7 +566,9 @@ def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshol
         mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
                                           t_sigma, opacity_logit,
                                           outside_frac=mask_filter_outside_frac,
-                                          accel=accel)
+                                          accel=accel,
+                                          time_stride=mask_filter_time_stride,
+                                          downscale=mask_filter_downscale)
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
@@ -622,6 +631,12 @@ if __name__ == '__main__':
     parser.add_argument('--mask_filter_outside_frac', type=float, default=0.5,
                         help='Drop a Gaussian when it lands outside the mask in more than this '
                              'fraction of the tests that resolve it (default 0.5)')
+    parser.add_argument('--mask_filter_time_stride', type=int, default=4,
+                        help='Test every Nth timestamp (default 4). A splat whose lifetime falls '
+                             'between the sampled times is never tested and is kept, so short-lived '
+                             'splats escape the filter; use 1 to test every timestamp')
+    parser.add_argument('--mask_filter_downscale', type=int, default=4,
+                        help='Shrink the masks by this factor before testing (default 4)')
     parser.add_argument('--filter_black_floaters', action='store_true',
                         help='Drop a detached near-black floater cloud around a masked subject '
                              '(deeply-negative mean colour, or dark + low-alpha / spike-elongated) '
@@ -676,4 +691,6 @@ if __name__ == '__main__':
                      smooth_frames=args.smooth_frames, top_k_fraction=args.top_k_fraction,
                      filter_black_floaters=args.filter_black_floaters,
                      mask_filter_root=args.mask_filter_root,
-                     mask_filter_outside_frac=args.mask_filter_outside_frac)
+                     mask_filter_outside_frac=args.mask_filter_outside_frac,
+                     mask_filter_time_stride=args.mask_filter_time_stride,
+                     mask_filter_downscale=args.mask_filter_downscale)
