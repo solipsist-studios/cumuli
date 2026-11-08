@@ -837,16 +837,17 @@ def add_train4d_args(parser):
     parser.add_argument("--trainer_config", type=Path, default=None,
                         help="Pre-written cumuli-trainer config. Bypasses config generation; "
                              "source_path and model_path become the caller's responsibility.")
-    # Bake defaults picked by eye on Heidi (2026-10-08): 0.5 px + 2 frames gave
+    # Defaults 0.3 px + 1 frame picked by eye on Tatum (2026-11): 0.5/2 was too strong.
+    # Earlier Heidi measurement (2026-10-08): 0.5 px + 2 frames gave
     # a face 13% steadier than no smoothing (close-up frame-to-frame change
     # 19.90 -> 17.23) at 36.20 dB / LPIPS 0.0110 against 36.09 / 0.0097.
-    parser.add_argument("--smooth_frames", type=float, default=2.0,
+    parser.add_argument("--smooth_frames", type=float, default=1.0,
                         help="Bake-time temporal smoothing, in frames. Steadier playback, at the "
-                             "risk of ghosting when large. Default 2; 0 turns it off.")
-    parser.add_argument("--smooth_px", type=float, default=0.5,
+                             "risk of ghosting when large. Default 1; 0 turns it off.")
+    parser.add_argument("--smooth_px", type=float, default=0.3,
                         help="Bake-time 3D smoothing, in training-camera pixels. Higher is softer "
                              "and calmer, lower is sharper and noisier. Heidi: 0 -> LPIPS 0.0097, "
-                             "0.5 -> 0.0106, 1 -> 0.0120 (PSNR rises slightly). Default 0.5; 0 "
+                             "0.5 -> 0.0106, 1 -> 0.0120 (PSNR rises slightly). Default 0.3; 0 "
                              "turns it off.")
     parser.add_argument("--export_min_contribution", type=float, default=None,
                         help="Drop Gaussians whose largest contribution to any training view is "

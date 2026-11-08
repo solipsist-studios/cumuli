@@ -1084,7 +1084,7 @@ def _train4d_args(tmp_path, iters=200, t_init_div=100, trainer_config=None,
               num_pts=None, batch_size4d=None, densify_until_iter=None,
               densify_until_num_points=None, trainer_config=trainer_config,
               eval_camera=eval_camera, eval_every=10, skip_eval=skip_eval,
-              smooth_px=0.5, smooth_frames=2.0, export_min_contribution=None)
+              smooth_px=0.3, smooth_frames=1.0, export_min_contribution=None)
 
 def test_stage_train4d_raises_without_gpu(monkeypatch, tmp_path):
     monkeypatch.setattr(unified, "gpu_available", lambda: False)
@@ -1219,7 +1219,7 @@ def test_smoothing_defaults_are_the_heidi_pick():
     parser = argparse.ArgumentParser()
     unified.add_train4d_args(parser)
     args = parser.parse_args([])
-    assert (args.smooth_px, args.smooth_frames) == (0.5, 2.0)
+    assert (args.smooth_px, args.smooth_frames) == (0.3, 1.0)
     off = parser.parse_args(["--smooth_px", "0", "--smooth_frames", "0"])
     assert (off.smooth_px, off.smooth_frames) == (0.0, 0.0)
 

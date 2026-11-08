@@ -363,10 +363,10 @@ What the flags mean:
   bounds only the coloured part of view-dependent SH. On Heidi it cut
   coloured glints from 0.94 to 0.14 per 10k subject pixels at no
   measured cost (36.08 to 36.07 dB, LPIPS 0.0096 both).
-  `--smooth_px` (default 0.5) blurs every splat by that many
-  training-camera pixels, and `--smooth_frames` (default 2) widens every
+  `--smooth_px` (default 0.3) blurs every splat by that many
+  training-camera pixels, and `--smooth_frames` (default 1) widens every
   splat's lifetime by that many frames. Together they made the close-up
-  face 13% steadier (frame-to-frame change 19.90 to 17.23) on Heidi, at
+  face 13% steadier (frame-to-frame change 19.90 to 17.23) on Heidi at 0.5 px + 2 frames (the shipped default is now gentler, by eye on Tatum), at
   held-out 36.20 dB / LPIPS 0.0110 against 36.09 / 0.0097 unsmoothed.
   Set either to 0 to turn it off.
 

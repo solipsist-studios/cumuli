@@ -25,7 +25,7 @@ Steps, in order:
 Usage:
     python bake_sogst.py --input train4d_output/splat_4d.ply \
         --output splat_4d.sogst --mask_filter_root dataset_4dgs \
-        --sh_chroma_clamp 0.02 --smooth_px 0.5 --smooth_frames 2
+        --sh_chroma_clamp 0.02 --smooth_px 0.3 --smooth_frames 1
 """
 
 import argparse
