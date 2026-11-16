@@ -736,3 +736,12 @@ def test_filter_components_keeps_component_iff_hits_meet_min_hits(min_hits, hits
     _, kept, total = cm.filter_components(mask_bool, kpts, min_hits=min_hits)
     assert total == 1
     assert kept == (1 if hits >= min_hits else 0)
+
+
+def test_load_keypoints_counts_every_subject(tmp_path):
+    p = tmp_path / "kp.json"
+    p.write_text(json.dumps({"instance_info": [
+        {"keypoints": [[1, 2], [3, 4]], "keypoint_scores": [0.9, 0.1]},
+        {"keypoints": [[5, 6]], "keypoint_scores": [0.8]},
+    ]}))
+    assert cm.load_keypoints(p, 0.5).tolist() == [[1.0, 2.0], [5.0, 6.0]]

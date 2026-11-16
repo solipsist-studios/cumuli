@@ -77,9 +77,12 @@ def find_keypoints_json(kp2d_dir: Path, cam: str):
 def load_keypoints(json_path: Path, score_thr: float):
     with open(json_path) as f:
         data = json.load(f)
-    inst = data["instance_info"][0]
-    kpts = np.asarray(inst["keypoints"], dtype=np.float64)
-    scores = np.asarray(inst["keypoint_scores"], dtype=np.float64)
+    # Every instance counts: with several subjects (see associate_subjects.py) a mask
+    # component is kept when any subject's keypoints hit it.
+    if not data["instance_info"]:
+        raise IndexError("instance_info is empty")  # callers fall back to the raw mask
+    kpts = np.concatenate([np.asarray(i["keypoints"], dtype=np.float64).reshape(-1, 2) for i in data["instance_info"]])
+    scores = np.concatenate([np.asarray(i["keypoint_scores"], dtype=np.float64).ravel() for i in data["instance_info"]])
     return kpts[scores >= score_thr]
 
 
