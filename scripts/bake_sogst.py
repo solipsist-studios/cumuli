@@ -689,6 +689,11 @@ if __name__ == '__main__':
     parser.add_argument('--segment_duration', type=float, default=0.1,
                         help='--output only: temporal segment length in seconds for per-segment '
                              'culling (default: 0.1, 0 disables segmentation)')
+    for group in ('means', 'motion', 'accel'):
+        parser.add_argument(f'--{group}_drop_bits', type=int, default=0, choices=range(9),
+                            help=f'--output only: low bits to drop from the 16-bit {group} '
+                                 'planes (default: 0). Encoder-side precision; the decode is '
+                                 'unchanged (docs/sogst-format.md section 2.2.1)')
     parser.add_argument('--emit_ply', type=str, default=None,
                         help='Write the 4D interchange PLY to this path: the per-splat '
                              'spacetime data an external encoder packs '
@@ -708,7 +713,10 @@ if __name__ == '__main__':
                  '(the interchange PLY), or both')
     if args.output:
         SOGST_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
-                                'segment_duration': args.segment_duration}
+                                'segment_duration': args.segment_duration,
+                                'drop_bits': {'means': args.means_drop_bits,
+                                              'motion': args.motion_drop_bits,
+                                              'accel': args.accel_drop_bits}}
     if args.no_sh:
         if args.sh_degree not in (None, 0):
             sys.exit(f'--no_sh contradicts --sh_degree {args.sh_degree}')
