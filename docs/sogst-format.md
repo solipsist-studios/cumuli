@@ -10,7 +10,7 @@ written from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 14, 2026-08-18.**
+**Container version 1. Specification revision 15, 2026-11-16.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -112,6 +112,15 @@ offsets of §6 computable analytically.
 
 Every other entry is a lossless WebP texture.
 
+**Integrity.** Every ZIP entry carries a CRC-32 of its uncompressed bytes in
+its local header. Because entries are stored, that is also the CRC-32 of the
+bytes on disk. A player SHOULD verify it for each entry it reads whole
+before it decodes that entry. A truncated or corrupted texture can still
+decode as a valid WebP of the right size, and a wrong texel is a wrong
+codebook index or a wrong high byte. The result is a scene that renders
+without error and looks subtly broken. A player that byte-ranges part of an
+entry cannot check that entry's CRC and is exempt for it.
+
 ### 2.1 Texture conventions
 
 Normative, in order of what actually matters:
@@ -176,6 +185,44 @@ Alpha in `*_l.webp` / `*_u.webp` is unused, and an encoder MUST write it as
 Velocity uses this scheme rather than a codebook deliberately: 256 levels
 visibly quantizes motion.
 
+#### 2.2.1 Encoder precision
+
+An encoder MAY use a coarser grid than 16 bits on any axis of `means`,
+`motion` or `accel`. The decode above is unchanged, so a player needs no
+special case and cannot distinguish a coarsened file. Coarsening exists
+because the low byte of a full-precision axis is close to random noise:
+lossless WebP cannot compress it, and it costs a full 8 bits per splat per
+axis.
+
+An encoder that coarsens an axis by `b` bits (`1 ≤ b ≤ 8`):
+
+- MUST store only integers `q` that are multiples of `2^b`. The low `b`
+  bits of every stored `q` are then zero.
+- MAY record `maxs[c]` above the axis's true maximum, and SHOULD do so as
+  follows. The largest multiple of `2^b` that fits in 16 bits is
+  `top = floor(65535 / 2^b) * 2^b`, which is less than 65535 for every
+  `b ≥ 1`. If the encoder keeps the true maximum as `maxs[c]`, values within
+  one coarse step of it clamp to `top` and lose up to a whole step, not
+  half a step. The fix is to record
+  `maxs[c] = mins[c] + (true_max − mins[c]) * 65535 / top`. The true maximum
+  then lands exactly on `top`. `mins[c]` and `maxs[c]` are therefore the
+  bounds of the grid, not necessarily of the data. A player never needed
+  them to be the bounds of the data.
+- MUST record `b` in the group as `drop_bits`, an array of three integers in
+  axis order, when any axis of the group has `b ≥ 1`. It SHOULD omit
+  `drop_bits` when no axis is coarsened. Players ignore the key (§3.1). It
+  exists for validators: without it, §10 must hold the file to full 16-bit
+  precision and will correctly fail it.
+
+How many bits to drop is an encoder choice, and this specification does not
+fix a rule. The error it buys is easy to bound. In value units, the grid
+step of an axis at magnitude `|x|` is
+`(1 + |x|) * (maxs[c] − mins[c]) * 2^b / 65535`. The rounding error is at
+most half a step, plus half a 16-bit step if the encoder rounds twice. A
+position error shows on screen as that error times `focal / depth`. A
+velocity error is multiplied by `|t − t_center|`, and an acceleration error
+by `(t − t_center)^2`, over the times the splat is visible.
+
 ## 3. `meta.json`
 
 ```jsonc
@@ -216,6 +263,7 @@ visibly quantizes motion.
 | `time.min`, `time.max` | yes | Clip bounds in seconds. |
 | `time.fps` | yes | Advisory, for UI frame counters and scrub granularity. It does **not** affect evaluation, because the model is continuous in `t`. |
 | `cov2d_scale` | no | `[kx, ky]` screen-space 2D-covariance multiplier a player applies when rasterising. Compensates trainers whose screen-space footprints were inflated. Absent means `[1, 1]`. |
+| `means.drop_bits`, `motion.drop_bits`, `accel.drop_bits` | no | Three integers, one per axis: the low bits an encoder dropped from that group's 16-bit grid (§2.2.1). Present whenever any axis of the group is coarsened. Players ignore it. Validators read it. |
 
 `files` arrays name the archive entries that back each group. In the streamed
 layout (§6), they name the *basenames*, and the actual entries are prefixed. A
@@ -673,6 +721,8 @@ An encoder conforms when:
 - [ ] `shN_centroids` width is `64 * coeffs` for the declared band count.
 - [ ] When streaming: `reveal_bytes` and `geometry_bytes` were verified against
       the written archive, not just computed.
+- [ ] A coarsened split-plane axis stores only multiples of `2^b`, and its
+      group records `drop_bits` (§2.2.1).
 
 A player conforms when:
 
@@ -743,7 +793,12 @@ python compare_sogst.py --a scene.ply    --b scene.sogst        # one pack's cos
 Four things about how it judges, because the naive version of each is wrong:
 
 - **Split-plane fields (positions, velocity, accel) allow no outliers.** Their
-  encoding is fully determined by `mins`/`maxs`, so any disagreement is a bug.
+  encoding is fully determined by `mins`/`maxs` and `drop_bits`, so any
+  disagreement is a bug. On a coarsened axis the tolerance is the coarse
+  step, `2^b` integers wide. The canonical sort keys below snap to the same
+  coarse grid, so an unquantized PLY still pairs with the archive. A file
+  that coarsened an axis without recording it is judged at 16 bits and
+  fails.
 - **The tool judges codebook fields (scales, `f_dc`, `t_center`, `t_sigma`)
   on the *fraction* of splats past tolerance, not on the worst one.** A value
   sitting on a
@@ -804,6 +859,22 @@ first encounter with a second implementation, and that is why the guidance is
 here.
 
 ## Appendix A. Revision history
+
+**Revision 15** — encoder precision and entry integrity, from a comparison
+with the Faltwerk `.falt` codec. **No player action is required**: every
+version-1 player already decodes a revision-15 file correctly.
+
+- §2.2.1 (new): an encoder MAY coarsen any split-plane axis by `b` bits.
+  It stores multiples of `2^b`, MAY stretch `maxs` so that the true maximum
+  lands on the top grid point, and MUST record `drop_bits`. The decode is
+  unchanged. The motivation is measured: on four production archives the
+  `means_l`, `motion_l` and `accel_l` planes each cost 24.0 to 24.3 bits per
+  splat, which is the raw size of three bytes. WebP compresses them not at
+  all, and together they are about 30% of every file.
+- §3: the optional `drop_bits` key, one array per split-plane group.
+- §2: a player SHOULD verify each ZIP entry's CRC-32 before decoding it.
+- §9, §10: the matching encoder checklist item, and the coarse-grid rule
+  for comparing split-plane fields.
 
 **Revision 14** — review feedback on the first public draft.
 
