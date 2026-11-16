@@ -95,6 +95,47 @@ def test_source_ply_against_its_own_pack_passes(tmp_path, source, packer, refere
     assert code == 0, out
 
 
+@pytest.mark.parametrize("drop", [{"means": 2}, {"motion": 6, "accel": 6},
+                                  {"means": 1, "motion": 5, "accel": [3, 4, 5]}])
+def test_coarsened_archive_passes_against_its_source_ply(tmp_path, source, packer, capsys, drop):
+    """An archive whose encoder dropped split-plane bits records them, and
+    the tool judges it on that coarser grid, keys included, so it pairs an
+    unquantized PLY with it exactly as with a full-precision pack."""
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import write_sogst_ply
+
+    fields, meta = source
+    ply = tmp_path / "source.ply"
+    write_sogst_ply(str(ply), fields, meta["time_min"], meta["time_max"], meta["fps"])
+    name = "coarse_" + "_".join(f"{k}{v}" for k, v in drop.items()).replace(" ", "")
+    code, out = run(str(ply), packer(name, drop_bits=drop), capsys)
+    assert code == 0, out
+
+
+def test_coarsened_archive_fails_if_the_record_is_missing(tmp_path, source, packer, capsys):
+    """Without the manifest record the tool must hold the archive to full
+    precision and fail it: the record is what licenses the wider bar."""
+    import json
+    import zipfile
+
+    import cumuli_core_path  # noqa: F401
+    from cumuli_core.ply import write_sogst_ply
+    from sogst_io import write_sogst
+
+    fields, meta = source
+    ply = tmp_path / "source.ply"
+    write_sogst_ply(str(ply), fields, meta["time_min"], meta["time_max"], meta["fps"])
+    coarse = packer("coarse_unrecorded_src", drop_bits={"motion": 6}, stream=False)
+    with zipfile.ZipFile(coarse) as z:
+        m = json.loads(z.read("meta.json"))
+        textures = {n: z.read(n) for n in z.namelist() if n != "meta.json"}
+    del m["motion"]["drop_bits"]
+    stripped = tmp_path / "unrecorded.sogst"
+    write_sogst(str(stripped), m, textures)
+    code, out = run(str(ply), str(stripped), capsys)
+    assert code != 0, out
+
+
 # --------------------------------------------------------------------------
 # Negative controls: one per mistake the spec calls out
 # --------------------------------------------------------------------------
