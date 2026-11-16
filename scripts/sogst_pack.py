@@ -103,11 +103,26 @@ def log_transform(x: np.ndarray) -> np.ndarray:
     return np.sign(x) * np.log1p(np.abs(x))
 
 
-def split16(values: np.ndarray, mins: np.ndarray, maxs: np.ndarray):
+def split16(values: np.ndarray, mins: np.ndarray, maxs: np.ndarray, drop_bits=0):
     """Normalize [N, C] values over per-column mins/maxs to 16 bits and
-    split into (low, high) uint8 arrays."""
+    split into (low, high) uint8 arrays.
+
+    `drop_bits` (an int, or one int per column) snaps each 16-bit integer to
+    the nearest multiple of 2**b.  The decode is unchanged (spec section
+    2.2), so this is invisible to a player.  It only coarsens the grid: the
+    low byte then takes 256 / 2**b distinct values, which lossless WebP can
+    compress.  At b = 0 the low byte is noise and costs a full 24 bits per
+    splat."""
     span = np.where(maxs - mins > 0, maxs - mins, 1.0)
-    q = np.clip(np.rint((values - mins) / span * 65535.0), 0, 65535).astype(np.uint32)
+    q = np.clip(np.rint((values - mins) / span * 65535.0), 0, 65535).astype(np.int64)
+    b = np.broadcast_to(np.asarray(drop_bits, dtype=np.int64), (q.shape[1],))
+    if np.any(b > 0):
+        step = (1 << b)[None, :]
+        # Snap to the grid, never past 65535: the top grid point is the
+        # largest multiple of the step that still fits in 16 bits.
+        top = (65535 // step) * step
+        q = np.minimum(np.rint(q / step).astype(np.int64) * step, top)
+    q = q.astype(np.uint32)
     return (q & 0xFF).astype(np.uint8), (q >> 8).astype(np.uint8)
 
 
@@ -346,13 +361,45 @@ def morton_order(xyz: np.ndarray) -> np.ndarray:
 # Attribute packers
 # ---------------------------------------------------------------------------
 
-def compute_split16_planes(values3: np.ndarray):
+def compute_split16_planes(values3: np.ndarray, drop_bits=0):
     """Shared means/motion quantizer: log-transform, per-axis 16-bit split.
-    Returns (lo[N,3], hi[N,3], mins, maxs) byte planes."""
+    Returns (lo[N,3], hi[N,3], mins, maxs) byte planes.  `drop_bits` is
+    passed to split16()."""
     t = log_transform(values3.astype(np.float64))
-    mins, maxs = t.min(axis=0), t.max(axis=0)
-    lo, hi = split16(t, mins, maxs)
+    mins, maxs = _split16_range(t, drop_bits)
+    lo, hi = split16(t, mins, maxs, drop_bits)
     return lo, hi, mins, maxs
+
+
+def _split16_range(t: np.ndarray, drop_bits):
+    """Per-axis (mins, maxs) for split16() over log-domain values `t`.
+
+    With dropped bits the coarse grid's top point is the largest multiple of
+    2**b that fits in 16 bits (65504 at b = 5), not 65535.  Values above it
+    would clamp and lose up to a whole coarse step.  So the encoder stretches
+    `maxs` until the true maximum lands exactly on that top point.  A player
+    reads mins/maxs from meta.json either way, and at b = 0 the factor is
+    exactly 1, so the default output is byte-identical."""
+    mins, maxs = t.min(axis=0), t.max(axis=0)
+    b = np.broadcast_to(np.asarray(drop_bits, dtype=np.int64), (t.shape[1],))
+    top = (65535 // (1 << b)) * (1 << b)
+    span = maxs - mins
+    maxs = np.where((b > 0) & (span > 0), mins + span * (65535.0 / top), maxs)
+    return mins, maxs
+
+
+def split16_step(values3: np.ndarray, drop_bits) -> np.ndarray:
+    """Worst-case decoded step, in value units, of each splat on each axis
+    when compute_split16_planes() drops `drop_bits` low bits.
+
+    The grid is uniform in the log domain, so in value units it widens with
+    magnitude: d|x|/dT = 1 + |x|.  Half of this is the maximum rounding
+    error.  Returns [N, 3]."""
+    t = log_transform(values3.astype(np.float64))
+    mins, maxs = _split16_range(t, drop_bits)
+    span = np.where(maxs - mins > 0, maxs - mins, 1.0)
+    b = np.broadcast_to(np.asarray(drop_bits, dtype=np.float64), (3,))
+    return (1.0 + np.abs(values3)) * (span * np.exp2(b) / 65535.0)[None, :]
 
 
 def compute_quat_planes(rot_wxyz: np.ndarray):
@@ -429,7 +476,7 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
             fps: float, shn_count: int = 65536, webp_method: int = 4,
             generator: str = 'volumetric-capture-pipeline sogst_pack',
             cov2d_scale=None, segment_duration: float = 0.1,
-            order_segments=None, stream: bool = True) -> dict:
+            order_segments=None, stream: bool = True, drop_bits=None) -> dict:
     """Quantize per-splat field arrays and write a version-1 .sogst archive.
 
     `fields` maps SOGST_FIELDS names to float32[N] arrays, plus optional
@@ -452,7 +499,12 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     decode and reveal the scene progressively.  Quantization is global
     either way: codebooks, mins/maxs and shN centroids live in meta.json
     and are shared by every group.
+
+    `drop_bits` optionally maps 'means', 'motion' and 'accel' to the number
+    of low bits split16() drops for that group (an int, or one per axis).
+    It is an encoder-side precision choice: the decode is unchanged.
     """
+    drop_bits = drop_bits or {}
     n = len(fields['x'])
     degree = motion_degree(fields)
     if order_segments is None:
@@ -462,7 +514,7 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     xyz = np.stack([fields['x'], fields['y'], fields['z']], axis=1)
 
     # -- global quantization: per-splat byte planes + shared codebooks -----
-    m_lo, m_hi, m_mins, m_maxs = compute_split16_planes(xyz)
+    m_lo, m_hi, m_mins, m_maxs = compute_split16_planes(xyz, drop_bits.get('means', 0))
 
     rot = np.stack([fields[f'rot_{i}'] for i in range(4)], axis=1)
     q_b, q_mode = compute_quat_planes(rot)
@@ -475,13 +527,13 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
     alpha = np.clip(np.rint(255.0 / (1.0 + np.exp(-fields['opacity'].astype(np.float64)))), 0, 255).astype(np.uint8)
 
     vel = np.stack([fields['vx'], fields['vy'], fields['vz']], axis=1)
-    v_lo, v_hi, v_mins, v_maxs = compute_split16_planes(vel)
+    v_lo, v_hi, v_mins, v_maxs = compute_split16_planes(vel, drop_bits.get('motion', 0))
 
     accel_kwargs = {}
     a_lo = a_hi = None
     if degree == 2:
         accel = np.stack([fields[name] for name in ACCEL_FIELDS], axis=1)
-        a_lo, a_hi, a_mins, a_maxs = compute_split16_planes(accel)
+        a_lo, a_hi, a_mins, a_maxs = compute_split16_planes(accel, drop_bits.get('accel', 0))
         accel_kwargs = {'accel_mins': a_mins, 'accel_maxs': a_maxs}
 
     tc_cb, tc_idx = time_center_codes(fields['t_center'], degree)
@@ -687,6 +739,10 @@ def main():
                              'segmentation is on)')
     parser.add_argument('--verify', action='store_true',
                         help='Decode the output and report per-attribute quantization error')
+    for group in ('means', 'motion', 'accel'):
+        parser.add_argument(f'--{group}-drop-bits', type=int, default=0, choices=range(9),
+                            help=f'Low bits to drop from the 16-bit {group} planes (default 0). '
+                                 'Encoder-side precision only: the decode is unchanged')
     args = parser.parse_args()
 
     # Interchange PLY -> container. This is the path the TypeScript encoder
@@ -707,7 +763,9 @@ def main():
     meta = pack_sogst(args.output, fields, header['time_min'], header['time_max'],
                    header['fps'], shn_count=args.shn_count, webp_method=args.webp_method,
                    cov2d_scale=header.get('cov2d_scale'), order_segments=order_segments,
-                   stream=not args.monolithic)
+                   stream=not args.monolithic,
+                   drop_bits={'means': args.means_drop_bits, 'motion': args.motion_drop_bits,
+                              'accel': args.accel_drop_bits})
 
     segments = order_segments[1]
     if segments:
