@@ -579,6 +579,13 @@ def pack_sogst(out_path: str, fields: dict, time_min: float, time_max: float,
         trbf_center_codebook=tc_cb, trbf_sigma_codebook=ts_cb,
         segments=segments, cov2d_scale=cov2d_scale, generator=generator,
         **accel_kwargs, **shn_kwargs)
+    # Record a coarsened grid so a validator knows the tolerance (spec
+    # section 2.2).  Only when bits were dropped: the default stays
+    # byte-identical to an encoder that predates the key.
+    for group in ('means', 'motion', 'accel'):
+        bits = np.broadcast_to(np.asarray(drop_bits.get(group, 0), dtype=np.int64), (3,))
+        if group in meta and np.any(bits > 0):
+            meta[group]['drop_bits'] = [int(b) for b in bits]
 
     if segments and stream:
         # Streamed layout, SH deferred behind geometry:

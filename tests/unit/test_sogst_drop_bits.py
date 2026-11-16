@@ -85,6 +85,20 @@ def test_decoded_error_within_predicted_bound(tmp_path, group, cols):
     assert np.all(np.abs(got - src) <= 1.01 * (bound + full))
 
 
+def test_manifest_records_dropped_bits_only_when_set(tmp_path):
+    import json
+    full, _, _ = _pack(tmp_path, "full.sogst", None)
+    coarse, _, _ = _pack(tmp_path, "coarse.sogst", {"motion": 6, "accel": [0, 2, 4]})
+    with zipfile.ZipFile(full) as z:
+        m = json.loads(z.read("meta.json"))
+    assert all("drop_bits" not in m[g] for g in ("means", "motion", "accel"))
+    with zipfile.ZipFile(coarse) as z:
+        m = json.loads(z.read("meta.json"))
+    assert "drop_bits" not in m["means"]
+    assert m["motion"]["drop_bits"] == [6, 6, 6]
+    assert m["accel"]["drop_bits"] == [0, 2, 4]
+
+
 def test_low_byte_plane_shrinks(tmp_path):
     full, _, _ = _pack(tmp_path, "full.sogst", None)
     coarse, _, _ = _pack(tmp_path, "coarse.sogst", {"motion": 6})
