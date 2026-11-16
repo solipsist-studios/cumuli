@@ -884,6 +884,36 @@ def test_main_kp2d_directory_layout_end_to_end(monkeypatch, tmp_path):
     assert out_path.is_file()
 
 
+def test_report_json_has_before_after_per_camera(monkeypatch, tmp_path):
+    cams = make_rig(n=4)
+    transforms_path = tmp_path / "transforms.json"
+    write_transforms_json(transforms_path, cams)
+    kp_dir = tmp_path / "kp2d_dir"
+    write_kp2d_directory(kp_dir, cams, [np.array([0.0, 0.0, 0.0]), np.array([0.05, 0.0, 0.0])])
+    report = tmp_path / "sub" / "report.json"
+    monkeypatch.setattr(sys, "argv", _argv(transforms_path, kp_dir, tmp_path / "out.json",
+                                            ["--max_iters", "20", "--report_json", str(report)]))
+    rpwk.main()
+    data = json.loads(report.read_text())
+    assert set(data) == {"before", "after"}
+    assert set(data["before"]["per_camera"]) == set(data["after"]["per_camera"])
+    assert data["after"]["n"] > 0
+
+
+def test_report_json_written_with_report_only(monkeypatch, tmp_path):
+    cams = make_rig(n=4)
+    transforms_path = tmp_path / "transforms.json"
+    write_transforms_json(transforms_path, cams)
+    kp_dir = tmp_path / "kp2d_dir"
+    write_kp2d_directory(kp_dir, cams, [np.array([0.0, 0.0, 0.0]), np.array([0.05, 0.0, 0.0])])
+    report = tmp_path / "report.json"
+    monkeypatch.setattr(sys, "argv", _argv(transforms_path, kp_dir, tmp_path / "out.json",
+                                            ["--report_only", "--report_json", str(report)]))
+    rpwk.main()
+    assert set(json.loads(report.read_text())) == {"before"}
+    assert not (tmp_path / "out.json").exists()
+
+
 def test_main_face_weight_wiring_reaches_real_call(monkeypatch, tmp_path, capsys):
     cams = make_rig(n=4)
     transforms_path = tmp_path / "transforms.json"

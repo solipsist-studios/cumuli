@@ -91,6 +91,8 @@ def main():
     parser.add_argument("--max_iters", type=int, default=300)
     parser.add_argument("--report_only", action="store_true",
                         help="Only measure subject-space reprojection error, don't optimize (run this first)")
+    parser.add_argument("--report_json", type=Path, default=None,
+                        help="Write the before/after residual summary (per camera) to this JSON file")
     args = parser.parse_args()
 
     if not args.refine_script.is_file():
@@ -133,6 +135,8 @@ def main():
     ]
     if args.report_only:
         cmd.append("--report_only")
+    if args.report_json:
+        cmd += ["--report_json", str(args.report_json)]
 
     print("\nRunning:", " ".join(cmd))
     result = subprocess.run(cmd)
