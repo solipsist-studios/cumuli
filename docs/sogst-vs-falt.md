@@ -1,196 +1,165 @@
-# `.sogst` vs `.falt`: A Measured Comparison
+# `.sogst` and `.falt`: Choosing a 4D Gaussian Splat Format
 
-> **LOCAL ONLY. Do not push this file.** Every number below comes from degree-2
-> archives, which fall under the degree-2 hold (no remote, no cloud tools). Section 6
-> describes an unreleased trainer change that is also local only. Before any version of
-> this report goes public, re-measure on a degree-1 take and delete section 6.
+> **Draft, unreleased.** This report ships with the public release of degree-2 motion.
+> Do not push it before then.
 
-This report compares our 4D Gaussian splat format, `.sogst`, with Faltwerk's `.falt`
-(`github.com/edrethardo/Faltwerk`, MIT, commit `edf6c41`), on the same capture and the
-same scoring views. It is written for whoever decides what `.sogst` adopts next. Section 1
-describes the two formats, sections 2 and 3 give the head-to-head result, sections 4 and 5
-record which Faltwerk ideas transferred and which did not, section 6 covers the one
-still open, and section 7 lists the caveats.
+This report is for developers deciding which dynamic (4D) Gaussian splat format to
+support in a player, an engine or a pipeline. It compares `.sogst`
+([spec](sogst-format.md)) with Faltwerk's `.falt`
+([github.com/edrethardo/Faltwerk](https://github.com/edrethardo/Faltwerk), commit
+`edf6c41`) on one capture, scored on the same views.
 
-**Short answer.** At a matched file size, `.sogst` scores about 1.3 to 2.3 dB higher PSNR
-and slightly lower LPIPS than `.falt`, from a pipeline that trains about 4.5 times faster.
-Faltwerk's long-lived splats move more cleanly through fast motion, and its first frame
-arrives sooner; its viewer plays back more slowly. Three Faltwerk ideas, adapted to
-`.sogst`, cut our files by up to 78% with no measured quality loss.
+Section 1 is the decision guide. Section 2 compares what each format asks of an
+implementer. Sections 3 and 4 give the measurements. Section 5 covers recent `.sogst`
+encoder changes that came out of this comparison, section 6 explains why neither format
+uses a video codec, and section 7 lists the caveats.
 
-## 1. The Two Formats
+## 1. Which to Support
+
+| If your priority is | Choose | Why |
+|---|---|---|
+| Quality per byte | `.sogst` | 1.3 to 2.3 dB higher PSNR and lower LPIPS at a matched file size (section 3) |
+| Smooth playback on today's browsers | `.sogst` | WebP decode plus GPU upload, played in a PlayCanvas-based viewer. Faltwerk's player measured 50 to 61 ms of GPU time per frame on the same machine (section 4) |
+| Reusing an existing splat decoder | `.sogst` | Static attributes are byte-compatible with PlayCanvas SOG v2 |
+| Encoding speed | `.sogst` | 73 minutes against 5 h 26 min to a finished stream (section 3) |
+| Fastest first frame | `.falt` | Draws after 14% of the file, against 73% for `.sogst` (section 4) |
+| Clean fast motion | `.falt` | Long-lived splats move along curves and do not cross-fade (section 4) |
+| Permissive licence for the whole stack | `.falt` | Code and spec under MIT. `.sogst`'s spec is CC-BY-4.0, so independent implementations are free; its reference encoder is PolyForm Noncommercial |
+
+## 2. What Each Format Asks of an Implementer
 
 | | `.sogst` | `.falt` |
 |---|---|---|
-| Splat lifetime | Short (median `t_sigma` 57 to 77 ms); a Gaussian opacity window | Long; explicit birth and death frames, identity carried across sections |
-| Motion | Per-splat velocity and acceleration (degree 2) | Per-attribute curves with 1 to 9 knots per section, covering position, rotation, scale, opacity and colour |
-| Container | ZIP of lossless WebP textures plus `meta.json`; SOG v2 compatible | One binary section per 16 frames, entropy-coded with rANS |
-| Streaming unit | 0.1 s segment | 16-frame section (0.53 s at 30 fps) |
-| Decode | WebP, then GPU texture upload | Full rANS decode of a section in a worker |
-| Viewer | PlayCanvas (WebGL or WebGPU) | Faltwerk's own WebGPU player |
+| Container | ZIP (stored, no compression) of lossless WebP textures plus `meta.json` | One binary section per 16 frames, rANS entropy-coded |
+| Decoder | A WebP decoder and a JSON parser. Splat `i` is texel `i` | An integer rANS decoder; optional k-NN prediction, "follow" and B-spline modes; a TypeScript reference port is provided |
+| Per-frame work | Evaluate `xyz + v·dt + a·dt²` and a Gaussian opacity window | Evaluate one curve per attribute per splat |
+| Splat lifetime | Short; a Gaussian opacity window per splat | Long; explicit birth and death frames, identity kept across sections |
+| Streaming unit | 0.1 s segment, byte-rangeable | 16-frame section (0.53 s at 30 fps), decoded whole |
+| Reference player | A PlayCanvas-based viewer | Faltwerk's WebGPU player (needs HTTPS or localhost) |
+| Spec | English, normative, with a conformance checklist and a decoded-field comparison tool | German, describing the bitstream versions 1 to 6 |
+| Licence | Spec CC-BY-4.0; reference implementation PolyForm Noncommercial | MIT |
 
-## 2. Test Setup
+## 3. Quality, Size and Encoding Time
 
-- **Capture.** Take 260529-171310 ("annika_and_dave"): two subjects, 12 cameras,
-  144 frames, 4.77 s at 29.97 fps, 2048×1792.
-- **Our pipeline.** The locked degree-2 recipe: four temporal windows, a gated stitch,
-  a fine-tune, an SH-clamps-only bake. Training took 73 minutes (window training loops
-  plus the fine-tune).
-- **Faltwerk.** Its standard rig recipe: track a per-frame "teacher" model, fit curves,
-  fine-tune against the images, encode. Faltwerk does not make the teacher. We ran it
-  three ways:
-  - `run_pf`: Faltwerk's normal input, 144 independent static 3DGS fits, one per frame.
-  - `run_q`: a teacher sliced per frame from our trained model, quality-first.
-  - `run_r11`: the same teacher with Faltwerk's own rate target at 11.4 Mbit/s.
-- **Scoring.** PSNR, SSIM and LPIPS on all 144 views of `cam00`, with ground truth
-  composited onto black. Both pipelines trained on all 12 cameras, `cam00` included,
-  so the scores compare pipelines but flatter absolute quality. Faltwerk's output was
-  decoded and rendered with its own code; only the metric code is shared.
+**Setup.** Both formats encoded the same capture: two subjects, 12 cameras, 144 frames,
+4.77 s at 29.97 fps, 2048×1792. Both trained on all 12 cameras. Every stream was scored
+on all 144 views of one camera (`cam00`), with ground truth composited onto black. That
+camera was in training for both, so the scores compare the formats but flatter absolute
+quality. Faltwerk decoded and rendered its own streams; the two share only the metric
+code. Faltwerk's own evaluation and ours agree on its PSNR to the third decimal
+(37.088 dB).
 
-## 3. Results
+Faltwerk's pipeline needs a "teacher": a static 3DGS model per frame that it tracks.
+Faltwerk does not make one. The **end-to-end** `.falt` stream used 144 independent
+per-frame fits, its normal input. The **quality-first** and **rate-target** streams used
+a teacher sliced per frame from the `.sogst` model; that teacher scored 1.05 dB lower,
+so it gave Faltwerk no head start.
 
-### Quality and Size
+![Archive size against PSNR for .sogst and .falt streams](img/sogst-vs-falt/size-vs-psnr.svg)
+
+![Archive size against LPIPS for .sogst and .falt streams](img/sogst-vs-falt/size-vs-lpips.svg)
 
 | Stream | Size | PSNR (dB) | LPIPS |
 |---|---|---|---|
-| `.falt` end to end (`run_pf`) | 8.36 MB | 38.138 | 0.01506 |
-| `.falt` sliced teacher, quality-first (`run_q`) | 12.83 MB | 37.088 | 0.01466 |
-| `.falt` sliced teacher, matched rate (`run_r11`) | 6.37 MB | 37.138 | 0.01454 |
-| `.sogst` shipped bake | 30.39 MB | 39.389 | 0.01288 |
-| `.sogst` recommended packing (section 4) | 22.33 MB | 39.362 | 0.01291 |
-| `.sogst` 3.0 MB/s rate target + fine-tune | 13.55 MB | 39.448 | 0.01303 |
-| `.sogst` 1.5 MB/s rate target + fine-tune | 6.81 MB | 39.395 | 0.01395 |
+| `.falt` rate target (11.4 Mbit/s) | 6.37 MB | 37.138 | 0.01454 |
+| `.falt` end to end | 8.36 MB | 38.138 | 0.01506 |
+| `.falt` quality-first | 12.83 MB | 37.088 | 0.01466 |
+| `.sogst` 1.5 MB/s rate target | 6.81 MB | 39.395 | 0.01395 |
+| `.sogst` 3.0 MB/s rate target | 13.55 MB | 39.448 | 0.01303 |
+| `.sogst` recommended packing | 22.33 MB | 39.362 | 0.01291 |
+| `.sogst` full bake | 30.39 MB | 39.389 | 0.01288 |
 
-The 1.5 MB/s `.sogst` file is 19% smaller than Faltwerk's end-to-end stream and better on
-both metrics: +1.26 dB PSNR, −0.0011 LPIPS. Against the matched-rate `.falt` stream of
-nearly the same size, it leads by 2.26 dB and 0.0006 LPIPS.
+At nearly the same size as the `.falt` rate-target stream, the 1.5 MB/s `.sogst` file
+scores 2.26 dB higher PSNR and 0.0006 lower LPIPS. It is also 19% smaller than the
+end-to-end `.falt` stream and better on both metrics.
 
-Faltwerk did better from its own input than from ours: independent per-frame teachers
-gave 1.05 dB more PSNR than the teacher sliced from our model, at about the same LPIPS.
-Distilling our model was therefore no head start.
+![Training time to a finished stream: .sogst 1 h 13 min, .falt 5 h 26 min](img/sogst-vs-falt/training-time.svg)
 
-### Training Time
-
-| Stage | `.falt` end to end | `.sogst` |
+| Stage | `.sogst` | `.falt` end to end |
 |---|---|---|
-| Per-frame teachers | 95 min | – |
-| Tracking (stage 1) | 201 min | – |
-| Curve fit | under 1 min | – |
-| Fine-tune | 28 min | – |
-| Encode | about 1 min | – |
-| Window training + stitch fine-tune | – | 73 min |
-| Rate target prune + fine-tune (optional) | – | under 2 min of training per target |
-| **Total** | **about 5 h 26 min** | **about 73 min** |
+| Per-frame teacher fits | – | 95 min |
+| Tracking | – | 201 min |
+| Curve fit | – | under 1 min |
+| Training: four windows plus stitch fine-tune | 73 min | – |
+| Fine-tune | – | 28 min |
+| Encode | not timed (bake and pack, minutes) | about 1 min |
+| **Total** | **about 1 h 13 min plus the bake** | **about 5 h 26 min** |
 
-Both exclude dataset preparation, which the two pipelines share.
+Both ran on one RTX 5090. Neither total includes dataset preparation, which the two
+share. A `.sogst` rate target adds under 2 minutes of fine-tuning per target.
 
-### Visual Quality and Playback
+## 4. Playback and Appearance
 
-These observations come from viewing `run_r11` and the 1.5 MB/s `.sogst` file side by side.
+![Bytes needed before the first frame: .sogst 4.98 of 6.81 MB, .falt 0.89 of 6.37 MB](img/sogst-vs-falt/first-frame.svg)
 
-- **Fast motion.** `.falt` looks softer but smears less between 0.3 and 0.8 s. Our short
-  splats cross-fade during fast motion: an arm is drawn by splats fading out at the old
-  pose and new ones fading in at the new pose. Faltwerk moves one splat along a curve.
+- **First frame.** `.falt` draws after its first section: 0.89 MB of 6.37 MB. A
+  `.sogst` file draws after its persistent group and first segment, recorded in the
+  manifest as `streams.reveal_bytes`: 4.98 MB of 6.81 MB. The persistent group holds the
+  always-drawn splats, 83% of them in this file. That is an encoder setting, not a
+  format limit.
+- **Frame rate.** On the viewing machine, Faltwerk's player reported 50 to 61 ms of GPU
+  time per frame for about 22,000 splats, which caps playback near 16 to 20 fps. It evaluates every curve and
+  runs a full bitonic depth sort each frame. Its sections must also decode completely
+  before they play, and the player decodes two sections ahead, so playback stutters until
+  the stream has loaded. On the same machine, the `.sogst` file played smoothly in our
+  PlayCanvas-based viewer.
+- **Fast motion.** `.falt` looks softer but smears less in the fastest passage
+  (0.3 to 0.8 s). `.sogst` splats are short-lived (median opacity window `t_sigma` of
+  68 to 80 ms),
+  so fast motion is drawn by old splats fading out while new ones fade in. `.falt` moves
+  one splat along a curve.
 - **Solidity.** `.falt` reads more like a surface and shows fewer floaters. It draws
-  about 20,000 to 25,000 splats per frame, against a median of 40,500 for the 1.5 MB/s
-  `.sogst` file (121,962 for the shipped bake). Its encoder also removes "giant" and
-  "runaway" splats explicitly. Ours has no equivalent cut.
-- **Colour.** `.falt` looked more washed out. This has not been measured.
-- **Time to first frame.** `.falt` is faster. It needs only its first section: 0.89 MB
-  for `run_r11`. The 1.5 MB/s `.sogst` file needs 4.98 MB of its 6.81 MB (73%) before
-  it can draw (`streams.reveal_bytes`). Almost all of that is the persistent group of
-  always-drawn splats, which holds 251,356 of the file's 302,053 splats (83%); the first
-  segment adds 0.05 MB.
-- **Playback.** `.falt` plays back choppily. Its viewer reports 50 to 61 ms of GPU time
-  per frame for about 22,000 splats, which caps playback near 16 to 20 fps. That is a
-  viewer cost (per-frame curve evaluation plus a full bitonic depth sort), not a format
-  limit. A 16-frame section must also be fully decoded before it plays, and the player
-  decodes only two sections ahead.
+  about 20,000 to 25,000 splats per frame against a median of 40,500 for the 1.5 MB/s
+  `.sogst` file, and its encoder removes oversized and far-travelling splats.
+- **Colour.** `.falt` looked slightly washed out in one viewing. This has not been
+  measured.
 
-## 4. What Transferred to `.sogst`
+## 5. Recent `.sogst` Encoder Changes
 
-The comparison started from Faltwerk's encoder ideas. Three carried over. All three
-change only the encoder: a version-1 player decodes the output unchanged.
+Three Faltwerk ideas carried over to the `.sogst` encoder. None changes the decode, so
+every existing `.sogst` player reads the new files.
 
-1. **Precision from the camera footprint.** The low byte of each 16-bit position,
-   velocity and acceleration value is close to random noise. WebP cannot compress it,
-   and those three planes made up about 30% of every archive (24.0 to 24.3 bits per
-   splat). The encoder now drops low bits on a coarser grid and records them as
-   `drop_bits` (spec revision 15, §2.2.1). The rule: the largest drop that keeps the p99
-   on-screen error at or below 0.5 px at the nearest training camera. That gives 5/6/7
-   bits (position/velocity/acceleration) on this take, −23% at −0.002 dB. The rule has
-   to be computed per take; another take allowed only 2/6/6.
-2. **A smaller SH palette.** 16,384 entries in place of 65,536 saves a further 1 MB here
-   (the palette is fixed-size). Combined with item 1: **22.33 MB, −26.5%, at −0.027 dB
-   and +0.00003 LPIPS.** Faltwerk's rule of choosing each splat's SH degree from its
-   energy found nothing to cut: under 3% of splats fall below 8/255 in either band.
-3. **A delivery-rate target.** `scripts/fit_rate_target.py` ranks splats by their largest
-   blend weight over the training views, searches the kept count by packing until the
-   archive fits, then fine-tunes the kept set for 3,000 steps with densification off. The
-   1.5 MB/s file keeps 303,678 of 1,034,209 splats, is 78% smaller than the shipped bake,
-   and matches its PSNR (39.395 against 39.389 dB) at +0.0011 LPIPS.
+1. **Precision set by the camera footprint.** The low byte of each 16-bit position,
+   velocity and acceleration value is close to random noise, and those planes were about
+   30% of every archive. Spec revision 15 (§2.2.1) lets an encoder drop low bits and
+   record how many in `drop_bits`. Dropping 5/6/7 bits (position/velocity/acceleration),
+   the most that keeps the p99 on-screen error at or below 0.5 px here, saves 23% at
+   −0.002 dB.
+2. **A smaller SH palette.** 16,384 entries in place of 65,536. With item 1, the archive
+   shrinks 26.5% for −0.027 dB and +0.00003 LPIPS: the "recommended packing" point.
+3. **A delivery-rate target.** The encoder ranks splats by their largest on-screen
+   contribution in any training view, keeps as many as fit the target, and fine-tunes
+   the survivors for 3,000 steps. At 1.5 MB/s it keeps 303,678 of 1,034,209 splats and
+   matches the full bake's PSNR at 22% of its size.
 
-Two Faltwerk practices also went in: a CRC-32 check on archive entries (spec §2), and
-golden-digest tests of the encoder's exact output bytes.
+## 6. Why Not a Video Codec
 
-## 5. What Did Not Transfer
-
-- **Lossless video.** Faltwerk codes no video, but the comparison raised the question of
-  a video-first container like MPEG's V-PCC Gaussian splat profile. Encoding the
-  per-segment textures as lossless HEVC made them larger: +28% on the shipped archive
-  and +62% on the recommended packing, decoded back losslessly in both cases. Inter-frame
-  prediction saved only 3 to 6 points over intra-only, because consecutive `.sogst`
-  segments hold different splats and give the codec nothing to predict from. A video
-  container only pays off with a lossy codec and splats that persist across frames.
-- **The rANS bitstream and its predictors.** These would break SOG v2 compatibility and
-  direct texture upload, and every player would need a bit-exact integer decoder.
-
-## 6. Open: Longer-Lived Splats (LOCAL ONLY)
-
-Faltwerk's cleaner fast motion comes from long-lived splats. The closest `.sogst` change
-is an experimental trainer option (branch `local/temporal-rot-scale`, never to be pushed)
-that gives each splat an angular velocity and a log-scale rate, with the scale change
-bounded to 2× either way.
-
-On one window of take 260529-174623, with `cam00` held out:
-
-| Arm | Seeds | Splats | Packed size | PSNR (dB) | LPIPS |
-|---|---|---|---|---|---|
-| Degree-2 (current) | 5 | 219,468 | 4.90 MB | 24.63 | 0.0663 |
-| + rotation/scale, unbounded | 5 | 160,977 | 4.59 MB | 23.89 | 0.0651 |
-| + rotation/scale, bounded at 2× | 3 | 113,948 | 3.45 MB | 23.83 | 0.0602 |
-
-The bounded variant's splats live 2.2 to 3.3 times longer (median `t_sigma` 134 to
-190 ms against 57 to 61 ms) without growing in size. LPIPS is lower and much steadier
-across seeds; PSNR drops by about 0.8 dB. That take turned out to be a broken splat, so a
-re-test on annika_and_dave (window 0, `cam00` held out, bounds of 2× and 4×, 3 seeds each)
-is running, scored separately over the 0.3 to 0.8 s motion stretch. Its results belong
-here when it finishes.
+MPEG's V-PCC profile for Gaussian splats stores splat attributes in video. We tested the
+idea on `.sogst` by encoding each archive's textures as lossless HEVC, one frame per
+segment. The result was larger than WebP: +28% on the full bake and +62% on the
+recommended packing, with every frame decoded back losslessly. Inter-frame prediction
+saved only 3 to 6 points over intra-only coding, because consecutive `.sogst` segments
+hold different splats and give a video codec nothing to predict from. A video container
+pays off only with a lossy codec and splats that persist across frames, which neither
+format uses today.
 
 ## 7. Caveats
 
-- One take. Every head-to-head number comes from annika_and_dave.
-- `cam00` was in training for every row of section 3. Only section 6 holds it out.
-- Faltwerk's per-frame teachers used our trainer with a short schedule (3,000 iterations,
-  SH degree 0). Faltwerk ships no teacher trainer, so another one could change its result.
-- The visual notes in section 3 come from one viewing session, and the colour
-  observation is unmeasured.
-- Faltwerk's own evaluation and our harness agree on its PSNR to the third decimal
-  (37.088 dB on `run_q`), which supports the cross-format scoring.
+- One capture. Every number comes from the same 4.77 s two-person take.
+- The scoring camera was in training for both formats. Absolute scores are optimistic;
+  the comparison between formats is not affected, since both saw it.
+- Faltwerk ships no teacher trainer. Our per-frame fits used 3,000 iterations at SH
+  degree 0; a different teacher could move its result.
+- The appearance notes in section 4 come from one viewing session.
 
-## 8. Reproduction
+## Reproducing
 
-Scripts and results live in `/media/Exos/4dgs/sogst_falt_phases/` on the capture machine.
-
-| Step | Script |
-|---|---|
-| Scoring (RGBA ground truth composited onto black) | `tools/bench_eval.py`, `tools/falt_bench.py` |
-| Faltwerk inputs from a cumuli run | `tools/prep_faltwerk.py`, `tools/perframe_teachers.py` |
-| Faltwerk recipe runs | `faltwerk/run_q`, `run_r11`, `run_pf` (`recipe.sh` in each) |
-| `.sogst` variants for this take | `tools/run_171310.sh` |
-| Lossless HEVC comparison | `tools/hevc_textures.py` |
-| Viewer comparison page | `tools/make_viewer_compare.py` |
-
-The encoder changes are on local branches: `sogst/position-precision` (precision and
-`drop_bits`), `sogst/rate-target` (`fit_rate_target.py`) and `sogst/spec-rev15` (spec
-revision 15).
+- **`.falt`:** Faltwerk's standard recipe, `tools/faltwerk_recipe.py --source images`,
+  with a rig scene file (`kind: rig`) and one 3DGS PLY per frame as the teacher. Its
+  `docs/recipe.md` describes the inputs.
+- **`.sogst`:** this repository's pipeline (`docs/pipeline.md`), then
+  `scripts/bake_sogst.py` with `--means_drop_bits`, `--motion_drop_bits`,
+  `--accel_drop_bits` and `--shn_count`, and optionally `scripts/fit_rate_target.py`
+  for a delivery rate.
+- **Scoring:** render each stream with its own player code at the test camera's views,
+  composite the ground truth onto black, and compute PSNR, SSIM and LPIPS over all views.
