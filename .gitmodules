@@ -1,6 +1,3 @@
-[submodule "deps/Diffuman4D"]
-	path = deps/Diffuman4D
-	url = https://github.com/solipsist-studios/Diffuman4D
 [submodule "deps/BiRefNet"]
 	path = deps/BiRefNet
 	url = https://github.com/ZhengPeng7/BiRefNet

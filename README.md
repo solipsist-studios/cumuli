@@ -8,9 +8,7 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 Multi-camera capture -> gaussian splat pipeline: sync GoPro footage,
 estimate camera poses (HLOC), predict human keypoints (Sapiens), and
 train a 4D gaussian splat on the real cameras, baked to a streamable
-`.sogst` asset. A Diffuman4D dense-ring
-branch (hallucinating a full 48-camera view ring) is planned but not
-part of this build yet.
+`.sogst` asset.
 
 See [docs/pipeline.md](docs/pipeline.md) for the full walkthrough with
 example commands, stage by stage, and the unified orchestrator that runs
@@ -27,7 +25,8 @@ that runs automatically on every PR.
 scripts/   pipeline scripts, plus run_unified_pipeline.py (the
            recommended single-command entry point) and
            render_frame_sequence.py for multi-frame playback once you
-           have posed cameras
+           have posed cameras. scripts/vendor/ holds third-party code
+           under its own license (see Third-party model licenses)
 deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
            (SAPIENS_CHECKPOINT_ROOT, HLOC settings), see
@@ -62,9 +61,8 @@ git submodule update --init --recursive
 ```
 
 - `deps/camera-calibration` -- per-camera undistortion (offline_undistort.py)
-- `deps/BiRefNet` -- background removal model (invoked via Diffuman4D's own wrapper script)
-- `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
-- `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today. It also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
+- `deps/BiRefNet` -- the BiRefNet source, for reference. No script reads it: `birefnet_masks.py` loads the model from Hugging Face through transformers
+- `deps/sapiens` -- the original Sapiens (v1) source, for reference. No script reads it: keypoints come from the `sapiens2` package `environment.yml` installs, driven by `scripts/vendor/sapiens2/vis_pose.py`
 - `deps/cumuli-trainer` -- the 4D gaussian splat trainer behind the `train4d` stage (Solipsist, private)
 - `deps/cumuli-core` -- shared 4D library: interchange PLY, `.sogst` decoding, cameras, gsplat rendering, metrics (Solipsist, private)
 
@@ -213,11 +211,13 @@ this pipeline:
   repository-level Apache-2.0 label does not relicense it. Use
   `--feature_type aliked` (ALIKED, BSD-3-Clause, paired with LightGlue,
   Apache-2.0) for a fully permissive feature/matcher stack.
-- **Sapiens (legacy path)** -- `deps/sapiens` and
-  `--model coco_wholebody133` are CC BY-NC 4.0, non-commercial only.
+- **Sapiens (v1)** -- `deps/sapiens` is CC BY-NC 4.0, non-commercial
+  only. No pipeline script runs it.
 
-The default keypoint path (`--model goliath308`) uses **Sapiens2**,
-which is under Meta's own Sapiens2 License rather than CC BY-NC. That
+The keypoint stage uses **Sapiens2**, which is under Meta's own Sapiens2
+License rather than CC BY-NC. Two Sapiens2 demo files, modified, ship
+in this repository under `scripts/vendor/sapiens2/` with a copy of that
+license; they are not covered by the PolyForm license. That
 agreement *does* permit commercial use, but it carries an acceptable-use
 list that prohibits, among other things, surveillance, **biometric
 processing**, deepfakes and impersonation, and inferring sensitive
@@ -235,6 +235,8 @@ this repository, and the shared library `deps/cumuli-core` is too. Both
 render through gsplat, which is Apache-2.0.
 
 Everything else wrapped by the pipeline (BiRefNet:
-MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
-HLOC: Apache-2.0, LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP:
-BSD-3) is permissively licensed.
+MIT code and weights, camera-calibration: MIT, HLOC: Apache-2.0,
+LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP: BSD-3) is
+permissively licensed. The mask and triangulation scripts contain code
+ported from Diffuman4D (Apache-2.0); `scripts/vendor/diffuman4d/`
+carries its license and the attribution notice.

@@ -215,12 +215,9 @@ def test_keypoint_crop_box_single_point_degenerates_without_crashing():
 # around it is real.
 # --------------------------------------------------------------------------
 
-def test_run_birefnet_on_crops_errors_when_script_missing(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cm, "REMOVE_BG_SCRIPT", tmp_path / "does_not_exist.py")
-    with pytest.raises(SystemExit) as exc_info:
-        cm.run_birefnet_on_crops({}, ".png")
-    assert exc_info.value.code == 1
-    assert "Diffuman4D submodule checked out" in capsys.readouterr().out
+def test_retry_script_ships_in_repo():
+    assert cm.REMOVE_BG_SCRIPT.name == "birefnet_masks.py"
+    assert cm.REMOVE_BG_SCRIPT.is_file()
 
 
 def test_run_birefnet_on_crops_subprocess_failure_returns_empty_dict(tmp_path, monkeypatch, capsys):

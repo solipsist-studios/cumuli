@@ -9,8 +9,7 @@ Unified entry point for the volumetric capture pipeline: sync -> undistort
 -> pose solve/refine -> mask -> 4D dataset build -> cumuli-trainer 4DGS training,
 baked to a streamable .sogst asset.
 Orchestrates the other scripts in this directory via subprocess; it does
-not reimplement any of their logic. (A Diffuman4D 48-camera dense-ring
-branch is planned but not wired in yet.)
+not reimplement any of their logic.
 
 --------------------------------------------------------------------------
 STAGE ORDERING
@@ -52,7 +51,6 @@ alongside sync itself. So the actual flow is:
      cumuli_trainer -> splat_4d.ply -> bake_sogst.py (mask-consistency
      filter, SH chroma clamp, smoothing) -> eval_render.py --report_json on
      the held-out camera.
-     The Diffuman4D 48-camera dense-ring branch is still not wired in.
 
 Usage (see --help for every flag):
     python3 run_unified_pipeline.py \\

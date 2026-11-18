@@ -5,7 +5,7 @@
 """
 build_flipbook_4dgs_dataset.py – Assemble a D-NeRF-style 4D training
 dataset from a *flipbook* capture layout (frame-major, as produced by the
-Diffuman4D preprocessing flow) instead of build_4dgs_dataset.py's
+per-frame mask/keypoint chain) instead of build_4dgs_dataset.py's
 camera-major layout.
 
 Input (--flipbook_root, for example capture_flipbook/):

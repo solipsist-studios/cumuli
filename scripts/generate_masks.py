@@ -5,14 +5,14 @@
 """
 generate_masks.py
 
-Thin wrapper around Diffuman4D's BiRefNet-based background removal
-(deps/Diffuman4D/scripts/preprocess/remove_background.py), producing a
-foreground mask per camera.
+Thin wrapper around birefnet_masks.py (BiRefNet background removal),
+producing a foreground mask per camera. It picks a batch size that suits
+the device and runs the model in a subprocess.
 
-conda env: diffuman4d
+conda env: cumuli
 
 Usage:
-    conda run -n diffuman4d python3 generate_masks.py \\
+    conda run -n cumuli python3 generate_masks.py \\
         --images_dir /path/to/images_flat \\
         --out_fmasks_dir /path/to/fmasks_flat \\
         [--image_ext .png]
@@ -25,15 +25,13 @@ from pathlib import Path
 
 from image_formats import SUPPORTED_IMAGE_EXTS
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DIFFUMAN4D_ROOT = REPO_ROOT / "deps" / "Diffuman4D"
-SCRIPT = DIFFUMAN4D_ROOT / "scripts" / "preprocess" / "remove_background.py"
+SCRIPT = Path(__file__).resolve().parent / "birefnet_masks.py"
 
 
 def default_batch_size():
     """8 on GPU, 1 on CPU (see --batch_size help for the memory numbers).
     A missing torch also means CPU: this wrapper normally runs inside the
-    diffuman4d env (which has torch), but if it doesn't, GPU inference
+    cumuli env (which has torch), but if it doesn't, GPU inference
     isn't happening either way, and the conservative batch size is the
     only safe guess."""
     try:
@@ -50,7 +48,7 @@ def main():
     parser.add_argument("--image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS)
     parser.add_argument("--batch_size", type=int, default=None,
                         help="Images per BiRefNet inference batch. Default: 8 on GPU "
-                             "(remove_background.py's own default, tuned for ~16GB of "
+                             "(birefnet_masks.py's own default, tuned for ~16GB of "
                              "GPU memory in fp16), 1 on CPU -- CPU inference runs fp32, "
                              "and a batch of 8 peaks at ~21.6GB RSS (measured 2026-07-30, "
                              "11-camera fixture), which OOM-kills a GitHub runner VM (only "
@@ -63,10 +61,6 @@ def main():
     if args.batch_size is None:
         args.batch_size = default_batch_size()
 
-    if not SCRIPT.is_file():
-        print(f"Error: {SCRIPT} not found -- is the Diffuman4D submodule checked out?")
-        sys.exit(1)
-
     args.out_fmasks_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
@@ -77,7 +71,7 @@ def main():
         "--batch_size", str(args.batch_size),
     ]
     print("Running:", " ".join(cmd))
-    result = subprocess.run(cmd, cwd=str(DIFFUMAN4D_ROOT))
+    result = subprocess.run(cmd)
     sys.exit(result.returncode)
 
 

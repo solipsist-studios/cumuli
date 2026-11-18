@@ -25,12 +25,7 @@ produce splats of an authored character. See
 [synthetic-datasets.md](synthetic-datasets.md) and
 `scripts/run_synthetic_pipeline.py`.
 
-Only the direct branch (training on the real cameras) is part of this
-build. The Diffuman4D 48-camera dense-ring branch is a planned
-addition (hallucinating extra ring views via Diffuman4D, then training
-on real + synthetic views together) but it is not wired into any script
-or this walkthrough yet. It will get its own doc sections once it has
-been run and validated end-to-end.
+This build trains on the real cameras only.
 
 ## Prerequisites
 
@@ -312,6 +307,11 @@ python3 scripts/triangulate_and_project_keypoints.py \
     --out_kp3d_dir ~/take01_1500ms/poses_3d \
     --out_pcd_dir ~/take01_1500ms/poses_pcd_fullres
 ```
+
+The camera file must be undistorted. The script refuses one with any
+nonzero `k1`..`k4`/`p1`/`p2` (for example `transforms_hloc.json`),
+because triangulating distorted images against a pinhole model yields
+wrong keypoints that still look plausible.
 
 ## Build the 4D dataset and train (dataset4d / train4d)
 

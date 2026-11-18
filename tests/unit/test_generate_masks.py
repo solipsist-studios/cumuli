@@ -14,13 +14,9 @@ def base_argv(images_dir, out_fmasks_dir, extra=None):
     return argv + (extra or [])
 
 
-def test_main_errors_when_script_missing(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(gm, "SCRIPT", tmp_path / "does_not_exist.py")
-    monkeypatch.setattr(sys, "argv", base_argv(tmp_path / "images", tmp_path / "out"))
-    with pytest.raises(SystemExit) as exc_info:
-        gm.main()
-    assert exc_info.value.code == 1
-    assert "Diffuman4D submodule checked out" in capsys.readouterr().out
+def test_script_ships_in_repo():
+    assert gm.SCRIPT.name == "birefnet_masks.py"
+    assert gm.SCRIPT.is_file()
 
 
 @pytest.mark.parametrize("returncode", [0, 1, 137])
@@ -75,7 +71,7 @@ def test_main_cmd_and_cwd_construction_default_image_ext(tmp_path, monkeypatch):
     cmd, cwd = calls[0]
     assert cmd == [sys.executable, str(gm.SCRIPT), str(images_dir), str(out_fmasks_dir),
                    "--image_ext", ".png", "--batch_size", "4"]
-    assert cwd == str(gm.DIFFUMAN4D_ROOT)
+    assert cwd is None  # birefnet_masks.py takes absolute paths; no working directory needed
 
 
 def test_main_explicit_batch_size_skips_default_resolution(tmp_path, monkeypatch):

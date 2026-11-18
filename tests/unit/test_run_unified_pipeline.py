@@ -408,7 +408,7 @@ def test_run_hloc_builds_correct_argv_and_conda_env(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 def _window_args(tmp_path, pp3_dir=None):
-    return NS(hloc_env="cumuli", diffuman4d_env="cumuli", video_dir=tmp_path / "videos", pp3_dir=pp3_dir, target_time_s=1.5,
+    return NS(hloc_env="cumuli", video_dir=tmp_path / "videos", pp3_dir=pp3_dir, target_time_s=1.5,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None)
 
@@ -576,7 +576,7 @@ def test_stage_production_forwards_pp3_dir_and_calls_undistort(monkeypatch, tmp_
 # --------------------------------------------------------------------------
 
 def _poses_args(sync_window=2):
-    return NS(hloc_env="cumuli", diffuman4d_env="cumuli", video_dir=Path("/videos"), pp3_dir=None, target_time_s=1.5, sync_window=sync_window,
+    return NS(hloc_env="cumuli", video_dir=Path("/videos"), pp3_dir=None, target_time_s=1.5, sync_window=sync_window,
               generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", calib_dir=Path("/calib"), target_pkl_dir=None,
               multiframe_sfm_script=Path("/mfs.py"), hloc_feature_type="superpoint",
@@ -639,7 +639,7 @@ def test_stage_poses_reuses_cached_hloc_output(monkeypatch, tmp_path):
 # --------------------------------------------------------------------------
 
 def _masks_args():
-    return NS(hloc_env="cumuli", diffuman4d_env="cumuli", generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
+    return NS(hloc_env="cumuli", generic_env="queen", sapiens_env="sapiens2", sapiens_checkpoint_root=None,
               sapiens_model_size="1b", triangulate_env="queen")
 
 
@@ -965,7 +965,7 @@ def test_main_resume_without_resolved_sync_json_falls_back_to_default_path(rig, 
 # --------------------------------------------------------------------------
 
 def _dataset4d_args(tmp_path, window=2, eval_camera=None, holdouts=()):
-    return NS(diffuman4d_env="cumuli", video_dir=tmp_path / "videos", target_time_s=1.5, pp3_dir=None,
+    return NS(video_dir=tmp_path / "videos", target_time_s=1.5, pp3_dir=None,
               train_window=window, train_fps=30.0, dataset_downscale=1,
               dataset_jobs=8, eval_camera=eval_camera,
               holdout_cameras=list(holdouts), generic_env="queen",
