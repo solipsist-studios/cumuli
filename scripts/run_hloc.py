@@ -211,6 +211,8 @@ def main():
         cmd += ["--resize_max", str(args.resize_max)]
     if args.max_keypoints is not None:
         cmd += ["--max_keypoints", str(args.max_keypoints)]
+    if args.extra_undistorted_dirs:
+        cmd.append("--cross_camera_pairs_only")  # two moments of one camera have no baseline and swamp the mapper
     if args.refine_intrinsics:
         cmd.append("--refine_intrinsics")
         if args.refine_principal_point:

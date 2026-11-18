@@ -283,6 +283,8 @@ def parse_args():
                              'descriptors do not fit the pretrained LightGlue matcher.)')
     parser.add_argument('--resize_max', type=int, default=2048)
     parser.add_argument('--max_keypoints', type=int, default=8192)
+    parser.add_argument('--cross_camera_pairs_only', action='store_true',
+                        help='Match only images from different cameras (skips same-camera pairs across moments).')
     parser.add_argument('--refine_intrinsics', action='store_true',
                         help='Refine focal length + distortion during BA (shared per camera; well-posed with many timestamps).')
     parser.add_argument('--refine_principal_point', action='store_true')
@@ -386,6 +388,12 @@ def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
     feature_path = extract_features.main(feature_conf, frames_dir, outputs_dir, image_list=all_images)
     sfm_pairs = outputs_dir / 'pairs-exhaustive.txt'
     pairs_from_exhaustive.main(sfm_pairs, image_list=all_images)
+    if getattr(args, 'cross_camera_pairs_only', False):
+        # Two moments of one static camera see the same view from the same place: thousands of matches and no
+        # baseline. They outvote the cross-camera pairs when the mapper picks its starting pair and leave the
+        # model stuck on a couple of images, so only pairs between different cameras are matched.
+        lines = [ln for ln in sfm_pairs.read_text().splitlines() if ln.split()[0].split('/')[0] != ln.split()[1].split('/')[0]]
+        sfm_pairs.write_text('\n'.join(lines) + '\n')
     with open(sfm_pairs) as f:
         n_pairs = sum(1 for _ in f)
     print(f'Matching {n_pairs} pairs...')
