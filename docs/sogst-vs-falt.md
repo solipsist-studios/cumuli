@@ -1,13 +1,9 @@
 # `.sogst` and `.falt`: Choosing a 4D Gaussian Splat Format
 
-> **Draft, unreleased.** This report ships with the public release of degree-2 motion.
-> Do not push it before then.
-
 This report is for developers deciding which dynamic (4D) Gaussian splat format to
 support in a player, an engine or a pipeline. It compares `.sogst`
 ([spec](sogst-format.md)) with Faltwerk's `.falt`
-([github.com/edrethardo/Faltwerk](https://github.com/edrethardo/Faltwerk), commit
-`edf6c41`) on one capture, scored on the same views.
+([github.com/edrethardo/Faltwerk](https://github.com/edrethardo/Faltwerk)) on one capture, scored on the same views.
 
 Section 1 is the decision guide. Section 2 compares what each format asks of an
 implementer. Sections 3 and 4 give the measurements. Section 5 covers recent `.sogst`
@@ -32,6 +28,7 @@ uses a video codec, and section 7 lists the caveats.
 |---|---|---|
 | Container | ZIP (stored, no compression) of lossless WebP textures plus `meta.json` | One binary section per 16 frames, rANS entropy-coded |
 | Decoder | A WebP decoder and a JSON parser. Splat `i` is texel `i` | An integer rANS decoder; optional k-NN prediction, "follow" and B-spline modes; a TypeScript reference port is provided |
+| Training | Configurable training windows, with a final stitch and fine-tune step | Per-frame 3DGS "teacher" splats required to train fixed-size 16-frame windows, with a fine-tune step |
 | Per-frame work | Evaluate `xyz + v·dt + a·dt²` and a Gaussian opacity window | Evaluate one curve per attribute per splat |
 | Splat lifetime | Short; a Gaussian opacity window per splat | Long; explicit birth and death frames, identity kept across sections |
 | Streaming unit | 0.1 s segment, byte-rangeable | 16-frame section (0.53 s at 30 fps), decoded whole |
@@ -41,23 +38,19 @@ uses a video codec, and section 7 lists the caveats.
 
 ## 3. Quality, Size and Encoding Time
 
-**Setup.** Both formats encoded the same capture: two subjects, 12 cameras, 144 frames,
-4.77 s at 29.97 fps, 2048×1792. Both trained on all 12 cameras. Every stream was scored
-on all 144 views of one camera (`cam00`), with ground truth composited onto black. That
-camera was in training for both, so the scores compare the formats but flatter absolute
-quality. Faltwerk decoded and rendered its own streams; the two share only the metric
+### Setup 
+Both formats encoded the same capture: 
+- two subjects
+- 12 cameras
+- 144 frames
+- 4.77 s at 29.97 fps
+- 2048×1792. 
+
+Every stream was scored on all 144 views of one camera (`cam00`), with ground truth composited 
+onto black. That camera was in training for both, so the scores compare the formats but flatter 
+absolute quality. Faltwerk decoded and rendered its own streams; the two share only the metric
 code. Faltwerk's own evaluation and ours agree on its PSNR to the third decimal
 (37.088 dB).
-
-Faltwerk's pipeline needs a "teacher": a static 3DGS model per frame that it tracks.
-Faltwerk does not make one. The **end-to-end** `.falt` stream used 144 independent
-per-frame fits, its normal input. The **quality-first** and **rate-target** streams used
-a teacher sliced per frame from the `.sogst` model; that teacher scored 1.05 dB lower,
-so it gave Faltwerk no head start.
-
-![Archive size against PSNR for .sogst and .falt streams](img/sogst-vs-falt/size-vs-psnr.svg)
-
-![Archive size against LPIPS for .sogst and .falt streams](img/sogst-vs-falt/size-vs-lpips.svg)
 
 | Stream | Size | PSNR (dB) | LPIPS |
 |---|---|---|---|
@@ -68,6 +61,11 @@ so it gave Faltwerk no head start.
 | `.sogst` 3.0 MB/s rate target | 13.55 MB | 39.448 | 0.01303 |
 | `.sogst` recommended packing | 22.33 MB | 39.362 | 0.01291 |
 | `.sogst` full bake | 30.39 MB | 39.389 | 0.01288 |
+
+### Results
+![Archive size against PSNR for .sogst and .falt streams](img/sogst-vs-falt/size-vs-psnr.svg)
+
+![Archive size against LPIPS for .sogst and .falt streams](img/sogst-vs-falt/size-vs-lpips.svg)
 
 At nearly the same size as the `.falt` rate-target stream, the 1.5 MB/s `.sogst` file
 scores 2.26 dB higher PSNR and 0.0006 lower LPIPS. It is also 19% smaller than the
@@ -114,25 +112,7 @@ share. A `.sogst` rate target adds under 2 minutes of fine-tuning per target.
 - **Colour.** `.falt` looked slightly washed out in one viewing. This has not been
   measured.
 
-## 5. Recent `.sogst` Encoder Changes
-
-Three Faltwerk ideas carried over to the `.sogst` encoder. None changes the decode, so
-every existing `.sogst` player reads the new files.
-
-1. **Precision set by the camera footprint.** The low byte of each 16-bit position,
-   velocity and acceleration value is close to random noise, and those planes were about
-   30% of every archive. Spec revision 15 (§2.2.1) lets an encoder drop low bits and
-   record how many in `drop_bits`. Dropping 5/6/7 bits (position/velocity/acceleration),
-   the most that keeps the p99 on-screen error at or below 0.5 px here, saves 23% at
-   −0.002 dB.
-2. **A smaller SH palette.** 16,384 entries in place of 65,536. With item 1, the archive
-   shrinks 26.5% for −0.027 dB and +0.00003 LPIPS: the "recommended packing" point.
-3. **A delivery-rate target.** The encoder ranks splats by their largest on-screen
-   contribution in any training view, keeps as many as fit the target, and fine-tunes
-   the survivors for 3,000 steps. At 1.5 MB/s it keeps 303,678 of 1,034,209 splats and
-   matches the full bake's PSNR at 22% of its size.
-
-## 6. Why Not a Video Codec
+## 5. Why Not a Video Codec
 
 MPEG's V-PCC profile for Gaussian splats stores splat attributes in video. We tested the
 idea on `.sogst` by encoding each archive's textures as lossless HEVC, one frame per
@@ -143,7 +123,7 @@ hold different splats and give a video codec nothing to predict from. A video co
 pays off only with a lossy codec and splats that persist across frames, which neither
 format uses today.
 
-## 7. Caveats
+## 6. Caveats
 
 - One capture. Every number comes from the same 4.77 s two-person take.
 - The scoring camera was in training for both formats. Absolute scores are optimistic;
@@ -152,7 +132,7 @@ format uses today.
   degree 0; a different teacher could move its result.
 - The appearance notes in section 4 come from one viewing session.
 
-## Reproducing
+## 7. Reproducing
 
 - **`.falt`:** Faltwerk's standard recipe, `tools/faltwerk_recipe.py --source images`,
   with a rig scene file (`kind: rig`) and one 3DGS PLY per frame as the teacher. Its
