@@ -71,6 +71,20 @@ def restructure_flat_to_percam(undistorted_dir: Path, image_ext: str):
     return camera_ids
 
 
+def add_extra_moments(frames_root: Path, extra_dirs, camera_ids, image_ext: str):
+    """Link the other moments' images into each camera's folder as 0001, 0002, ... (the first moment is 0000)."""
+    for k, extra in enumerate(extra_dirs, start=1):
+        for cam_id in camera_ids:
+            source = next((p for p in (extra / f"undistorted_{cam_id}{image_ext}", extra / f"{cam_id}{image_ext}") if p.is_file()), None)
+            if source is None:
+                print(f"  WARNING: no image for camera {cam_id} in {extra}")
+                continue
+            target = frames_root / f"Camera_{cam_id}" / f"{k:04d}{image_ext}"
+            if target.is_symlink() or target.exists():
+                target.unlink()
+            target.symlink_to(source.resolve())
+
+
 def build_init_transforms(undistorted_pkl_dir: Path, camera_ids, out_path: Path,
                            fallback_w=5568, fallback_h=4872,
                            fallback_fx=1786.75, fallback_fy=1786.84,
@@ -140,6 +154,15 @@ def main():
     parser.add_argument("--feature_type", default="superpoint", choices=["superpoint", "aliked"])
     parser.add_argument("--aliked_model", default="aliked-n16", choices=["aliked-n16", "aliked-n32", "aliked-n16rot"],
                          help="Which ALIKED weights, with --feature_type aliked (passed through to multiframe_sfm.py).")
+    parser.add_argument("--extra_undistorted_dirs", type=Path, nargs="*", default=[],
+                         help="More flat folders of the same cameras at other moments (same file names as "
+                              "--undistorted_dir). Each is added to every camera as another image, so the "
+                              "solve sees several moments; needed to refine intrinsics well.")
+    parser.add_argument("--refine_intrinsics", action="store_true",
+                         help="Refine each camera's focal length in the final bundle adjustment, and write the result "
+                              "(passed through to multiframe_sfm.py).")
+    parser.add_argument("--refine_principal_point", action="store_true",
+                         help="With --refine_intrinsics, also refine the principal point.")
     parser.add_argument("--resize_max", type=int, default=None,
                          help="Long-edge resize before feature extraction (passed through to "
                               "multiframe_sfm.py; its own default is 2048 -- low relative to this rig's "
@@ -167,6 +190,7 @@ def main():
             print(f"Error: no {args.image_ext} files found in {args.undistorted_dir}")
             sys.exit(1)
         print(f"  {len(camera_ids)} cameras: {camera_ids}")
+        add_extra_moments(args.undistorted_dir, args.extra_undistorted_dirs, camera_ids, args.image_ext)
 
         print("Building bootstrap init_transforms.json...")
         build_init_transforms(args.undistorted_pkl_dir, camera_ids, init_transforms_path)
@@ -187,6 +211,10 @@ def main():
         cmd += ["--resize_max", str(args.resize_max)]
     if args.max_keypoints is not None:
         cmd += ["--max_keypoints", str(args.max_keypoints)]
+    if args.refine_intrinsics:
+        cmd.append("--refine_intrinsics")
+        if args.refine_principal_point:
+            cmd.append("--refine_principal_point")
     print("\nRunning multiframe_sfm.py:")
     print(" ", " ".join(cmd))
     env = {

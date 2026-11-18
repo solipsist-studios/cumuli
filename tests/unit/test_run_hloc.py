@@ -403,3 +403,15 @@ def test_main_errors_when_required_arg_missing(tmp_path, monkeypatch, missing_fl
     with pytest.raises(SystemExit) as exc_info:
         rh.main()
     assert exc_info.value.code == 2
+
+
+def test_extra_moments_become_more_images_of_each_camera(tmp_path):
+    first, second = tmp_path / "t0", tmp_path / "t1"
+    first.mkdir(), second.mkdir()
+    (first / "undistorted_0001.png").write_text("a")
+    (second / "undistorted_0001.png").write_text("b")
+    ids = rh.restructure_flat_to_percam(first, ".png")
+    rh.add_extra_moments(first, [second], ids, ".png")
+    folder = first / "Camera_0001"
+    assert sorted(p.name for p in folder.iterdir()) == ["0000.png", "0001.png"]
+    assert (folder / "0001.png").read_text() == "b"

@@ -492,10 +492,22 @@ def extract_refined_intrinsics(rec):
     return refined_intrinsics
 
 
+def refined_as_output_intrinsics(refined_intrinsics):
+    """Refined intrinsics in the form `write_transforms` takes. A plain pinhole camera is written as OPENCV with zero
+    distortion, the same shape the undistorted calibration files give, so whatever reads the transforms is unaffected."""
+    out = {}
+    for label, (model, w, h, params) in refined_intrinsics.items():
+        out[label] = ('OPENCV', w, h, list(params[:4]) + [0.0, 0.0, 0.0, 0.0]) if model == 'PINHOLE' else (model, w, h, list(params))
+    return out
+
+
 def export_results(args, outputs_dir, rec, camera_labels, all_images, avg_poses, per_camera_stats,
                    refined_intrinsics):
     undistorted_intrinsics = None
-    if args.undistorted_calibration_dir:
+    if args.refine_intrinsics:
+        # The point of refining is to use the result, so it wins over the calibration files' intrinsics.
+        undistorted_intrinsics = refined_as_output_intrinsics(refined_intrinsics)
+    elif args.undistorted_calibration_dir:
         undistorted_intrinsics = load_undistorted_intrinsics(args.undistorted_calibration_dir, camera_labels)
 
     ply_path = outputs_dir / 'background_points.ply'
