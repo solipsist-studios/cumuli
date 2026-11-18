@@ -15,7 +15,7 @@ uses a video codec, and section 7 lists the caveats.
 | If your priority is | Choose | Why |
 |---|---|---|
 | Quality per byte | `.sogst` | 1.3 to 2.3 dB higher PSNR and lower LPIPS at a matched file size (section 3) |
-| Smooth playback on today's browsers | `.sogst` | WebP decode plus GPU upload, played in a PlayCanvas-based viewer. Faltwerk's player measured 50 to 61 ms of GPU time per frame on the same machine (section 4) |
+| Smooth playback on modest GPUs | `.sogst` | Held 60 fps on a MacBook Air and an RTX 4090. Faltwerk's player needed 14 to 24 ms of GPU time per frame on the Air and dropped to 37 to 57 fps (section 4) |
 | Reusing an existing splat decoder | `.sogst` | Static attributes are byte-compatible with PlayCanvas SOG v2 |
 | Encoding speed | `.sogst` | 73 minutes against 5 h 26 min to a finished stream (section 3) |
 | Fastest first frame | `.falt` | Draws after 14% of the file, against 73% for `.sogst` (section 4) |
@@ -96,12 +96,31 @@ share. A `.sogst` rate target adds under 2 minutes of fine-tuning per target.
   manifest as `streams.reveal_bytes`: 4.98 MB of 6.81 MB. The persistent group holds the
   always-drawn splats, 83% of them in this file. That is an encoder setting, not a
   format limit.
-- **Frame rate.** On the viewing machine, Faltwerk's player reported 50 to 61 ms of GPU
-  time per frame for about 22,000 splats, which caps playback near 16 to 20 fps. It evaluates every curve and
-  runs a full bitonic depth sort each frame. Its sections must also decode completely
-  before they play, and the player decodes two sections ahead, so playback stutters until
-  the stream has loaded. On the same machine, the `.sogst` file played smoothly in our
-  PlayCanvas-based viewer.
+- **Frame rate.** Measured in a real browser (Brave) with vsync at 60 Hz, on two
+  machines. This compares the two reference players more than the two formats.
+
+  ![Playback frame rate in each format's player on a MacBook Air and an RTX 4090](img/sogst-vs-falt/playback-fps.svg)
+
+  On an RTX 4090 both players held 60 fps, with no frame over 50 ms; Faltwerk's player
+  reported about 5 ms of GPU time per frame. On a MacBook Air the `.sogst` viewer still
+  held 60 fps, including the full bake of about 120,000 splats per frame. Faltwerk's
+  player reported 14 to 24 ms of GPU time per frame there, against a 16.7 ms budget, and
+  dropped to 57 fps (rate target), 43 fps (end to end) and 37 fps (quality-first),
+  while drawing only 20,000 to 50,000 splats per frame. A frame that misses the budget
+  waits for the next display refresh, so the quality-first stream mostly ran at half
+  rate. Faltwerk's player evaluates every curve and runs a full bitonic depth sort on
+  the GPU each frame.
+
+  | Stream | MacBook Air: fps | Air: frames over 33 ms in 20 s | Air: player GPU time | RTX 4090: fps |
+  |---|---|---|---|---|
+  | `.sogst` 1.5 MB/s (WebGL) | 60.0 | 0 | – | 60.0 |
+  | `.sogst` full bake (WebGL) | 59.9 | 1 | – | 59.9 |
+  | `.falt` rate target | 57.1 | 41 | 13.7 ms | 59.9 |
+  | `.falt` end to end | 43.2 | 203 | 21.3 ms | 60.0 |
+  | `.falt` quality-first | 36.7 | 264 | 24.0 ms | 60.0 |
+
+  On WebGPU the `.sogst` viewer also held 60 fps once loaded, with one long frame during
+  loading (0.4 to 0.9 s on the Air).
 - **Fast motion.** `.falt` looks softer but smears less in the fastest passage
   (0.3 to 0.8 s). `.sogst` splats are short-lived (median opacity window `t_sigma` of
   68 to 80 ms),
@@ -140,6 +159,10 @@ format uses today.
   would not change `.falt`'s colour, because Faltwerk's tracking and fine-tune render
   the teacher at degree 0.
 - The appearance notes in section 4 come from one viewing session.
+- Frame rates come from one run per stream per machine, at the window size given in the
+  chart. Faltwerk's GPU time grows with the number of pixels drawn, so a larger window
+  on the same MacBook Air drops its frame rate further. The MacBook Air's exact chip is
+  not recorded: the browser masks the GPU name.
 
 ## 7. Reproducing
 
