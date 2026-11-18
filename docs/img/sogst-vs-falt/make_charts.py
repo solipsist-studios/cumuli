@@ -98,4 +98,42 @@ hbars("first-frame.svg", FIRST, "", "Bytes needed before the first frame",
       "Solid: downloaded before anything can draw. Pale: the rest of the file.", 8, [0, 2, 4, 6, 8], stacked=True)
 hbars("training-time.svg", TRAIN, "", "Training time to a finished stream",
       "Same capture, same GPU (RTX 5090). Excludes dataset preparation, which both share.", 360, [0, 60, 120, 180, 240, 300, 360])
+
+# Playback frame rate in the reference players, measured in a real browser with vsync at 60 Hz.
+# (label, fps on MacBook Air, fps on RTX 4090, player-reported GPU ms on Air, on 4090 or None)
+PLAYBACK = [(".sogst 1.5 MB/s", 60.0, 60.0, None, None), (".sogst full bake", 59.9, 59.9, None, None),
+            (".falt rate target", 57.1, 59.9, 13.7, 5.7), (".falt end to end", 43.2, 60.0, 21.3, 5.0),
+            (".falt quality-first", 36.7, 60.0, 24.0, 4.9)]
+
+
+def playback(fname):
+    W, T, panel_gap = 720, 84, 24
+    L = 160
+    pw = (W - L - 24 - panel_gap) / 2                      # two panels share the row labels
+    bh, gap = 20, 14
+    H = T + len(PLAYBACK) * (bh + gap) + 44
+    title, sub = "Playback frame rate in each format's player", \
+        "Browser with vsync at 60 Hz. Labels on .falt bars: GPU time per frame reported by its player."
+    o = [f'<text x="24" y="28" class="t">{title}</text><text x="24" y="48" class="sub">{sub}</text>']
+    for pi, (name, col, gcol) in enumerate((("MacBook Air (2858×1530 px)", 1, 3), ("RTX 4090 (2498×1190 px)", 2, 4))):
+        x0 = L + pi * (pw + panel_gap)
+        X = lambda v: x0 + v / 60 * (pw - 64)                                  # noqa: E731
+        o.append(f'<text x="{x0}" y="{T-14}" class="lab" font-weight="600">{name}</text>')
+        for t in (0, 30, 60):
+            o.append(f'<line x1="{X(t):.1f}" x2="{X(t):.1f}" y1="{T-6}" y2="{H-38}" class="g"/>'
+                     f'<text x="{X(t):.1f}" y="{H-22}" text-anchor="middle" class="ax">{t} fps</text>')
+        for i, r in enumerate(PLAYBACK):
+            y = T + i * (bh + gap)
+            if pi == 0:
+                o.append(f'<text x="{L-10}" y="{y+bh/2+4}" text-anchor="end" class="lab">{r[0]}</text>')
+            cls = "s1" if r[0].startswith(".sogst") else "s2"
+            fps, gms = r[col], r[gcol]
+            note = f"{fps:.0f}" + (f" · {gms:g} ms" if gms else "")
+            o.append(f'<rect x="{x0}" y="{y}" width="{X(fps)-x0:.1f}" height="{bh}" rx="4" class="{cls}">'
+                     f'<title>{r[0]}, {name}: {fps} fps' + (f', GPU {gms} ms per frame' if gms else '') + '</title></rect>'
+                     f'<text x="{X(fps)+6:.1f}" y="{y+bh/2+4}" class="lab">{note}</text>')
+    open(os.path.join(out, fname), "w").write(svg(W, H, "".join(o), title, sub))
+
+
+playback("playback-fps.svg")
 print("wrote", sorted(os.listdir(out)))
