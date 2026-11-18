@@ -6,9 +6,9 @@ support in a player, an engine or a pipeline. It compares `.sogst`
 ([github.com/edrethardo/Faltwerk](https://github.com/edrethardo/Faltwerk)) on one capture, scored on the same views.
 
 Section 1 is the decision guide. Section 2 compares what each format asks of an
-implementer. Sections 3 and 4 give the measurements. Section 5 covers recent `.sogst`
-encoder changes that came out of this comparison, section 6 explains why neither format
-uses a video codec, and section 7 lists the caveats.
+implementer. Section 3 measures quality, size and encoding time, and section 4 playback
+and appearance. Section 5 explains why neither format uses a video codec, section 6
+lists the caveats, and section 7 covers reproducing the results.
 
 ## 1. Which to Support
 
