@@ -31,6 +31,7 @@ uses a video codec, and section 7 lists the caveats.
 | Training | Configurable training windows, with a final stitch and fine-tune step | Per-frame 3DGS "teacher" splats required to train fixed-size 16-frame windows, with a fine-tune step |
 | Per-frame work | Evaluate `xyz + v·dt + a·dt²` and a Gaussian opacity window | Evaluate one curve per attribute per splat |
 | Splat lifetime | Short; a Gaussian opacity window per splat | Long; explicit birth and death frames, identity kept across sections |
+| View-dependent colour | SH degree 1 to 3, palette-coded (degree 2 in this comparison) | SH degree 1 to 3, codebook-coded; Faltwerk's rig recipe produces degree 0 only |
 | Streaming unit | 0.1 s segment, byte-rangeable | 16-frame section (0.53 s at 30 fps), decoded whole |
 | Reference player | A PlayCanvas-based viewer | Faltwerk's WebGPU player (needs HTTPS or localhost) |
 | Spec | English, normative, with a conformance checklist and a decoded-field comparison tool | German, describing the bitstream versions 1 to 6 |
@@ -109,8 +110,14 @@ share. A `.sogst` rate target adds under 2 minutes of fine-tuning per target.
 - **Solidity.** `.falt` reads more like a surface and shows fewer floaters. It draws
   about 20,000 to 25,000 splats per frame against a median of 40,500 for the 1.5 MB/s
   `.sogst` file, and its encoder removes oversized and far-travelling splats.
-- **Colour.** `.falt` looked slightly washed out in one viewing. This has not been
-  measured.
+- **Colour.** `.falt` looks flatter, with less view-dependent shading. Every `.falt`
+  stream in this comparison stores colour at spherical-harmonic (SH) degree 0, so a
+  splat's colour is the same from every direction; the encoder logs `sn_deg 0` for all
+  three. The `.falt` format can carry higher SH bands, but Faltwerk's rig recipe tracks
+  and fine-tunes at degree 0, so its encoder finds no higher-band energy to keep. Its
+  fine-tune also fits the teacher's degree-0 render, not the camera images: the images
+  supply only the silhouette. The `.sogst` streams carry SH degree 2 and fine-tune
+  against the camera images.
 
 ## 5. Why Not a Video Codec
 
@@ -129,7 +136,9 @@ format uses today.
 - The scoring camera was in training for both formats. Absolute scores are optimistic;
   the comparison between formats is not affected, since both saw it.
 - Faltwerk ships no teacher trainer. Our per-frame fits used 3,000 iterations at SH
-  degree 0; a different teacher could move its result.
+  degree 0; a different teacher could move its result. A teacher with higher SH bands
+  would not change `.falt`'s colour, because Faltwerk's tracking and fine-tune render
+  the teacher at degree 0.
 - The appearance notes in section 4 come from one viewing session.
 
 ## 7. Reproducing
