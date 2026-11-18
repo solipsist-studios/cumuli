@@ -138,6 +138,8 @@ def main():
                          help="Path to multiframe_sfm.py (override to test local changes to it)")
     parser.add_argument("--num_timestamps", type=int, default=1)
     parser.add_argument("--feature_type", default="superpoint", choices=["superpoint", "aliked"])
+    parser.add_argument("--aliked_model", default="aliked-n16", choices=["aliked-n16", "aliked-n32", "aliked-n16rot"],
+                         help="Which ALIKED weights, with --feature_type aliked (passed through to multiframe_sfm.py).")
     parser.add_argument("--resize_max", type=int, default=None,
                          help="Long-edge resize before feature extraction (passed through to "
                               "multiframe_sfm.py; its own default is 2048 -- low relative to this rig's "
@@ -179,6 +181,7 @@ def main():
         "--outputs_dir", str(args.outputs_dir),
         "--num_timestamps", str(args.num_timestamps),
         "--feature_type", args.feature_type,
+        "--aliked_model", args.aliked_model,
     ]
     if args.resize_max is not None:
         cmd += ["--resize_max", str(args.resize_max)]

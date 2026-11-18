@@ -278,6 +278,9 @@ def parse_args():
     parser.add_argument('--num_timestamps', type=int, default=12)
     parser.add_argument('--timestamps', help='Comma-separated explicit frame indices (overrides --num_timestamps).')
     parser.add_argument('--feature_type', default='superpoint', choices=['superpoint', 'aliked'])
+    parser.add_argument('--aliked_model', default='aliked-n16', choices=['aliked-n16', 'aliked-n32', 'aliked-n16rot'],
+                        help='Which ALIKED weights, with --feature_type aliked. (aliked-t16 is left out: its 64-number '
+                             'descriptors do not fit the pretrained LightGlue matcher.)')
     parser.add_argument('--resize_max', type=int, default=2048)
     parser.add_argument('--max_keypoints', type=int, default=8192)
     parser.add_argument('--refine_intrinsics', action='store_true',
@@ -372,8 +375,9 @@ def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
         matcher_conf = match_features.confs['superpoint+lightglue']
     else:
         feature_conf = {
-            'output': f'feats-aliked-n{args.max_keypoints}-r{args.resize_max}',
-            'model': {'name': 'aliked', 'model_name': 'aliked-n16', 'max_num_keypoints': args.max_keypoints},
+            'output': (f'feats-aliked-n{args.max_keypoints}-r{args.resize_max}' if args.aliked_model == 'aliked-n16'
+                       else f'feats-{args.aliked_model}-n{args.max_keypoints}-r{args.resize_max}'),
+            'model': {'name': 'aliked', 'model_name': args.aliked_model, 'max_num_keypoints': args.max_keypoints},
             'preprocessing': {'grayscale': False, 'resize_max': args.resize_max},
         }
         matcher_conf = match_features.confs['aliked+lightglue']

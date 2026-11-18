@@ -873,10 +873,13 @@ def test_extract_and_match_features_builds_aliked_config(tmp_path, monkeypatch):
 
     args = Args()
     args.feature_type = "aliked"
+    args.aliked_model = "aliked-n32"
     args.max_keypoints = 2048
     args.resize_max = 512
 
     mfs.extract_and_match_features(args, tmp_path, tmp_path, ["Camera_0001/000000.jpg"])
 
     assert calls["feat_conf"]["model"]["name"] == "aliked"
+    assert calls["feat_conf"]["model"]["model_name"] == "aliked-n32"
+    assert calls["feat_conf"]["output"].startswith("feats-aliked-n32-")
     assert calls["feat_conf"]["model"]["max_num_keypoints"] == 2048
