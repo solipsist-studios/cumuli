@@ -10,7 +10,7 @@ written from it, do not.
 
 # The `.sogst` format — SOG + spacetime
 
-**Container version 1. Specification revision 15, 2026-11-16.**
+**Container version 1. Specification revision 16, 2026-11-17.**
 
 `.sogst` stores a dynamic (4D) Gaussian splat scene as a ZIP archive of WebP
 attribute textures plus a JSON manifest. Static attributes follow the PlayCanvas
@@ -114,12 +114,35 @@ Every other entry is a lossless WebP texture.
 
 **Integrity.** Every ZIP entry carries a CRC-32 of its uncompressed bytes in
 its local header. Because entries are stored, that is also the CRC-32 of the
-bytes on disk. A player SHOULD verify it for each entry it reads whole
-before it decodes that entry. A truncated or corrupted texture can still
-decode as a valid WebP of the right size, and a wrong texel is a wrong
-codebook index or a wrong high byte. The result is a scene that renders
-without error and looks subtly broken. A player that byte-ranges part of an
-entry cannot check that entry's CRC and is exempt for it.
+bytes on disk. A player MUST verify it for each entry it reads whole
+before it decodes that entry, and MUST reject the file on a mismatch. A
+truncated or corrupted texture can still decode as a valid WebP of the
+right size, and a wrong texel is a wrong codebook index or a wrong high
+byte. The result is a scene that renders without error and looks subtly
+broken. A player that byte-ranges part of an entry cannot check that
+entry's CRC and is exempt for it.
+
+**Malformed archives.** A player MUST reject a file, rather than repair or
+guess, when any entry it reads:
+
+- uses a compression method other than 0 (stored);
+- sets general-purpose bit 0 (encryption) or bit 3 (data descriptor);
+- records a compressed size that differs from its uncompressed size;
+- carries a ZIP64 sentinel (`0xFFFFFFFF`) in either size field;
+- ends past the end of the file, or overlaps the next entry;
+- repeats the name of an earlier entry.
+
+A player MUST also reject a file whose manifest names an entry in a `files`
+array that the archive does not contain. Every one of these conditions is
+checkable from local headers, so a streamed player detects them as the
+entries arrive and needs no central directory. An encoder MUST NOT produce
+any of them. The stored-only, no-extra-field and no-descriptor rules above
+already exclude most; encryption and duplicate names are excluded here.
+
+**Resource limits.** A player MAY refuse a file that exceeds its device
+budget (splat count, texture dimensions, archive size). It MUST report that
+as a resource limit, distinct from a format violation, so that a valid file
+is never reported as corrupt.
 
 ### 2.1 Texture conventions
 
@@ -667,44 +690,59 @@ cannot write comments MUST write the sidecar.
 
 ## 8. Relationship to TSOG (non-normative)
 
-**TSOG** ("Temporally and Spatially Ordered Gaussians", Gmira, Alexiou,
-Potetsianakis and Thomas, Xiaomi Technology Netherlands, arXiv:2607.28049, July
-2026) is an independently developed extension of PlayCanvas SOG to 4D. It was
-published while this specification was being finalised. Neither design derives
-from the other. This section records how they relate, for anyone who
-encounters both.
+The name **TSOG** ("Temporally and Spatially Ordered Gaussians") covers two
+related designs, and they differ enough that a comparison must say which it
+means. Both extend PlayCanvas SOG to 4D. Both were developed independently of
+this format, and neither design derives from the other.
 
-The two designs agree on everything SOG already decided, and on the obvious
-next steps:
+- **Xiaomi TSOG**, manifest `version: 4`: Gmira, Alexiou, Potetsianakis and
+  Thomas, Xiaomi Research, arXiv:2607.28049 (ICIP 2026). It defines a generic
+  parameterisation scheme: any attribute may gain
+  `temporal_<attribute>_<order>` coefficient images, including polynomial
+  rotation. Assets ship as loose WebP files plus JSON.
+- **OpsiClear TSOG 1**: `github.com/OpsiClear-4DGS/tsog`, Apache-2.0,
+  specification release 1.0.0 (2026-10-12), manifest `version: 1` with profile
+  `org.opsiclear.tsog-playback`. It is a playback profile built on a subset of
+  the Xiaomi v4 layout. It adds a ZIP container, normative evaluation
+  semantics, playback defaults and an audio track, and its readers also import
+  Xiaomi v4 files.
 
-- Static attributes stay byte-compatible with SOG v2.
-- Splats are Morton-ordered spatially.
-- High-precision temporal quantities are 16-bit split-plane WebP pairs with
-  min/max ranges in the manifest.
-- Motion is a per-splat polynomial with a first-order (velocity) base case.
-- Temporal opacity is a FreeTimeGS-style Gaussian window. TSOG's "center and
-  scale" timeline type is this format's `trbf.center`/`trbf.sigma`.
+All three formats agree on what SOG already decided and on the obvious next
+steps:
 
-The two designs differ in scope. TSOG defines a generic parameterisation
-scheme: any attribute may gain `temporal_<attribute>_<order>` coefficient
-images, including polynomial rotation, and a discrete frame-id timeline mode
-exists beside the continuous one. But TSOG ships as loose WebP files plus
-JSON. It has no container, no streaming layout, and no temporal segmentation
-or culling. It quantizes motion coefficients linearly, without a log
-transform. It states no functional form and no normalisation for the temporal
-opacity window. It has no conformance rules and no validation procedure.
-`.sogst` fixes one normative model and specifies it completely: the ZIP
-container and streamed layout (§§2, 6), segment-based temporal culling (§5),
-the log transform (§2.2), exact evaluation semantics (§1), and the conformance
-and cross-implementation machinery (§§9–10).
+- Static attributes stay byte-compatible with SOG v2: the same signed-log
+  16-bit positions, smallest-three `(w, x, y, z)` quaternions with the
+  dropped-component tag in alpha, log-scale and DC codebooks, linear opacity,
+  and the same higher-SH palette layout.
+- Motion is a per-splat polynomial with a first-order (velocity) base case,
+  and the stored position is the position at the splat's temporal centre.
+- Temporal opacity is a FreeTimeGS-style Gaussian window. OpsiClear TSOG 1
+  states it exactly as §1 does, unnormalised, with a linear standard
+  deviation.
 
-The manifests are mutually incompatible. TSOG uses the `timeline` and
-`temporal.*` keys. This format uses `motion`, `accel`, `trbf`, and
-`segments`. A TSOG asset is not a `.sogst` archive (it is not an archive at
-all). Capabilities that TSOG has
-and this format lacks, temporally varying rotation foremost, are additive by
-design. They would land through §3.1 as new OPTIONAL groups, not through
-adoption of TSOG's naming.
+OpsiClear TSOG 1 differs from this format as follows:
+
+| | `.sogst` | OpsiClear TSOG 1 |
+|---|---|---|
+| Time | Seconds on `time.min..max` | Normalised clip, 0 to 1 |
+| Temporal centre and width | One 256-entry codebook each | 16-bit linear range each |
+| Velocity quantization | 16-bit, log transform, optional `drop_bits` | 8- or 16-bit, linear |
+| Motion order | 1 or 2 (`accel`) | 1 only; higher orders MUST be rejected |
+| Animated rotation, scale, colour | None | None; MUST be rejected |
+| Discrete frame-id timeline | None | Yes, beside the continuous one |
+| Splat ordering | Morton within segment groups (§5) | Unspecified; the writer never reorders |
+| Temporal segments, streaming | §§5–6 | None |
+| ZIP rules | Stored only, `meta.json` first, no data descriptors | Stored or DEFLATE, any order, descriptors allowed |
+| Playback defaults, audio | `time.fps` only, advisory | Duration, rate, loop; one audio track |
+
+Revision 16 of this format took OpsiClear TSOG 1's mandatory CRC check and
+its rule of rejecting malformed archives rather than repairing them (§2).
+
+The manifests are mutually incompatible. Both TSOG designs use the
+`timeline` and `temporal.*` keys. This format uses `motion`, `accel`, `trbf`
+and `segments`. Neither kind of TSOG asset is a `.sogst` archive. A
+capability that either TSOG has and this format lacks would land through
+§3.1 as a new OPTIONAL group, not through adoption of TSOG's naming.
 
 ## 9. Conformance checklist
 
@@ -723,6 +761,8 @@ An encoder conforms when:
       the written archive, not just computed.
 - [ ] A coarsened split-plane axis stores only multiples of `2^b`, and its
       group records `drop_bits` (§2.2.1).
+- [ ] It never writes ZIP64 records, encrypted entries, data descriptors or
+      duplicate entry names (§2).
 
 A player conforms when:
 
@@ -732,6 +772,13 @@ A player conforms when:
       `accel`.
 - [ ] It renders a file with no `shN` group correctly.
 - [ ] It treats segment ranges as half-open and applies the §5 drawing rule.
+- [ ] It verifies the CRC-32 of every entry it reads whole, and rejects each
+      malformed-archive condition of §2. Test each with its own fixture: a
+      flipped byte inside a texture, a duplicated entry name, a manifest
+      naming a missing entry. A flipped texel byte must fail the load, not
+      render.
+- [ ] It reports a file over its device budget as a resource limit, not as
+      a corrupt file.
 - [ ] It rejects any file that is not a ZIP with `meta.version == 1` and
       `meta.format == "sogst"` (there is no legacy form to accept). It
       names the offending value in the error.
@@ -859,6 +906,24 @@ first encounter with a second implementation, and that is why the guidance is
 here.
 
 ## Appendix A. Revision history
+
+**Revision 16** — archive integrity, from a comparison with OpsiClear TSOG 1.
+**Encoders need no change**: the reference encoder already satisfies every
+new rule. **Players may need work**: a player that does not verify CRCs, or
+that tolerates malformed archives, no longer conforms.
+
+- §2: a player MUST verify the CRC-32 of each entry it reads whole and
+  reject the file on a mismatch (revision 15 said SHOULD).
+- §2 (new): the malformed-archive conditions a player MUST reject. Each is
+  checkable from local headers, so streamed players can apply them. An
+  encoder MUST NOT write encrypted entries or duplicate names.
+- §2 (new): a file over a player's device budget is reported as a resource
+  limit, never as a corrupt file.
+- §8: rewritten to separate Xiaomi TSOG (`version: 4`) from OpsiClear TSOG 1.
+  The previous text described only the Xiaomi design, and its claims that
+  TSOG has no container and no stated opacity form do not hold for
+  OpsiClear TSOG 1.
+- §9: the matching encoder and player checklist items.
 
 **Revision 15** — encoder precision and entry integrity, from a comparison
 with the Faltwerk `.falt` codec. **No player action is required**: every
