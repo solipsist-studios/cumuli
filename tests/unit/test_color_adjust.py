@@ -85,3 +85,15 @@ def test_cli_applies_per_camera_overrides(tmp_path, monkeypatch):
     ca.main()
     assert np.asarray(Image.open(out / "undistorted_0001.png"))[0, 0, 0] > 100
     assert np.asarray(Image.open(out / "undistorted_0002.png"))[0, 0, 0] == 100
+
+
+@pytest.mark.parametrize("params", [
+    dict(exposure=0.4, contrast=0.1, saturation=0.3, temperature=0.5),
+    dict(exposure=-1.0, saturation=-1.0),
+    dict(contrast=-0.4, temperature=-1.0),
+    {},
+])
+def test_the_fast_8_bit_path_agrees_with_the_reference_formula(params):
+    image = np.random.default_rng(3).integers(0, 256, (300, 400, 3), dtype=np.uint8)
+    reference = np.clip(np.rint(ca.adjust(image / 255.0, **params) * 255), 0, 255).astype(np.uint8)
+    assert np.abs(reference.astype(int) - ca.adjust_uint8(image, **params).astype(int)).max() <= 1
