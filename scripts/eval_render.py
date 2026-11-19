@@ -16,6 +16,11 @@ frames.  Cameras come from a nerfstudio/blender-style transforms_test.json
 (OpenGL c2w, per-frame `time` in seconds).  Ground truth comes from a
 directory of frames named after each entry's file_path basename.
 
+A view whose entry has a `time_offset` (a camera's sub-frame sync residual)
+is rendered at `time + time_offset`, the moment that camera took the photo
+(--shutter captured, the default and the only setting comparable to the
+photo); --shutter instant renders every view at the shared nominal time.
+
 Run under an environment with gsplat + lpips + torchmetrics + CUDA:
 
     python scripts/eval_render.py \
@@ -76,6 +81,14 @@ def load_cameras(transforms_path, downscale, every):
             for c in load_transforms(transforms_path, downscale, every)]
 
 
+def view_time(cam, shutter='captured'):
+    """Seconds to render a view at: its camera's capture time (nominal time plus
+    the sub-frame offset; older cumuli_core has no offsets) or the nominal time."""
+    if shutter == 'instant':
+        return float(cam.time)
+    return float(getattr(cam, 'capture_time', cam.time))
+
+
 # ---------------------------------------------------------------------------
 # render + metrics
 # ---------------------------------------------------------------------------
@@ -99,6 +112,9 @@ def main():
     ap.add_argument('--time-scale', type=float, default=None,
                     help='multiply camera times by this to reach model time units '
                          '(default: auto from model duration / max camera time)')
+    ap.add_argument('--shutter', choices=('captured', 'instant'), default='captured',
+                    help="captured: render each view at its camera's capture time (time + time_offset); "
+                         'instant: at the nominal time, as if every camera fired together')
     ap.add_argument('--dump-dir', default=None, help='optionally write rendered PNGs here')
     ap.add_argument('--report_json', default=None,
                     help='write mean + per-view PSNR/SSIM/LPIPS as JSON here')
@@ -149,7 +165,7 @@ def main():
     psnrs, ssims, lpipss = [], [], []
     view_rows = []
     for cam in cams:
-        t = header['time_min'] + cam.time * tscale
+        t = header['time_min'] + view_time(cam, args.shutter) * tscale
         means, alpha = st.slice(t)
 
         gt_path = os.path.join(args.gt_dir, cam.name + '.png')
@@ -184,6 +200,7 @@ def main():
         ssims.append(ssim)
         lpipss.append(lp)
         view_rows.append({'name': cam.name, 'time': float(cam.time),
+                          'capture_time': view_time(cam, 'captured'),
                           'psnr_db': psnr, 'ssim': ssim, 'lpips': lp})
         print(f'  {cam.name}  t={cam.time:.3f}  PSNR {psnr:6.3f}  SSIM {ssim:.4f}  LPIPS {lp:.4f}')
 
@@ -199,7 +216,7 @@ def main():
         report = build_report(view_rows, {
             'model': args.model, 'transforms': args.transforms,
             'gt_dir': args.gt_dir, 'every': args.every,
-            'downscale': args.downscale})
+            'downscale': args.downscale, 'shutter': args.shutter})
         with open(args.report_json, 'w') as f:
             json.dump(report, f, indent=2)
 

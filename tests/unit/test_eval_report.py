@@ -117,3 +117,16 @@ def test_camera_names_come_from_the_file_path_basename(tmp_path):
     cams = load_cameras(per_frame_transforms(tmp_path), downscale=1, every=1)
     assert cams[0]["name"] == "came00_frame_00001"
     assert cams[1]["name"] == "came01_frame_00001"
+
+
+def test_views_render_at_the_capture_time_unless_instant_is_asked_for():
+    from types import SimpleNamespace
+
+    from eval_render import view_time
+
+    cam = SimpleNamespace(time=0.5, capture_time=0.5042)
+    assert view_time(cam) == 0.5042
+    assert view_time(cam, "captured") == 0.5042
+    assert view_time(cam, "instant") == 0.5
+    # cumuli_core without sub-frame offsets: the nominal time either way
+    assert view_time(SimpleNamespace(time=0.25)) == 0.25
