@@ -97,3 +97,25 @@ def test_the_fast_8_bit_path_agrees_with_the_reference_formula(params):
     image = np.random.default_rng(3).integers(0, 256, (300, 400, 3), dtype=np.uint8)
     reference = np.clip(np.rint(ca.adjust(image / 255.0, **params) * 255), 0, 255).astype(np.uint8)
     assert np.abs(reference.astype(int) - ca.adjust_uint8(image, **params).astype(int)).max() <= 1
+
+
+def _run(tmp_path, monkeypatch, exposure, capsys):
+    (tmp_path / "s.json").write_text(json.dumps({"method": "adjust", "adjust": {"exposure": exposure}}))
+    monkeypatch.setattr(sys, "argv", ["color_adjust.py", "--settings", str(tmp_path / "s.json"), "--in_dir", str(tmp_path / "in0"), str(tmp_path / "in1"),
+                                      "--out_dir", str(tmp_path / "o0"), str(tmp_path / "o1"), "--manifest", str(tmp_path / "m.json"), "--workers", "1"])
+    ca.main()
+    return capsys.readouterr().out
+
+
+def test_a_run_carries_on_and_redoes_only_what_changed(tmp_path, monkeypatch, capsys):
+    for d in ("in0", "in1"):
+        (tmp_path / d).mkdir()
+        for cam in ("0001", "0002"):
+            Image.fromarray(np.full((4, 4, 3), 100, np.uint8)).save(tmp_path / d / f"{cam}.png")
+    assert "Carrying on" not in _run(tmp_path, monkeypatch, 0.5, capsys)
+    assert "4 of 4 images are already corrected" in _run(tmp_path, monkeypatch, 0.5, capsys)
+    (tmp_path / "o1" / "0002.png").unlink()                                   # an output that is missing is made again
+    assert "3 of 4 images are already corrected" in _run(tmp_path, monkeypatch, 0.5, capsys)
+    assert "Carrying on" not in _run(tmp_path, monkeypatch, 0.9, capsys)      # a different correction redoes everything
+    Image.fromarray(np.full((4, 4, 3), 50, np.uint8)).save(tmp_path / "in0" / "0001.png")   # a changed input is made again
+    assert "3 of 4 images are already corrected" in _run(tmp_path, monkeypatch, 0.9, capsys)

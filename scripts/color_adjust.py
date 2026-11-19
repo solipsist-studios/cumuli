@@ -35,6 +35,7 @@ Cameras are matched by filename stem, ignoring a leading "undistorted_".
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -186,8 +187,44 @@ _LUTS = {}
 
 
 def _worker(path, out_path, cfg):
+    # An output left by an earlier run must not pass for this one's if the correction fails.
+    out_path.unlink(missing_ok=True)
     correct_file(Path(path), Path(out_path), cfg, _LUTS)
     return Path(path).name
+
+
+def _digest(path, cache):
+    """SHA-1 of a file's contents, read once."""
+    path = str(path)
+    if path not in cache:
+        cache[path] = hashlib.sha1(Path(path).read_bytes()).hexdigest()
+    return cache[path]
+
+
+def correction_signature(cfg, camera, cache):
+    """What this camera's output depends on besides its input: the correction, and the contents of any LUT or profile it uses."""
+    parts = [json.dumps({k: v for k, v in cfg.items() if k != "cameras"}, sort_keys=True)]
+    if cfg.get("method") == "lut" and cfg.get("lut"):
+        parts.append(_digest(cfg["lut"], cache))
+    if cfg.get("method") == "pp3" and cfg.get("pp3_dir"):
+        from color_correct import find_pp3
+        profile = find_pp3(Path(cfg["pp3_dir"]), camera)
+        if profile is not None:
+            parts.append(_digest(profile, cache))
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+def load_manifest(path):
+    try:
+        return json.loads(Path(path).read_text()).get("done", {}) if path else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_manifest(path, done):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(json.dumps({"version": 1, "done": done}))
+    tmp.replace(path)
 
 
 def default_workers(settings) -> int:
@@ -207,31 +244,66 @@ def main():
     parser.add_argument("--in_dir", required=True, type=Path, nargs="+", help="One or more folders of frames; each is paired with the --out_dir at the same position.")
     parser.add_argument("--out_dir", required=True, type=Path, nargs="+")
     parser.add_argument("--image_ext", default=".png")
+    parser.add_argument("--manifest", type=Path, default=None,
+                        help="A file that records the images already corrected. With it, a run carries on from an earlier one: "
+                             "an image whose input, correction, LUT and profile are unchanged, and whose output is there, is not done again.")
     parser.add_argument("--workers", type=int, default=0, help="Images corrected at once. 0 (the default) picks from the method: see default_workers.")
     args = parser.parse_args()
     if len(args.in_dir) != len(args.out_dir):
         sys.exit("Error: --in_dir and --out_dir need the same number of folders.")
 
     settings = json.loads(args.settings.read_text())
-    jobs = []
+    previous = load_manifest(args.manifest)
+    digests, jobs, done_entries, skipped = {}, [], {}, 0
     for in_dir, out_dir in zip(args.in_dir, args.out_dir):
         files = sorted(in_dir.glob(f"*{args.image_ext}"))
         if not files:
             sys.exit(f"Error: no {args.image_ext} files in {in_dir}")
         out_dir.mkdir(parents=True, exist_ok=True)
-        jobs += [(path, out_dir / path.name, camera_settings(settings, camera_of(path))) for path in files]
+        for path in files:
+            camera = camera_of(path)
+            cfg = camera_settings(settings, camera)
+            out_path = out_dir / path.name
+            stat = path.stat()
+            entry = {"sig": correction_signature(cfg, camera, digests), "in": [stat.st_size, stat.st_mtime_ns]}
+            key = f"{out_dir.name}/{path.name}"
+            if args.manifest and previous.get(key) == entry and out_path.is_file():
+                done_entries[key] = entry
+                skipped += 1
+            else:
+                jobs.append((path, out_path, cfg, key, entry))
+    total = len(jobs) + skipped
+    if skipped:
+        print(f"Carrying on: {skipped} of {total} images are already corrected.", flush=True)
+        print(f"PROGRESS {skipped / total:.3f} resumed", flush=True)
+    if args.manifest:   # what is recorded is only what is finished: a partial output is not in it
+        save_manifest(args.manifest, done_entries)
+    if not jobs:
+        return
     # One pool across every folder, so there is no wait for the slowest image of each one.
     workers = max(1, min(len(jobs), args.workers or default_workers(settings)))
-    if workers == 1:
-        for done, (path, out_path, cfg) in enumerate(jobs, 1):
-            _worker(path, out_path, cfg)
-            print(f"PROGRESS {done / len(jobs):.3f} {path.name}", flush=True)
-        return
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        pending = {pool.submit(_worker, *job): job[0] for job in jobs}
-        for done, future in enumerate(as_completed(pending), 1):
-            future.result()
-            print(f"PROGRESS {done / len(jobs):.3f} {pending[future].name}", flush=True)
+
+    def finished(done, key, entry, name):
+        done_entries[key] = entry
+        if args.manifest and done % 12 == 0:
+            save_manifest(args.manifest, done_entries)
+        print(f"PROGRESS {(skipped + done) / total:.3f} {name}", flush=True)
+
+    try:
+        if workers == 1:
+            for done, (path, out_path, cfg, key, entry) in enumerate(jobs, 1):
+                _worker(path, out_path, cfg)
+                finished(done, key, entry, path.name)
+            return
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            pending = {pool.submit(_worker, path, out_path, cfg): (path, key, entry) for path, out_path, cfg, key, entry in jobs}
+            for done, future in enumerate(as_completed(pending), 1):
+                future.result()
+                path, key, entry = pending[future]
+                finished(done, key, entry, path.name)
+    finally:
+        if args.manifest:
+            save_manifest(args.manifest, done_entries)
 
 
 if __name__ == "__main__":
