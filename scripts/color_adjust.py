@@ -190,34 +190,48 @@ def _worker(path, out_path, cfg):
     return Path(path).name
 
 
+def default_workers(settings) -> int:
+    """Images corrected at once. A RawTherapee profile is a process per image that rarely fills a core by itself,
+    so it gets one per core (up to 24, each holding a frame); the in-process methods are capped at 12."""
+    try:
+        cores = len(os.sched_getaffinity(0))
+    except AttributeError:
+        cores = os.cpu_count() or 1
+    methods = {settings.get("method")} | {c.get("method") for c in (settings.get("cameras") or {}).values()}
+    return max(1, min(cores, 24 if "pp3" in methods else 12))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--settings", required=True, type=Path)
-    parser.add_argument("--in_dir", required=True, type=Path)
-    parser.add_argument("--out_dir", required=True, type=Path)
+    parser.add_argument("--in_dir", required=True, type=Path, nargs="+", help="One or more folders of frames; each is paired with the --out_dir at the same position.")
+    parser.add_argument("--out_dir", required=True, type=Path, nargs="+")
     parser.add_argument("--image_ext", default=".png")
-    parser.add_argument("--workers", type=int, default=0, help="Images corrected at once. 0 (the default) is one per core, up to 12.")
+    parser.add_argument("--workers", type=int, default=0, help="Images corrected at once. 0 (the default) picks from the method: see default_workers.")
     args = parser.parse_args()
+    if len(args.in_dir) != len(args.out_dir):
+        sys.exit("Error: --in_dir and --out_dir need the same number of folders.")
 
     settings = json.loads(args.settings.read_text())
-    files = sorted(args.in_dir.glob(f"*{args.image_ext}"))
-    if not files:
-        sys.exit(f"Error: no {args.image_ext} files in {args.in_dir}")
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    workers = max(1, min(len(files), args.workers or min(os.cpu_count() or 1, 12)))
-    jobs = [(path, args.out_dir / path.name, camera_settings(settings, camera_of(path))) for path in files]
+    jobs = []
+    for in_dir, out_dir in zip(args.in_dir, args.out_dir):
+        files = sorted(in_dir.glob(f"*{args.image_ext}"))
+        if not files:
+            sys.exit(f"Error: no {args.image_ext} files in {in_dir}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        jobs += [(path, out_dir / path.name, camera_settings(settings, camera_of(path))) for path in files]
+    # One pool across every folder, so there is no wait for the slowest image of each one.
+    workers = max(1, min(len(jobs), args.workers or default_workers(settings)))
     if workers == 1:
-        done = 0
-        for path, out_path, cfg in jobs:
+        for done, (path, out_path, cfg) in enumerate(jobs, 1):
             _worker(path, out_path, cfg)
-            done += 1
-            print(f"PROGRESS {done / len(files):.3f} {path.name}", flush=True)
+            print(f"PROGRESS {done / len(jobs):.3f} {path.name}", flush=True)
         return
     with ProcessPoolExecutor(max_workers=workers) as pool:
         pending = {pool.submit(_worker, *job): job[0] for job in jobs}
         for done, future in enumerate(as_completed(pending), 1):
             future.result()
-            print(f"PROGRESS {done / len(files):.3f} {pending[future].name}", flush=True)
+            print(f"PROGRESS {done / len(jobs):.3f} {pending[future].name}", flush=True)
 
 
 if __name__ == "__main__":
