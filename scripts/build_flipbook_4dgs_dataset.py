@@ -220,6 +220,20 @@ def flatten_gt(rgba_path, dst):
     Image.fromarray(rgb.astype(np.uint8)).save(dst, optimize=False)
 
 
+def load_time_offsets(path):
+    """{label: seconds} from a capture-timing file, {} without one."""
+    if not path:
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    out = {}
+    for label, cam in (data.get('cameras') or {}).items():
+        offset = float(cam.get('offset_s', 0.0)) if isinstance(cam, dict) else float(cam)
+        if offset:
+            out[str(label)] = offset
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -268,6 +282,11 @@ def main():
     parser.add_argument('--hull_min_views', type=int, default=9,
                         help='min cameras whose mask must contain a hull point '
                              '(default: 9)')
+    parser.add_argument('--timing_json', default=None,
+                        help='Per-camera sub-frame capture offsets: {"cameras": {"<label>": {"offset_s": s}}}. '
+                             'Each training/test view of that camera gets "time_offset": s next to its '
+                             'nominal "time" (capture = time + time_offset, seconds). Cameras the file does '
+                             'not name get none, as without the file.')
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
 
@@ -419,6 +438,11 @@ def main():
 
     # ── transforms jsons (per-frame intrinsics, cameras differ) ────────────
     ds = args.downscale
+    time_offsets = load_time_offsets(args.timing_json)
+    if time_offsets:
+        named = {l: time_offsets[l] for l in labels if l in time_offsets}
+        print(f'  sub-frame timing: {len(named)}/{len(labels)} cameras, offsets '
+              f'{min(named.values(), default=0) * 1e3:+.2f} to {max(named.values(), default=0) * 1e3:+.2f} ms')
 
     def entries(cam_labels, source_rig=None, subdir='realcams', namer=None):
         source_rig = rig if source_rig is None else source_rig
@@ -428,7 +452,7 @@ def main():
             fl_x, fl_y, cx, cy = cam['intr']
             for i in frame_idx:
                 name = namer(label, i) if namer else f'frame_{i + 1:05d}'
-                rows.append({
+                row = {
                     'file_path': f'{subdir}/cam{label}/{name}',
                     'camera_label': label,
                     'time': i / args.fps,
@@ -436,7 +460,11 @@ def main():
                     'cx': cx / ds, 'cy': cy / ds,
                     'w': cam['w'] // ds, 'h': cam['h'] // ds,
                     'transform_matrix': cam['c2w_gl'].tolist(),
-                })
+                }
+                # Real cameras only: an eval rig's synthetic views were not filmed.
+                if subdir == 'realcams' and label in time_offsets:
+                    row['time_offset'] = time_offsets[label]
+                rows.append(row)
         return rows
 
     excluded = set(args.test_cameras) | set(args.holdout_cameras)

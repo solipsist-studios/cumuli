@@ -195,3 +195,35 @@ def test_a_rebuild_clears_scored_views_from_an_earlier_build(tmp_path, monkeypat
 
     assert not (out / "eval_gt_flat").exists()
     assert not (out / "evalcams").exists()
+
+
+def test_timing_json_puts_each_cameras_offset_on_its_real_views(tmp_path, monkeypatch):
+    """Sub-frame capture offsets ride along as time_offset; the nominal time,
+    which groups the views of one instant, does not move, and the synthetic
+    eval ring (never filmed) gets none."""
+    train = tmp_path / "flipbook_src"
+    evals = tmp_path / "eval_src"
+    out = tmp_path / "dataset"
+    write_flipbook(train, ["00", "01", "02"], 2)
+    write_flipbook(evals, ["e00"], 2)
+    timing = tmp_path / "capture_timing.json"
+    timing.write_text(json.dumps({"cameras": {"00": {"offset_s": 0.0}, "01": {"offset_s": 0.0042},
+                                              "02": {"offset_s": -0.0031}, "e00": {"offset_s": 0.5}}}))
+
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py",
+        "--flipbook_root", str(train), "--eval_root", str(evals), "--timing_json", str(timing),
+        "--out", str(out), "--fps", "24", "--downscale", "1",
+        "--hull_min_views", "1", "--jobs", "2", "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+
+    train_json = json.loads((out / "transforms_train.json").read_text())
+    by_label = {}
+    for f in train_json["frames"]:
+        by_label.setdefault(f["camera_label"], []).append(f)
+    assert all("time_offset" not in f for f in by_label["00"])  # a zero offset is left out
+    assert [f["time_offset"] for f in by_label["01"]] == [0.0042, 0.0042]
+    assert [f["time_offset"] for f in by_label["02"]] == [-0.0031, -0.0031]
+    assert sorted({f["time"] for f in train_json["frames"]}) == [0.0, 1 / 24]
+    test_json = json.loads((out / "transforms_test.json").read_text())
+    assert all("time_offset" not in f for f in test_json["frames"])
