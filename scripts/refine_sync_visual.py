@@ -279,8 +279,12 @@ def combine_frames(rows: list[dict], prior_frames: float, *, min_frames: int = M
             "spread_frames": float(spread)}
 
 
+#: A camera counts as placed ("ok") when its offset is known to within this many frames.
+MAX_SIGMA_FRAMES = 0.1
+
+
 def solve_graph(pairs: dict[tuple[str, str], dict], labels: list[str], reference: str, fps: float,
-                outlier_sigmas: float = 4.0) -> dict:
+                outlier_sigmas: float = 4.0, max_sigma_frames: float = MAX_SIGMA_FRAMES) -> dict:
     """Offsets (seconds) with offset[a] - offset[b] = phase(a, b) / fps, the reference held at 0; edges whose
     residual is far beyond their uncertainty are dropped and the solve repeated."""
     index = {l: i for i, l in enumerate(labels)}
@@ -325,6 +329,8 @@ def solve_graph(pairs: dict[tuple[str, str], dict], labels: list[str], reference
             status = "not placed"
         elif degree[l] < 2:
             status = "weak"
+        elif sigma * fps > max_sigma_frames:
+            status = "uncertain"  # measured, but not to within max_sigma_frames: not worth more than the audio figure
         else:
             status = "ok"
         cameras[l] = {"offset_s": float(x[index[l]]) if l in reached else None, "sigma_s": sigma if l in reached else None,

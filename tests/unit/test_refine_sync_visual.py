@@ -100,6 +100,13 @@ def test_a_camera_no_pair_reaches_is_not_placed_and_one_pair_is_weak():
     assert rsv.verdict(solved["cameras"], FPS) == "failed"
 
 
+def test_a_camera_measured_too_loosely_is_uncertain_not_placed():
+    edges = {(a, b): {"phase_frames": 0.1, "sigma_frames": 0.4} for a, b in (("00", "01"), ("01", "02"), ("00", "02"))}
+    solved = rsv.solve_graph(edges, ["00", "01", "02"], "00", FPS)
+    assert {solved["cameras"][l]["status"] for l in ("01", "02")} == {"uncertain"}
+    assert rsv.verdict(solved["cameras"], FPS) == "failed"
+
+
 def test_frames_that_disagree_give_no_phase_for_the_pair():
     agree = [{"phase_frames": 0.2 + d, "se_frames": 0.02} for d in (-0.01, 0.0, 0.01)]
     assert rsv.combine_frames(agree, 0.0)["phase_frames"] == pytest.approx(0.2, abs=0.01)
