@@ -81,6 +81,82 @@ def load_cameras(transforms_path, downscale, every):
             for c in load_transforms(transforms_path, downscale, every)]
 
 
+#: Photo blurs tried, in pixels (Gaussian sigma), and the largest photo shift tried, in pixels each way.
+BLUR_SIGMAS = tuple(i * 0.25 for i in range(17))  # 0 .. 4 px
+BLUR_MAX_SHIFT = 2
+
+
+def _gaussian_blur(img, sigma):
+    """Separable Gaussian blur of an [H, W, C] tensor, reflect-padded. sigma 0 returns img."""
+    import torch
+    import torch.nn.functional as F
+
+    if sigma <= 0:
+        return img
+    radius = max(1, int(round(3.0 * sigma)))
+    x = torch.arange(-radius, radius + 1, dtype=img.dtype, device=img.device)
+    k = torch.exp(-0.5 * (x / sigma) ** 2)
+    k = k / k.sum()
+    c = img.shape[-1]
+    t = img.permute(2, 0, 1)[None]  # [1, C, H, W]
+    t = F.pad(t, (radius, radius, 0, 0), mode='reflect')
+    t = F.conv2d(t, k.view(1, 1, 1, -1).expand(c, 1, 1, -1), groups=c)
+    t = F.pad(t, (0, 0, radius, radius), mode='reflect')
+    t = F.conv2d(t, k.view(1, 1, -1, 1).expand(c, 1, -1, 1), groups=c)
+    return t[0].permute(1, 2, 0)
+
+
+def blur_and_shift(photo, render, sigmas=BLUR_SIGMAS, max_shift=BLUR_MAX_SHIFT, threshold=0.02):
+    """How blurred a render is against its photo, and how much of that is misregistration.
+
+    Over the subject's box (pixels either image shows, on black), the photo is blurred by each sigma and
+    compared with the render (mean absolute difference); the sigma whose blurred photo matches best is the
+    render's blur in pixels. A render that is sharp but displaced also prefers a blurred photo, so the photo
+    is also shifted by up to max_shift pixels each way: when a shift explains the match with much less blur,
+    the cause is misregistration (wrong pose, or a camera rendered at the wrong time), not blur.
+
+    Returns {"blur_px", "aligned_blur_px", "shift_px": [dx, dy], "error", "aligned_error"} or None when the
+    box is empty. photo and render are [H, W, 3] tensors in [0, 1] on the same device."""
+    import torch
+
+    seen = (photo.max(dim=-1).values > threshold) | (render.max(dim=-1).values > threshold)
+    rows, cols = torch.nonzero(seen.any(dim=1)).flatten(), torch.nonzero(seen.any(dim=0)).flatten()
+    if rows.numel() == 0:
+        return None
+    h, w = seen.shape
+    m = int(max_shift)
+    y0, y1 = max(int(rows[0]), m), min(int(rows[-1]) + 1, h - m)
+    x0, x1 = max(int(cols[0]), m), min(int(cols[-1]) + 1, w - m)
+    if y1 - y0 < 4 or x1 - x0 < 4:
+        return None
+    target = render[y0:y1, x0:x1]
+    errors = {}  # (sigma, dx, dy) -> error
+    for s in sigmas:
+        blurred = _gaussian_blur(photo, float(s))
+        for dy in range(-m, m + 1):
+            for dx in range(-m, m + 1):
+                # photo shifted by (dx, dy): render pixel (x, y) is compared with photo pixel (x + dx, y + dy)
+                crop = blurred[y0 + dy:y1 + dy, x0 + dx:x1 + dx]
+                errors[(float(s), dx, dy)] = float((crop - target).abs().mean())
+    still = {s: e for (s, dx, dy), e in errors.items() if dx == 0 and dy == 0}
+    blur = min(still, key=still.get)
+    best = min(errors, key=errors.get)
+    return {"blur_px": blur, "error": still[blur], "aligned_blur_px": best[0], "shift_px": [best[1], best[2]],
+            "aligned_error": errors[best]}
+
+
+def summarize_blur(rows):
+    """Means of the per-view blur figures, and how many views a shift explained better than blur alone."""
+    rows = [r for r in rows if r]
+    if not rows:
+        return None
+    mean = lambda k: float(sum(r[k] for r in rows) / len(rows))  # noqa: E731
+    shifted = sum(1 for r in rows if r["shift_px"] != [0, 0])
+    return {"views": len(rows), "blur_px": mean("blur_px"), "aligned_blur_px": mean("aligned_blur_px"),
+            "shift_px": float(sum((r["shift_px"][0] ** 2 + r["shift_px"][1] ** 2) ** 0.5 for r in rows) / len(rows)),
+            "shifted_views": shifted}
+
+
 def view_time(cam, shutter='captured'):
     """Seconds to render a view at: its camera's capture time (nominal time plus
     the sub-frame offset; older cumuli_core has no offsets) or the nominal time."""
@@ -115,6 +191,9 @@ def main():
     ap.add_argument('--shutter', choices=('captured', 'instant'), default='captured',
                     help="captured: render each view at its camera's capture time (time + time_offset); "
                          'instant: at the nominal time, as if every camera fired together')
+    ap.add_argument('--no-blur', action='store_true',
+                    help='skip the blur/misregistration measure (per view: the photo blur and shift that best '
+                         'match the render)')
     ap.add_argument('--dump-dir', default=None, help='optionally write rendered PNGs here')
     ap.add_argument('--report_json', default=None,
                     help='write mean + per-view PSNR/SSIM/LPIPS as JSON here')
@@ -196,27 +275,39 @@ def main():
             psnr = float(psnr_fn(img, gt))
             ssim = float(ssim_fn(img, gt))
             lp = float(lpips_metric(img, gt))
+            blur = None if args.no_blur else blur_and_shift(gt, img)
         psnrs.append(psnr)
         ssims.append(ssim)
         lpipss.append(lp)
-        view_rows.append({'name': cam.name, 'time': float(cam.time),
-                          'capture_time': view_time(cam, 'captured'),
-                          'psnr_db': psnr, 'ssim': ssim, 'lpips': lp})
-        print(f'  {cam.name}  t={cam.time:.3f}  PSNR {psnr:6.3f}  SSIM {ssim:.4f}  LPIPS {lp:.4f}')
+        row = {'name': cam.name, 'time': float(cam.time), 'capture_time': view_time(cam, 'captured'),
+               'psnr_db': psnr, 'ssim': ssim, 'lpips': lp}
+        if blur:
+            row['blur'] = blur
+        view_rows.append(row)
+        extra = (f'  blur {blur["blur_px"]:.2f} px, {blur["aligned_blur_px"]:.2f} px at shift '
+                 f'{blur["shift_px"][0]:+d},{blur["shift_px"][1]:+d}') if blur else ''
+        print(f'  {cam.name}  t={cam.time:.3f}  PSNR {psnr:6.3f}  SSIM {ssim:.4f}  LPIPS {lp:.4f}{extra}')
 
         if args.dump_dir:
             Image.fromarray((img.cpu().numpy() * 255).astype(np.uint8)).save(
                 os.path.join(args.dump_dir, cam.name + '.png'))
 
+    blur_summary = summarize_blur([r.get('blur') for r in view_rows])
     if psnrs:
         print(f'MEAN over {len(psnrs)} views:  PSNR {np.mean(psnrs):.3f}  '
               f'SSIM {np.mean(ssims):.4f}  LPIPS {np.mean(lpipss):.4f}')
+    if blur_summary:
+        print(f'BLUR over {blur_summary["views"]} views:  {blur_summary["blur_px"]:.2f} px; '
+              f'{blur_summary["aligned_blur_px"]:.2f} px when the photo may shift (mean shift '
+              f'{blur_summary["shift_px"]:.2f} px, {blur_summary["shifted_views"]} views shifted)')
 
     if args.report_json:
         report = build_report(view_rows, {
             'model': args.model, 'transforms': args.transforms,
             'gt_dir': args.gt_dir, 'every': args.every,
             'downscale': args.downscale, 'shutter': args.shutter})
+        if blur_summary:
+            report['blur'] = blur_summary
         with open(args.report_json, 'w') as f:
             json.dump(report, f, indent=2)
 
