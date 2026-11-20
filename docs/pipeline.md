@@ -425,3 +425,27 @@ the radius from the triangulated subject's median.
 
 Run `--report_only` first to see the keep/drop split before you write
 anything.
+
+## Added in 0.2.0
+
+These scripts and flags are optional extensions of the stages above. Each
+script's module docstring is its flag reference.
+
+| Script or flag | What it does |
+|---|---|
+| `color_adjust.py` | Per-camera colour correction without RawTherapee: exposure, temperature, contrast and saturation, a `.cube` LUT, or a `.pp3` profile. `--manifest` skips images whose input and settings are unchanged since an earlier run. |
+| `associate_subjects.py` | With several people in view, clusters the 2D detections across cameras by epipolar consistency and writes one `poses_2d`-style directory per subject, so pose refinement sees consistent points. `clean_masks.py` now counts keypoints from every subject. |
+| `run_pose_refinement.py --report_json` | Writes the before and after residuals per camera as JSON. |
+| `run_hloc.py` | `--num_timestamps` and `--extra_undistorted_dirs` solve several moments per camera, `--refine_intrinsics` refines focal length and principal point, `--aliked_model` picks the ALIKED weights, and `--cross_camera_pairs_only` (in `multiframe_sfm.py`) drops same-camera pairs. |
+| `undistort_frames.py --jobs` | Undistorts cameras in parallel in-process, one worker per core by default. |
+| `stitch_window_plys.py` | Stitches the raw window PLYs of a windowed training run into one clip PLY to seed a whole-clip fine-tune. |
+| `bake_sogst.py` | `--no_dark_occluder_filter` and the `--dark_occluder_*` thresholds make that filter optional; `--mask_filter_root` tests splats along their full trajectory, including degree-2 motion; `--means/--motion/--accel_drop_bits` pass a low-bit drop to the packer. The mask-consistency filter handles cropped rigs, and the default smoothing is 0.3 px over 1 frame. |
+| `fit_rate_target.py` | Prunes an interchange PLY until its `.sogst` fits a delivery rate or size. |
+| `refine_sync_visual.py`, `frame_motion.py` | Sub-frame timing: measure each camera's capture offset and rolling-shutter readout from the pictures, and each frame's subject speed and a visit weight. |
+| `build_flipbook_4dgs_dataset.py --timing_json, --frame_weights` | Put those offsets, readouts and weights on the dataset's views. The trainer reads them (cumuli-trainer 0.2.0, "Sub-Frame Timing" in its README). |
+| `eval_render.py --shutter` | `captured` (default) renders each view at its camera's capture time, with a rolling-shutter view where `readout_s` is set; `instant` renders at the nominal time. |
+
+Degree-2 motion (`motion_degree: 2` in the trainer) is carried through the
+whole bake: `sogst_pack.py`, `merge_sogst_segments.py`, `seed_window_init.py`
+and `bake_sogst.py` handle the acceleration planes, and `docs/sogst-format.md`
+defines them. The `.sogst` spec is at revision 16.
