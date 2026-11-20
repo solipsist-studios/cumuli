@@ -61,7 +61,6 @@ git submodule update --init --recursive
 ```
 
 - `deps/camera-calibration` -- per-camera undistortion (offline_undistort.py)
-- `deps/BiRefNet` -- the BiRefNet source, for reference. No script reads it: `birefnet_masks.py` loads the model from Hugging Face through transformers
 - `deps/cumuli-trainer` -- the 4D gaussian splat trainer behind the `train4d` stage (Solipsist, private)
 - `deps/cumuli-core` -- shared 4D library: interchange PLY, `.sogst` decoding, cameras, gsplat rendering, metrics (Solipsist, private)
 

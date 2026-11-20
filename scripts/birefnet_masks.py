@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 AND Apache-2.0
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
-# Portions derived from Diffuman4D (Copyright 2025 ZJU3DV, Apache-2.0):
-# see scripts/vendor/diffuman4d/NOTICE.md.
+# MODIFIED FROM Diffuman4D (Copyright 2025 ZJU3DV, Apache License 2.0),
+# scripts/preprocess/remove_background.py, by Solipsist Studios Inc.: this
+# file changes that code (CLI, parallelism, image handling, removed options).
+# The license is scripts/vendor/diffuman4d/LICENSE and the full list of
+# changes is in scripts/vendor/diffuman4d/NOTICE.md.
 
 """
 birefnet_masks.py

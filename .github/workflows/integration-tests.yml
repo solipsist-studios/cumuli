@@ -54,7 +54,6 @@ jobs:
       - name: Fetch the pipeline submodules plus the trainer
         # camera-calibration (undistortion), plus cumuli-core and
         # cumuli-trainer (train4d's trainer, installed by the setup script).
-        # deps/BiRefNet is a reference copy no script reads.
         run: |
           git submodule update --init \
             deps/camera-calibration deps/cumuli-core deps/cumuli-trainer

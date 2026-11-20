@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0 AND Apache-2.0
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
-# Portions derived from Diffuman4D (Copyright 2025 ZJU3DV, Apache-2.0):
-# see scripts/vendor/diffuman4d/NOTICE.md.
+# MODIFIED FROM Diffuman4D (Copyright 2025 ZJU3DV, Apache License 2.0),
+# scripts/preprocess/triangulate_skeleton.py, utils/triang_utils.py and
+# src/data/utils/camera_parser.py, by Solipsist Studios Inc.: this file
+# merges and changes that code (one input path kept, camera handling
+# rewritten, distortion now rejected). The license is
+# scripts/vendor/diffuman4d/LICENSE and the full list of changes is in
+# scripts/vendor/diffuman4d/NOTICE.md.
 
 """
 triangulate_and_project_keypoints.py
