@@ -3,7 +3,6 @@
 
 import os
 import pickle
-import subprocess
 import sys
 
 import pytest
@@ -330,8 +329,8 @@ def test_single_warp_undistort_identity_remap_preserves_image_when_zero_distorti
 # --------------------------------------------------------------------------
 # main() -- CLI wiring for both modes. UNDISTORT_SCRIPT is monkeypatched to
 # a fake existing file so wrapper-mode tests don't need the real
-# deps/camera-calibration submodule; subprocess.run is monkeypatched so
-# offline_undistort.py itself is never actually invoked.
+# deps/camera-calibration submodule; a fake offline_undistort module is
+# installed in sys.modules so the real one is never imported.
 # --------------------------------------------------------------------------
 
 def write_calib_pkl(path, **kwargs):
@@ -360,6 +359,44 @@ def patch_undistort_script(monkeypatch, tmp_path, exists=True):
     if exists:
         fake_script.write_text("")
     monkeypatch.setattr(uf, "UNDISTORT_SCRIPT", fake_script)
+
+
+class FakeOfflineUndistort:
+    """Stands in for deps/camera-calibration/offline_undistort.py, which process_camera imports
+    and calls in-process (the submodule is not checked out in the unit suite)."""
+
+    def __init__(self, fail_with=None):
+        self.fail_with = fail_with
+        self.models = []   # the calibration's `model` value, as infer_model saw it
+        self.calls = []    # one entry per undistort_image call
+        self.built = []    # one entry per build_undistorted_calibration_data call
+
+    def infer_model(self, model, dist):
+        self.models.append(model)
+        return model or "OPENCV_FISHEYE"
+
+    def undistort_image(self, image, mtx, dist, fisheye, **kwargs):
+        if self.fail_with:
+            raise RuntimeError(self.fail_with)
+        self.calls.append({"shape": image.shape, "fisheye": fisheye, "mtx": mtx})
+        return image
+
+    def build_undistorted_calibration_data(self, mtx, dist, image_size, fisheye, **kwargs):
+        self.built.append({"mtx": mtx, "image_size": image_size, "fisheye": fisheye})
+        return {"camera_matrix": mtx, "distortion_coefficients": np.zeros((1, 4)),
+                "image_size": image_size, "model": "OPENCV"}
+
+
+def install_fake_offline_undistort(monkeypatch, fail_with=None):
+    fake = FakeOfflineUndistort(fail_with)
+    monkeypatch.setitem(sys.modules, "offline_undistort", fake)
+    return fake
+
+
+def argv(frames_dir, calib_dir, out_dir, out_pkl_dir, *extra):
+    """CLI for wrapper mode. --jobs 1 keeps the work in this process, where the fake is installed."""
+    return ["prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
+            "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir), "--jobs", "1", *extra]
 
 
 def test_main_errors_when_undistort_script_missing_in_wrapper_mode(tmp_path, monkeypatch, capsys):
@@ -436,24 +473,16 @@ def test_main_skips_camera_with_corrupted_frame_file(tmp_path, monkeypatch, caps
     write_calib_pkl(calib_dir / "Camera_0001.pkl", image_size=(200, 150))
     write_calib_pkl(calib_dir / "Camera_0002.pkl", image_size=(200, 150))
     patch_undistort_script(monkeypatch, tmp_path)
+    fake = install_fake_offline_undistort(monkeypatch)
 
-    calls = []
-    def fake_run(cmd, capture_output=True, text=True):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(uf.subprocess, "run", fake_run)
-
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
-        "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir),
-    ])
+    monkeypatch.setattr(sys, "argv", argv(frames_dir, calib_dir, out_dir, out_pkl_dir))
     with pytest.raises(SystemExit) as exc_info:
         uf.main()  # must not crash with an uncaught PIL.UnidentifiedImageError
 
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
     assert "ERROR 0001: could not read" in out
-    assert len(calls) == 1  # 0002 still got processed
+    assert len(fake.calls) == 1  # 0002 still got processed
 
 
 def test_main_resolves_legacy_calibration_naming_end_to_end(tmp_path, monkeypatch):
@@ -506,25 +535,22 @@ def test_main_single_warp_mode_model_default_threads_through(tmp_path, monkeypat
     assert received["model"] == "OPENCV_FISHEYE"
 
 
-def test_main_wrapper_mode_model_default_in_subprocess_cmd(tmp_path, monkeypatch):
+def test_main_wrapper_mode_takes_the_model_from_the_calibration_file(tmp_path, monkeypatch):
+    # The in-process path does what offline_undistort.py does for one image: the lens model
+    # comes from the calibration, not from --model (which only single-warp mode reads).
     frames_dir, calib_dir, out_dir, out_pkl_dir = base_dirs(tmp_path)
     write_frame(frames_dir / "0001.jpg", w=200, h=150)
-    write_calib_pkl(calib_dir / "Camera_0001.pkl", image_size=(200, 150))
+    calib = make_calib(image_size=(200, 150))
+    calib["model"] = "OPENCV"
+    with open(calib_dir / "Camera_0001.pkl", "wb") as f:
+        pickle.dump(calib, f)
     patch_undistort_script(monkeypatch, tmp_path)
+    fake = install_fake_offline_undistort(monkeypatch)
 
-    calls = []
-    def fake_run(cmd, capture_output=True, text=True):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(uf.subprocess, "run", fake_run)
-
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
-        "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir),
-    ])  # --model omitted
+    monkeypatch.setattr(sys, "argv", argv(frames_dir, calib_dir, out_dir, out_pkl_dir, "--model", "OPENCV_FISHEYE"))
     uf.main()
-    cmd = calls[0]
-    assert cmd[cmd.index("--model") + 1] == "OPENCV_FISHEYE"
+    assert fake.models == ["OPENCV"]  # the pkl's model, not the --model flag
+    assert fake.calls[0]["fisheye"] is False
 
 
 def test_main_skips_camera_with_missing_calibration(tmp_path, monkeypatch, capsys):
@@ -676,23 +702,15 @@ def test_main_skips_camera_with_corrupted_calibration_file(tmp_path, monkeypatch
     (calib_dir / "Camera_0001.pkl").write_bytes(b"not a pickle file, just garbage bytes")
     write_calib_pkl(calib_dir / "Camera_0002.pkl", image_size=(200, 150))
     patch_undistort_script(monkeypatch, tmp_path)
+    fake = install_fake_offline_undistort(monkeypatch)
 
-    calls = []
-    def fake_run(cmd, capture_output=True, text=True):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(uf.subprocess, "run", fake_run)
-
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
-        "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir),
-    ])
+    monkeypatch.setattr(sys, "argv", argv(frames_dir, calib_dir, out_dir, out_pkl_dir))
     with pytest.raises(SystemExit) as exc_info:
         uf.main()  # must not crash with an uncaught pickle.UnpicklingError
 
     assert exc_info.value.code == 1
     assert "ERROR 0001" in capsys.readouterr().out
-    assert len(calls) == 1  # 0002 still got processed
+    assert len(fake.calls) == 1  # 0002 still got processed
 
 
 @SKIP_IF_ROOT
@@ -780,83 +798,53 @@ def test_main_single_warp_mode_catches_any_exception_from_undistort(tmp_path, mo
     assert "ERROR 0001: cv2 blew up" in capsys.readouterr().out
 
 
-def test_main_wrapper_mode_invokes_subprocess_with_correct_args(tmp_path, monkeypatch):
+def test_main_wrapper_mode_undistorts_in_process_and_writes_both_outputs(tmp_path, monkeypatch):
     frames_dir, calib_dir, out_dir, out_pkl_dir = base_dirs(tmp_path)
     write_frame(frames_dir / "0001.jpg", w=200, h=150)
     write_calib_pkl(calib_dir / "Camera_0001.pkl", image_size=(200, 150))
     patch_undistort_script(monkeypatch, tmp_path)
+    fake = install_fake_offline_undistort(monkeypatch)
 
-    calls = []
-    def fake_run(cmd, capture_output=True, text=True):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(uf.subprocess, "run", fake_run)
-
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
-        "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir), "--model", "OPENCV",
-    ])
+    monkeypatch.setattr(sys, "argv", argv(frames_dir, calib_dir, out_dir, out_pkl_dir))
     uf.main()
 
-    assert len(calls) == 1
-    cmd = calls[0]
-    assert cmd[1] == str(uf.UNDISTORT_SCRIPT)
-    assert "-o" in cmd
-    out_arg = cmd[cmd.index("-o") + 1]
-    assert out_arg == str(out_dir / "0001.jpg")  # full file path with suffix, not a bare directory
-    assert cmd[cmd.index("--model") + 1] == "OPENCV"
-    assert cmd[cmd.index("-c") + 1] == str(calib_dir / "Camera_0001.pkl")  # not rescaled -- original path used
+    assert len(fake.calls) == 1
+    assert fake.calls[0]["shape"] == (150, 200, 3)  # the frame as read from disk
+    assert fake.calls[0]["mtx"][0, 0] == 800.0  # not rescaled: size already matches
+    assert (out_dir / "0001.jpg").is_file()  # full file path with the image extension
+    with open(out_pkl_dir / "Camera_0001.pkl", "rb") as f:
+        assert pickle.load(f)["image_size"] == (200, 150)
 
 
-def test_main_wrapper_mode_uses_rescaled_temp_pkl_when_rescaled(tmp_path, monkeypatch):
+def test_main_wrapper_mode_uses_rescaled_calibration_when_rescaled(tmp_path, monkeypatch):
     frames_dir, calib_dir, out_dir, out_pkl_dir = base_dirs(tmp_path)
     write_frame(frames_dir / "0001.jpg", w=200, h=150)
     # Calibration made at 400x300 but media is 200x150 -- uniform 0.5 rescale.
     write_calib_pkl(calib_dir / "Camera_0001.pkl", image_size=(400, 300))
     patch_undistort_script(monkeypatch, tmp_path)
+    fake = install_fake_offline_undistort(monkeypatch)
 
-    calls = []
-    read_back = {}
-    def fake_run(cmd, capture_output=True, text=True):
-        calls.append(cmd)
-        # The temp pkl only exists inside main()'s tempfile.TemporaryDirectory()
-        # context, which is torn down before main() returns -- read it now.
-        calib_arg = cmd[cmd.index("-c") + 1]
-        with open(calib_arg, "rb") as f:
-            read_back["calib"] = pickle.load(f)
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(uf.subprocess, "run", fake_run)
-
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
-        "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir),
-    ])
+    monkeypatch.setattr(sys, "argv", argv(frames_dir, calib_dir, out_dir, out_pkl_dir))
     uf.main()
 
-    cmd = calls[0]
-    calib_arg = cmd[cmd.index("-c") + 1]
-    assert calib_arg != str(calib_dir / "Camera_0001.pkl")  # a temp pkl, not the original
-    assert read_back["calib"]["image_size"] == (200, 150)  # rescaled, not the original 400x300
+    assert fake.calls[0]["mtx"][0, 0] == 400.0  # fx 800 at 400 px wide -> 400 at 200 px
+    assert fake.built[0]["image_size"] == (200, 150)  # the media size, not the original 400x300
 
 
-def test_main_wrapper_mode_subprocess_failure_marks_camera_failed(tmp_path, monkeypatch, capsys):
+def test_main_wrapper_mode_undistort_failure_marks_camera_failed(tmp_path, monkeypatch, capsys):
     frames_dir, calib_dir, out_dir, out_pkl_dir = base_dirs(tmp_path)
     write_frame(frames_dir / "0001.jpg", w=200, h=150)
     write_calib_pkl(calib_dir / "Camera_0001.pkl", image_size=(200, 150))
     patch_undistort_script(monkeypatch, tmp_path)
+    install_fake_offline_undistort(monkeypatch, fail_with="offline_undistort.py blew up")
 
-    def fake_run(cmd, capture_output=True, text=True):
-        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="offline_undistort.py blew up")
-    monkeypatch.setattr(uf.subprocess, "run", fake_run)
-
-    monkeypatch.setattr(sys, "argv", [
-        "prog", "--frames_dir", str(frames_dir), "--calib_dir", str(calib_dir),
-        "--out_dir", str(out_dir), "--out_pkl_dir", str(out_pkl_dir),
-    ])
+    monkeypatch.setattr(sys, "argv", argv(frames_dir, calib_dir, out_dir, out_pkl_dir))
     with pytest.raises(SystemExit) as exc_info:
         uf.main()
     assert exc_info.value.code == 1
-    assert "offline_undistort.py blew up" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "ERROR undistorting 0001" in out and "offline_undistort.py blew up" in out
+    assert not (out_pkl_dir / "Camera_0001.pkl").exists()  # a failed camera writes no calibration
 
 
 def test_main_no_rescale_flag_threads_through_to_validation(tmp_path, monkeypatch, capsys):
