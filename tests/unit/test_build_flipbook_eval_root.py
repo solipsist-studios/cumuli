@@ -229,6 +229,28 @@ def test_timing_json_puts_each_cameras_offset_on_its_real_views(tmp_path, monkey
     assert all("time_offset" not in f for f in test_json["frames"])
 
 
+def test_frame_weights_reach_the_training_views_of_their_frames_through_window_links(tmp_path, monkeypatch):
+    clip = tmp_path / "clip"
+    write_flipbook(clip, ["00", "01"], 4)
+    window = tmp_path / "win"
+    window.mkdir()
+    for i, source in enumerate((2, 3)):  # a window of the clip's last two frames, linked as frame_0000, frame_0001
+        (window / f"frame_{i:04d}").symlink_to(clip / f"frame_{source:04d}")
+    weights = tmp_path / "motion.json"
+    weights.write_text(json.dumps({"frames": {"frame_0002": {"weight": 1.0}, "frame_0003": {"weight": 2.5}}}))
+    out = tmp_path / "dataset"
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py", "--flipbook_root", str(window), "--frame_weights", str(weights),
+        "--test_cameras", "01", "--out", str(out), "--fps", "24", "--downscale", "1", "--hull_min_views", "1",
+        "--jobs", "2", "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+    train = json.loads((out / "transforms_train.json").read_text())["frames"]
+    by_time = {round(f["time"] * 24): f.get("visit_weight") for f in train}
+    assert by_time == {0: None, 1: 2.5}  # window frame 1 is the clip's frame_0003
+    test = json.loads((out / "transforms_test.json").read_text())["frames"]
+    assert all("visit_weight" not in f for f in test)
+
+
 def test_timing_json_carries_each_cameras_rolling_shutter(tmp_path, monkeypatch):
     train = tmp_path / "flipbook_src"
     out = tmp_path / "dataset"
