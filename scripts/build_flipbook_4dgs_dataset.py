@@ -234,6 +234,20 @@ def load_time_offsets(path):
     return out
 
 
+def load_rolling_shutter(path):
+    """{label: {"readout_s": s, "raw_camera": {...}}} from a capture-timing file's cameras, for the ones whose
+    sensor reads out over time (readout_s > 0, with the raw camera that maps an image pixel to its sensor line)."""
+    if not path:
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    out = {}
+    for label, cam in (data.get('cameras') or {}).items():
+        if isinstance(cam, dict) and float(cam.get('readout_s') or 0.0) > 0 and cam.get('raw_camera'):
+            out[str(label)] = {'readout_s': float(cam['readout_s']), 'raw_camera': cam['raw_camera']}
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -286,7 +300,9 @@ def main():
                         help='Per-camera sub-frame capture offsets: {"cameras": {"<label>": {"offset_s": s}}}. '
                              'Each training/test view of that camera gets "time_offset": s next to its '
                              'nominal "time" (capture = time + time_offset, seconds). Cameras the file does '
-                             'not name get none, as without the file.')
+                             'not name get none, as without the file. A camera entry may also carry '
+                             '"readout_s" (rolling-shutter readout, top to bottom of the raw sensor) and '
+                             '"raw_camera" ({model, K, dist, w, h} of the raw footage); both go on its views.')
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
 
@@ -439,6 +455,10 @@ def main():
     # ── transforms jsons (per-frame intrinsics, cameras differ) ────────────
     ds = args.downscale
     time_offsets = load_time_offsets(args.timing_json)
+    rolling = load_rolling_shutter(args.timing_json)
+    if rolling:
+        print(f'  rolling shutter: {len(rolling)} cameras, readout '
+              + ', '.join(sorted({f"{r['readout_s'] * 1e3:.2f} ms" for r in rolling.values()})))
     if time_offsets:
         named = {l: time_offsets[l] for l in labels if l in time_offsets}
         print(f'  sub-frame timing: {len(named)}/{len(labels)} cameras, offsets '
@@ -464,6 +484,8 @@ def main():
                 # Real cameras only: an eval rig's synthetic views were not filmed.
                 if subdir == 'realcams' and label in time_offsets:
                     row['time_offset'] = time_offsets[label]
+                if subdir == 'realcams' and label in rolling:
+                    row.update(rolling[label])
                 rows.append(row)
         return rows
 

@@ -227,3 +227,24 @@ def test_timing_json_puts_each_cameras_offset_on_its_real_views(tmp_path, monkey
     assert sorted({f["time"] for f in train_json["frames"]}) == [0.0, 1 / 24]
     test_json = json.loads((out / "transforms_test.json").read_text())
     assert all("time_offset" not in f for f in test_json["frames"])
+
+
+def test_timing_json_carries_each_cameras_rolling_shutter(tmp_path, monkeypatch):
+    train = tmp_path / "flipbook_src"
+    out = tmp_path / "dataset"
+    write_flipbook(train, ["00", "01"], 2)
+    raw = {"model": "OPENCV_FISHEYE", "K": [[700, 0, 4], [0, 700, 3], [0, 0, 1]], "dist": [0.04, 0.05, -0.04, 0.01], "w": 8, "h": 6}
+    timing = tmp_path / "capture_timing.json"
+    timing.write_text(json.dumps({"cameras": {"00": {"offset_s": 0.0, "readout_s": 0.015, "raw_camera": raw},
+                                              "01": {"offset_s": 0.002, "readout_s": 0.0, "raw_camera": raw}}}))
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py", "--flipbook_root", str(train), "--timing_json", str(timing),
+        "--out", str(out), "--fps", "24", "--downscale", "1", "--hull_min_views", "1", "--jobs", "2",
+        "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+    frames = json.loads((out / "transforms_train.json").read_text())["frames"]
+    zero = [f for f in frames if f["camera_label"] == "00"]
+    one = [f for f in frames if f["camera_label"] == "01"]
+    assert all(f["readout_s"] == 0.015 and f["raw_camera"] == raw for f in zero)
+    assert all("readout_s" not in f and "raw_camera" not in f for f in one)  # a zero readout is a global shutter
+    assert all(f["time_offset"] == 0.002 for f in one)
