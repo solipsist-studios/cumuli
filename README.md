@@ -62,7 +62,6 @@ git submodule update --init --recursive
 
 - `deps/camera-calibration` -- per-camera undistortion (offline_undistort.py)
 - `deps/BiRefNet` -- the BiRefNet source, for reference. No script reads it: `birefnet_masks.py` loads the model from Hugging Face through transformers
-- `deps/sapiens` -- the original Sapiens (v1) source, for reference. No script reads it: keypoints come from the `sapiens2` package `environment.yml` installs, driven by `scripts/vendor/sapiens2/vis_pose.py`
 - `deps/cumuli-trainer` -- the 4D gaussian splat trainer behind the `train4d` stage (Solipsist, private)
 - `deps/cumuli-core` -- shared 4D library: interchange PLY, `.sogst` decoding, cameras, gsplat rendering, metrics (Solipsist, private)
 
@@ -198,8 +197,8 @@ to noncommercial research by Magic Leap.
 
 Note that the external tools this pipeline wraps are **not**
 covered by the PolyForm license: you obtain each of them directly from its
-own project under its own terms. Two of them restrict commercial use,
-and neither restriction is lifted by buying a commercial license to
+own project under its own terms. One of them restricts commercial use,
+and that restriction is not lifted by buying a commercial license to
 this pipeline:
 
 - **SuperPoint** -- the default HLOC feature type
@@ -211,11 +210,9 @@ this pipeline:
   repository-level Apache-2.0 label does not relicense it. Use
   `--feature_type aliked` (ALIKED, BSD-3-Clause, paired with LightGlue,
   Apache-2.0) for a fully permissive feature/matcher stack.
-- **Sapiens (v1)** -- `deps/sapiens` is CC BY-NC 4.0, non-commercial
-  only. No pipeline script runs it.
 
 The keypoint stage uses **Sapiens2**, which is under Meta's own Sapiens2
-License rather than CC BY-NC. Two Sapiens2 demo files, modified, ship
+License. Two Sapiens2 demo files, modified, ship
 in this repository under `scripts/vendor/sapiens2/` with a copy of that
 license; they are not covered by the PolyForm license. That
 agreement *does* permit commercial use, but it carries an acceptable-use

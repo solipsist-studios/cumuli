@@ -63,7 +63,7 @@ jobs:
         # camera-calibration (undistortion), plus cumuli-core and
         # cumuli-trainer: the CPU run never trains, but the setup script
         # installs both packages and its verify step imports them.
-        # deps/BiRefNet and deps/sapiens are reference copies no script reads.
+        # deps/BiRefNet is a reference copy no script reads.
         run: |
           git submodule update --init \
             deps/camera-calibration deps/cumuli-core deps/cumuli-trainer
