@@ -105,6 +105,44 @@ def load_cameras(transforms_path: Path) -> dict[str, Camera]:
     return cams
 
 
+class SensorMap:
+    """Where a pixel of a camera's undistorted image lies on its raw sensor, as (row, column) fractions in
+    [-0.5, 0.5]: the undistorted pixel is taken to normalized coordinates with the pinhole intrinsics and
+    re-distorted with the camera's calibration (OPENCV_FISHEYE or OPENCV pkl: camera_matrix, distortion_coefficients,
+    image_size). Rolling shutter reads raw sensor lines, which bend in the undistorted image."""
+
+    def __init__(self, cams: dict[str, Camera], calib_dir: Path, names: dict[str, str]):
+        import pickle
+
+        self.cams, self.raw = cams, {}
+        for label, name in names.items():
+            path = Path(calib_dir) / f"Camera_{str(name).removeprefix('Camera_')}.pkl"
+            if label not in cams or not path.is_file():
+                continue
+            with open(path, "rb") as f:
+                d = pickle.load(f)
+            K = np.asarray(d["camera_matrix"], dtype=np.float64).copy()
+            D = np.asarray(d["distortion_coefficients"], dtype=np.float64).reshape(-1)
+            w, h = (int(v) for v in (d.get("image_size") or (cams[label].width, cams[label].height)))
+            self.raw[label] = (str(d.get("model") or "OPENCV_FISHEYE"), K, D, w, h)
+
+    def has(self, label: str) -> bool:
+        return label in self.raw
+
+    def __call__(self, label: str, uv: np.ndarray) -> np.ndarray:
+        import cv2
+
+        model, K, D, w, h = self.raw[label]
+        xn = self.cams[label].normalize(np.asarray(uv, dtype=np.float64))
+        if model.upper().endswith("FISHEYE"):
+            raw = cv2.fisheye.distortPoints(xn.reshape(-1, 1, 2), K, D[:4]).reshape(-1, 2)
+        else:
+            pts = np.concatenate([xn, np.ones((len(xn), 1))], axis=1)
+            raw, _ = cv2.projectPoints(pts.reshape(-1, 1, 3), np.zeros(3), np.zeros(3), K, D)
+            raw = raw.reshape(-1, 2)
+        return np.stack([raw[:, 1] / h - 0.5, raw[:, 0] / w - 0.5], axis=1)
+
+
 def essential(a: Camera, b: Camera) -> np.ndarray:
     """E with x_b^T E x_a = 0 for normalized coordinates."""
     R = b.R @ a.R.T
@@ -171,11 +209,12 @@ def signed_sampson_px(a: Camera, b: Camera, E: np.ndarray, uv_a: np.ndarray, uv_
 
 def pair_phase(a: Camera, b: Camera, uv_a, uv_b, flow_a, flow_b, accel_a, accel_b, cert, *, size_b,
                prior_frames: float = 0.0, min_epipolar_motion_px: float = 0.5, grid: int = 6, bootstrap: int = 64,
-               seed: int = 0) -> dict | None:
+               seed: int = 0, sensor_a=None, sensor_b=None) -> dict | None:
     """The phase capture(A) - capture(B), in frames, of one pair at one frame, or None without enough signal.
 
     flow_* and accel_* are each point's image velocity (px/frame) and acceleration (px/frame^2) in its own camera.
-    Phases are unwrapped around `prior_frames`."""
+    Phases are unwrapped around `prior_frames`. sensor_a / sensor_b, when given, are each point's position on its
+    camera's raw sensor as (row, column) fractions in [-0.5, 0.5] (see SensorMap), for the readout fit."""
     E = essential(a, b)
 
     def slide(uv, v, acc, s):
@@ -205,6 +244,9 @@ def pair_phase(a: Camera, b: Camera, uv_a, uv_b, flow_a, flow_b, accel_a, accel_
     # error a valid point's own phase can sit far from the prior, so the per-point window is not applied there
     points = {"_r0": r0[ok], "_de": de[ok], "_cell": cell_all, "_w": weights_all,
               "median_epipolar_motion_px": float(np.median(np.abs(de[ok])))}
+    if sensor_a is not None and sensor_b is not None:
+        # how much later along the readout A's view of the point was taken than B's, per unit of readout time
+        points["_g"] = (np.asarray(sensor_a, dtype=np.float64) - np.asarray(sensor_b, dtype=np.float64))[ok]
     if len(delta) < 15 or len(cells) < 3:
         return {"phase_frames": None, "se_frames": None, "points": int(len(delta)), "cells": int(len(cells)), **points}
     centred = delta - prior_frames
@@ -218,28 +260,48 @@ def pair_phase(a: Camera, b: Camera, uv_a, uv_b, flow_a, flow_b, accel_a, accel_
             "cells": int(len(cells)), "scatter_frames": float(mad(wrap(centred - phase), 0.0)), **points}
 
 
-def fit_pair(rows: list[dict], *, min_frames: int = 3, huber_px: float = 1.0, bootstrap: int = 200, seed: int = 0) -> dict | None:
+def fit_pair(rows: list[dict], *, min_frames: int = 3, huber_px: float = 1.0, bootstrap: int = 200, seed: int = 0,
+             readout=None) -> dict | None:
     """One pair's phase from every frame together, robust to camera-pose error.
 
-    A point's epipolar residual is r0 = b - phase * de: b is what the poses get wrong at that place in the image
-    (fixed over time, one value per image cell) and phase * de is what timing adds (de is how much the residual
-    changes per frame of phase, which follows the point's motion). Motion changes direction from frame to
-    frame, so a fit over several frames tells the two apart; a single frame cannot. Robust (Huber) least
-    squares; the uncertainty is a bootstrap over whole frames."""
+    A point's epipolar residual is r0 = b - delta * de: b is what the poses get wrong at that place in the image
+    (fixed over time, one value per image cell) and delta * de is what timing adds (de is how much the residual
+    changes per frame of time difference, which follows the point's motion). Motion changes direction from frame
+    to frame, so a fit over several frames tells the two apart; a single frame cannot. Robust (Huber) least
+    squares; the uncertainty is a bootstrap over whole frames.
+
+    Rolling shutter: a sensor read out over rho frames takes the line at fraction s of the way through (s in
+    [-0.5, 0.5], 0 the middle) at c + rho * s, so delta = phase + rho_row * g_row + rho_col * g_col, with g the
+    difference of the point's sensor fractions in A and B (the rows' "_g"). `readout` None ignores it; "fit" fits
+    rho_row and rho_col for this pair (and the same fit with g shuffled between points, which a real readout does
+    not survive); a pair (rho_row, rho_col) in frames holds it fixed. Either way the phase is the cameras'
+    mid-sensor difference."""
     rows = [r for r in rows if "_r0" in r and len(r["_r0"])]
     if len(rows) < min_frames:
         return None
+    use_g = readout is not None and all("_g" in r for r in rows)
+    fit_rho = use_g and readout == "fit"
     cells = sorted({int(c) for r in rows for c in r["_cell"]})
     index = {c: i for i, c in enumerate(cells)}
+    nfix = 3 if fit_rho else 1
 
-    def solve(sample):
+    def solve(sample, shuffle=None):
         r0 = np.concatenate([rows[i]["_r0"] for i in sample])
         de = np.concatenate([rows[i]["_de"] for i in sample])
         cl = np.concatenate([[index[int(c)] for c in rows[i]["_cell"]] for i in sample]).astype(int)
         w0 = np.concatenate([rows[i]["_w"] / np.sum(rows[i]["_w"]) for i in sample])  # each frame one vote
-        X = np.zeros((len(r0), 1 + len(cells)))
+        X = np.zeros((len(r0), nfix + len(cells)))
         X[:, 0] = -de
-        X[np.arange(len(r0)), 1 + cl] = 1.0
+        if use_g:
+            g = np.concatenate([rows[i]["_g"] for i in sample])
+            if shuffle is not None:
+                g = g[shuffle.permutation(len(g))]
+            if fit_rho:
+                X[:, 1] = -de * g[:, 0]
+                X[:, 2] = -de * g[:, 1]
+            else:
+                r0 = r0 + de * (g @ np.asarray(readout, dtype=np.float64))  # the known readout's share, taken out
+        X[np.arange(len(r0)), nfix + cl] = 1.0
         w = w0.copy()
         coef = np.zeros(X.shape[1])
         for _ in range(10):
@@ -247,14 +309,44 @@ def fit_pair(rows: list[dict], *, min_frames: int = 3, huber_px: float = 1.0, bo
             coef, *_ = np.linalg.lstsq(X * sw[:, None], r0 * sw, rcond=None)
             res = np.abs(r0 - X @ coef)
             w = w0 * np.where(res <= huber_px, 1.0, huber_px / np.maximum(res, 1e-9))
-        return float(coef[0]), np.abs(r0 - X @ coef)
+        return coef[:nfix].copy(), np.abs(r0 - X @ coef)
 
-    phase, res = solve(range(len(rows)))
+    coef, res = solve(range(len(rows)))
     rng = np.random.default_rng(seed)
-    boots = [solve(rng.integers(0, len(rows), len(rows)))[0] for _ in range(bootstrap)]
-    sigma = max(float(np.std(boots)), 0.005)
-    return {"phase_frames": phase, "sigma_frames": sigma, "frames": len(rows),
-            "residual_px": float(np.median(res)), "cells": len(cells)}
+    boots = np.array([solve(rng.integers(0, len(rows), len(rows)))[0] for _ in range(bootstrap)])
+    sigma = np.maximum(boots.std(axis=0), 0.005)
+    out = {"phase_frames": float(coef[0]), "sigma_frames": float(sigma[0]), "frames": len(rows),
+           "residual_px": float(np.median(res)), "cells": len(cells)}
+    if fit_rho:
+        null, _ = solve(range(len(rows)), shuffle=np.random.default_rng(seed + 1))
+        g_all = np.concatenate([r["_g"] for r in rows])
+        out.update(rho_row_frames=float(coef[1]), rho_row_sigma=float(sigma[1]), rho_col_frames=float(coef[2]),
+                   rho_col_sigma=float(sigma[2]), rho_null_row_frames=float(null[1]), rho_null_col_frames=float(null[2]),
+                   g_spread=[float(x) for x in g_all.std(axis=0)])
+    elif use_g:
+        out["readout_frames"] = [float(x) for x in readout]
+    return out
+
+
+def combine_readout(fits: dict, min_spread: float = 0.02) -> dict | None:
+    """One readout for the rig from every pair's (rho_row, rho_col): inverse-variance means, and how well the pairs
+    agree (chi-square per degree of freedom; about 1 when they agree within their uncertainties). Pairs whose sensor
+    positions barely differ along an axis cannot see that axis and are left out of it."""
+    out = {}
+    for axis, k in (("row", 0), ("col", 1)):
+        vals = [(f[f"rho_{axis}_frames"], f[f"rho_{axis}_sigma"], f[f"rho_null_{axis}_frames"]) for f in fits.values()
+                if f and f"rho_{axis}_frames" in f and f["g_spread"][k] >= min_spread]
+        if not vals:
+            continue
+        v = np.array([x[0] for x in vals])
+        s = np.array([x[1] for x in vals])
+        w = 1.0 / s ** 2
+        mean = float(np.sum(w * v) / np.sum(w))
+        sigma = float(1.0 / math.sqrt(np.sum(w)))
+        chi2 = float(np.sum(w * (v - mean) ** 2) / max(len(v) - 1, 1))
+        out[axis] = {"frames": mean, "sigma_frames": sigma * max(1.0, math.sqrt(chi2)), "pairs": len(v), "chi2_dof": chi2,
+                     "null_median_frames": float(np.median([x[2] for x in vals]))}
+    return out or None
 
 
 # ----------------------------------------------------------------------------- the camera graph
@@ -506,11 +598,26 @@ def main(argv=None) -> int:
     ap.add_argument("--track_half", type=int, default=2, help="frames tracked each way")
     ap.add_argument("--pairs_per_camera", type=int, default=4)
     ap.add_argument("--max_pair_angle", type=float, default=75.0, help="degrees between optical axes")
+    ap.add_argument("--raw_calib_dir", default=None,
+                    help="Camera_<id>.pkl calibrations of the raw (distorted) footage, for the rolling-shutter readout")
+    ap.add_argument("--label_map", default=None, help="camera_label_map.json: {label: Camera_<id>}")
+    ap.add_argument("--readout", default="fit",
+                    help="rolling shutter: 'fit' measures one readout for the rig (needs --raw_calib_dir and --label_map), "
+                         "'off' ignores it, a number is a known full readout in milliseconds along the sensor rows")
     ap.add_argument("--out", required=True)
     args = ap.parse_args(argv)
 
     cams = load_cameras(Path(args.transforms))
     labels = sorted(cams)
+    sensor = None
+    if args.readout != "off" and args.raw_calib_dir and args.label_map:
+        sensor = SensorMap(cams, Path(args.raw_calib_dir), json.loads(Path(args.label_map).read_text()))
+        if not all(sensor.has(l) for l in labels):
+            missing = [l for l in labels if not sensor.has(l)]
+            raise SystemExit(f"no raw calibration for camera(s) {missing} in {args.raw_calib_dir}")
+    elif args.readout == "fit":
+        args.readout = "off"  # nothing to map raw sensor lines with
+    known_readout = None if args.readout in ("fit", "off") else float(args.readout) / 1000.0 * args.fps
     if args.reference not in cams:
         raise SystemExit(f"reference camera {args.reference} is not in {args.transforms}")
     frame_dirs = sorted(p for p in Path(args.frames_root).glob("frame_*") if p.is_dir())
@@ -556,9 +663,10 @@ def main(argv=None) -> int:
                 counts["tracked"] = int((oka & okb).sum())
                 counts["moving"] = int(moving.sum())
                 if moving.sum() >= 20:
+                    sens = {} if sensor is None else {"sensor_a": sensor(a, uv_a[moving]), "sensor_b": sensor(b, uv_b[moving])}
                     row = pair_phase(ca, cb, uv_a[moving], uv_b[moving], va[moving], vb[moving], aa[moving], ab[moving],
                                      cert[moving], size_b=(cb.width, cb.height), prior_frames=prior_frames,
-                                     seed=fi * 7919 + done)
+                                     seed=fi * 7919 + done, **sens)
             if row is not None:
                 row["frame"] = frame_dirs[fi].name
                 measured.setdefault((a, b), []).append(row)
@@ -571,9 +679,38 @@ def main(argv=None) -> int:
             status += "  [" + ", ".join(f"{k} {v}" for k, v in counts.items()) + "]"
             print(f"[{done}/{total}] {frame_dirs[fi].name} {a}-{b}: {status}", flush=True)
 
+    # Rolling shutter: every pair measures the readout on its own; one figure for the rig from all of them, then
+    # every pair's phase again with that readout held fixed (so the phases are mid-sensor ones).
+    readout_report = None
+    readout_frames = None
+    if args.readout == "fit":
+        per_pair = {k: fit_pair(rows, seed=hash(k) % 10007, readout="fit") for k, rows in measured.items()}
+        per_pair = {k: v for k, v in per_pair.items() if v}
+        for (a, b), f in sorted(per_pair.items()):
+            print(f"pair {a}-{b} readout: rows {f['rho_row_frames'] / args.fps * 1e3:+.2f} ms +- "
+                  f"{f['rho_row_sigma'] / args.fps * 1e3:.2f}, columns {f['rho_col_frames'] / args.fps * 1e3:+.2f} ms +- "
+                  f"{f['rho_col_sigma'] / args.fps * 1e3:.2f} (shuffled: rows {f['rho_null_row_frames'] / args.fps * 1e3:+.2f} ms)",
+                  flush=True)
+        combined_rho = combine_readout(per_pair)
+        readout_report = {"axis_fits": {ax: {**v, "ms": v["frames"] / args.fps * 1e3, "sigma_ms": v["sigma_frames"] / args.fps * 1e3,
+                                             "null_median_ms": v["null_median_frames"] / args.fps * 1e3}
+                                         for ax, v in (combined_rho or {}).items()},
+                          "pairs": [{"a": a, "b": b, **{k: v for k, v in f.items() if k.startswith("rho") or k == "g_spread"}}
+                                    for (a, b), f in sorted(per_pair.items())]}
+        row = (combined_rho or {}).get("row")
+        if row and abs(row["frames"]) > 3 * row["sigma_frames"]:  # measured, not noise: use it
+            col = (combined_rho or {}).get("col")
+            col_frames = col["frames"] if col and abs(col["frames"]) > 3 * col["sigma_frames"] else 0.0
+            readout_frames = (row["frames"], col_frames)
+        readout_report["used_ms"] = None if readout_frames is None else [x / args.fps * 1e3 for x in readout_frames]
+        print(f"readout: {readout_report['axis_fits']}; used {readout_report['used_ms']} ms", flush=True)
+    elif known_readout is not None:
+        readout_frames = (known_readout, 0.0)
+        readout_report = {"used_ms": [known_readout / args.fps * 1e3, 0.0], "given": True}
+
     combined = {}
     for (a, b), rows in measured.items():
-        c = fit_pair(rows, seed=hash((a, b)) % 10007)
+        c = fit_pair(rows, seed=hash((a, b)) % 10007, readout=readout_frames)
         if c is not None:
             combined[(a, b)] = c
             print(f"pair {a}-{b}: {c['phase_frames']:+.3f} f +- {c['sigma_frames']:.3f} over {c['frames']} frames "
@@ -586,7 +723,7 @@ def main(argv=None) -> int:
               "pairs": [{"a": a, "b": b, **c, "measurements": [public(r) for r in measured.get((a, b), [])]}
                         for (a, b), c in sorted(combined.items())],
               "unmeasured_pairs": sorted(f"{a}-{b}" for a, b in pairs if (a, b) not in combined),
-              "prior": prior or None}
+              "prior": prior or None, "readout": readout_report}
     tmp = Path(args.out).with_suffix(".tmp")
     tmp.write_text(json.dumps(report, indent=1))
     os.replace(tmp, args.out)

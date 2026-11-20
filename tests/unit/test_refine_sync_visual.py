@@ -155,6 +155,67 @@ def test_a_pose_error_is_taken_out_by_the_fit_over_frames():
     assert fit["sigma_frames"] < 0.05 and fit["frames"] == 8
 
 
+def rolling_observe(cam, X, V, A, offset, readout_s):
+    """Like observe(), for a rolling-shutter camera whose rows are read top to bottom over readout_s seconds:
+    each point is seen at offset + readout_s * (row / H - 0.5), where row is where it lands then."""
+    t = np.full(len(X), offset)
+    for _ in range(6):  # the row depends on the time and the time on the row: settle both
+        pos = X + V * t[:, None] + 0.5 * A * (t * t)[:, None]
+        rows = project(cam, pos)[:, 1]
+        t = offset + readout_s * (rows / cam.height - 0.5)
+    dt = 1.0 / FPS
+    p = lambda s: X + V * s[:, None] + 0.5 * A * (s * s)[:, None]  # noqa: E731
+    p0, pm, pp = project(cam, p(t)), project(cam, p(t - dt)), project(cam, p(t + dt))
+    sensor = np.stack([p0[:, 1] / cam.height - 0.5, p0[:, 0] / cam.width - 0.5], axis=1)
+    return p0, (pp - pm) / 2.0, pp - 2 * p0 + pm, sensor
+
+
+def test_a_rolling_shutter_readout_is_measured_and_the_phase_is_the_mid_sensor_one():
+    ca = look_at([3.0, 0.2, 0.0], label="00")
+    cb = look_at([3.0 * math.cos(0.7), 0.1, 3.0 * math.sin(0.7)], label="01")
+    readout = 0.012  # seconds top to bottom, both cameras
+    off_a, off_b = 0.003, -0.004
+    rng = np.random.default_rng(7)
+    rows = []
+    for frame in range(10):
+        X, V, A = scene(seed=40 + frame)
+        X = X * 2.5  # spread over the frame, so rows differ between the two views
+        d = rng.normal(size=3)
+        V = 2.0 * d / np.linalg.norm(d) + 0.3 * V
+        ua, va, aa, sa = rolling_observe(ca, X, V, A, off_a, readout)
+        ub, vb, ab, sb = rolling_observe(cb, X, V, A, off_b, readout)
+        rows.append(rsv.pair_phase(ca, cb, ua, ub, va, vb, aa, ab, np.ones(len(ua)), size_b=(cb.width, cb.height),
+                                   sensor_a=sa, sensor_b=sb))
+    fit = rsv.fit_pair(rows, readout="fit")
+    assert fit["rho_row_frames"] == pytest.approx(readout * FPS, abs=0.06), fit
+    assert abs(fit["rho_col_frames"]) < 0.08
+    assert abs(fit["rho_null_row_frames"]) < 0.5 * readout * FPS  # shuffled positions lose it
+    assert fit["phase_frames"] == pytest.approx((off_a - off_b) * FPS, abs=0.03)
+    # with the readout known, the phase comes out the same; ignoring it shifts it
+    fixed = rsv.fit_pair(rows, readout=(readout * FPS, 0.0))
+    assert fixed["phase_frames"] == pytest.approx((off_a - off_b) * FPS, abs=0.03)
+    combined = rsv.combine_readout({("00", "01"): fit})
+    assert combined["row"]["frames"] == pytest.approx(readout * FPS, abs=0.06)
+
+
+def test_sensor_map_finds_the_raw_line_of_an_undistorted_pixel(tmp_path):
+    import pickle
+
+    cv2 = pytest.importorskip("cv2")
+    w, h = 1600, 1200
+    K_raw = np.array([[700.0, 0, 810], [0, 700.0, 590], [0, 0, 1]])
+    D = np.array([0.04, 0.05, -0.04, 0.01])
+    with open(tmp_path / "Camera_0001.pkl", "wb") as f:
+        pickle.dump({"model": "OPENCV_FISHEYE", "camera_matrix": K_raw, "distortion_coefficients": D, "image_size": (w, h)}, f)
+    cam = look_at([3.0, 0.0, 0.0], w=w, h=h, f=520.0, label="00")  # the undistorted pinhole camera
+    raw = np.array([[100.0, 80.0], [800.0, 600.0], [1500.0, 1100.0], [300.0, 1000.0]])
+    und = cv2.fisheye.undistortPoints(raw.reshape(-1, 1, 2), K_raw, D, P=cam.K).reshape(-1, 2)
+    smap = rsv.SensorMap({"00": cam}, tmp_path, {"00": "Camera_0001"})
+    frac = smap("00", und)
+    assert np.allclose(frac[:, 0], raw[:, 1] / h - 0.5, atol=1e-3)
+    assert np.allclose(frac[:, 1], raw[:, 0] / w - 0.5, atol=1e-3)
+
+
 def test_the_fit_needs_several_frames():
     ca = look_at([3.0, 0.2, 0.0], label="00")
     cb = look_at([3.0 * math.cos(0.7), 0.1, 3.0 * math.sin(0.7)], label="01")
