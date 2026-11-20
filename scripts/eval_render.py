@@ -20,6 +20,11 @@ A view whose entry has a `time_offset` (a camera's sub-frame sync residual)
 is rendered at `time + time_offset`, the moment that camera took the photo
 (--shutter captured, the default and the only setting comparable to the
 photo); --shutter instant renders every view at the shared nominal time.
+A view whose camera has a rolling shutter (`readout_s` > 0, with the raw
+sensor model in `raw_camera`) is rendered, under --shutter captured, with
+each splat at the time its raw sensor row was read
+(cumuli_core.shutter.rolling_shutter_offsets, the same function the trainer
+uses); --shutter instant ignores both the offset and the readout.
 
 Run under an environment with gsplat + lpips + torchmetrics + CUDA:
 
@@ -165,6 +170,26 @@ def view_time(cam, shutter='captured'):
     return float(getattr(cam, 'capture_time', cam.time))
 
 
+def view_readout(cam, shutter='captured'):
+    """Seconds from the first raw sensor line to the last that a view is
+    rendered with: the camera's readout under --shutter captured (0 for a
+    global shutter, and for older cumuli_core), 0 under --shutter instant."""
+    if shutter == 'instant':
+        return 0.0
+    return float(getattr(cam, 'readout_s', 0.0) or 0.0)
+
+
+def slice_view(st, cam, t, readout, w2c):
+    """(means, opacities) of the splats as view `cam` saw them, at model time
+    t; with a readout (in model time units), each splat at its raw row's
+    time.  w2c is the view's [4, 4] world-to-camera tensor."""
+    if not readout:
+        return st.slice(t)
+    from cumuli_core.shutter import rolling_shutter_offsets, sensor_of
+    offsets = rolling_shutter_offsets(lambda tt: st.slice(tt)[0], w2c, sensor_of(cam), t, readout)
+    return st.slice(t + offsets)
+
+
 # ---------------------------------------------------------------------------
 # render + metrics
 # ---------------------------------------------------------------------------
@@ -189,8 +214,9 @@ def main():
                     help='multiply camera times by this to reach model time units '
                          '(default: auto from model duration / max camera time)')
     ap.add_argument('--shutter', choices=('captured', 'instant'), default='captured',
-                    help="captured: render each view at its camera's capture time (time + time_offset); "
-                         'instant: at the nominal time, as if every camera fired together')
+                    help="captured: render each view at its camera's capture time (time + time_offset), "
+                         'with its rolling shutter when it has a readout_s; '
+                         'instant: at the nominal time with a global shutter, as if every camera fired together')
     ap.add_argument('--no-blur', action='store_true',
                     help='skip the blur/misregistration measure (per view: the photo blur and shift that best '
                          'match the render)')
@@ -245,7 +271,7 @@ def main():
     view_rows = []
     for cam in cams:
         t = header['time_min'] + view_time(cam, args.shutter) * tscale
-        means, alpha = st.slice(t)
+        readout = view_readout(cam, args.shutter)
 
         gt_path = os.path.join(args.gt_dir, cam.name + '.png')
         if not os.path.exists(gt_path):
@@ -266,6 +292,8 @@ def main():
                 'half-resolution ground truth needs --downscale 2.')
 
         with torch.no_grad():
+            w2c = torch.tensor(np.asarray(cam.w2c), dtype=torch.float32, device=dev)
+            means, alpha = slice_view(st, cam, t, readout * tscale, w2c)
             # packed=True is gsplat's own default, which this script always
             # used; it keeps scores bit-identical to earlier reports.
             img, _, _ = render(means, st.quats_wxyz, scales, alpha, st.sh, [cam],
@@ -280,7 +308,7 @@ def main():
         ssims.append(ssim)
         lpipss.append(lp)
         row = {'name': cam.name, 'time': float(cam.time), 'capture_time': view_time(cam, 'captured'),
-               'psnr_db': psnr, 'ssim': ssim, 'lpips': lp}
+               'readout_s': readout, 'psnr_db': psnr, 'ssim': ssim, 'lpips': lp}
         if blur:
             row['blur'] = blur
         view_rows.append(row)
