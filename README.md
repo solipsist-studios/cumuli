@@ -236,3 +236,12 @@ LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP: BSD-3) is
 permissively licensed. The mask and triangulation scripts contain code
 ported from Diffuman4D (Apache-2.0); `scripts/vendor/diffuman4d/`
 carries its license and the attribution notice.
+
+Design references: `refine_sync_visual.py` is adapted from Open4DGS-Core
+(MIT, https://open4dgs.asunemlabs.com), and its header carries that notice. The
+sub-frame timing conventions and the blur-and-shift measure in `eval_render.py`
+were informed by the documentation and a few source excerpts of Open4DGS-Core
+and Open4DGS-Trigs (AGPL-3.0, https://github.com/ASU-NEM-Labs/open4dgs-trigs);
+no Trigs code is included. `frame_motion.py` uses OpenCV's DIS optical flow
+(Kroeger, Timofte, Dai and Van Gool, "Fast Optical Flow using Dense Inverse
+Search", ECCV 2016).
