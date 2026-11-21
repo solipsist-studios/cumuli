@@ -49,7 +49,7 @@ from pathlib import Path
 from PIL import Image
 
 from image_formats import (SUPPORTED_IMAGE_EXTS, ImageQualityError, add_quality_argument,
-                           check_image_quality, save_image)
+                           check_image_quality, png_bit_depth, save_image)
 
 
 def main():
@@ -110,8 +110,18 @@ def main():
         """Write one camera's image under a temporary name (same extension, so the encoder is picked
         right); it is renamed to its label once every earlier camera's outcome is known."""
         tmp_img = args.out_images_flat / f".tmp{i:04d}{args.out_image_ext}"
-        if args.out_image_ext.lower() == args.image_ext.lower() and args.out_image_quality is None:
+        wide = png_bit_depth(src_img) == 16       # the flat dataset is 8-bit: nothing after this reads more
+        if args.out_image_ext.lower() == args.image_ext.lower() and args.out_image_quality is None and not wide:
             shutil.copy(src_img, tmp_img)
+        elif wide:   # both PIL and OpenCV's 8-bit read truncate a 16-bit PNG; read it whole and round once
+            import cv2
+            import numpy as np
+            bgr = cv2.imread(str(src_img), cv2.IMREAD_COLOR + cv2.IMREAD_ANYDEPTH + cv2.IMREAD_IGNORE_ORIENTATION)
+            if bgr is None:
+                raise ValueError(f"could not read {src_img}")
+            if bgr.dtype == np.uint16:
+                bgr = np.rint(bgr / 257.0).astype(np.uint8)
+            save_image(Image.fromarray(bgr[..., ::-1]), tmp_img, args.out_image_quality)
         else:   # a quality means a re-encode even when the extension matches
             with Image.open(src_img) as im:
                 save_image(im.convert("RGB"), tmp_img, args.out_image_quality)

@@ -32,6 +32,20 @@
   setting). `build_flat_dataset.py` converts its cameras in a thread pool
   (`--jobs`); `build_flipbook_4dgs_dataset.py` already did. Use PNG for the
   working frames and WebP for the compressed stage.
+- 16-bit as an option, for PNG only and only before the training dataset:
+  `extract_synced_frames.py --bit_depth 16` (ffmpeg `rgb48be`; needs
+  `--output_ext .png`, and is refused with `--pp3_dir`), `undistort_frames.py
+  --bit_depth 16` (reads uint16, remaps it as uint16, writes a 16-bit PNG; no
+  change to camera-calibration was needed), and `color_adjust.py
+  --out_bit_depth 8|16` (the input depth is detected from each file; the
+  default keeps it; 16-bit goes through the float path in row strips and is
+  rounded once at the end, so 16 in, 8 out rounds; changing it invalidates the
+  `--manifest` copy). Default stays 8-bit everywhere. 16-bit is about 4x the
+  disk and slower to write, and is only useful when a strong colour grade
+  follows: nothing after the colour step reads more than 8 bits.
+  `build_flat_dataset.py` turns a 16-bit PNG into an 8-bit one (rounded, not
+  copied); the other readers take a 16-bit PNG and read 8 bits. A 16-bit option
+  is rejected for `.webp` and `.jpg`.
 - A training frame that is not PNG carries its extension in its transforms
   `file_path`; PNG stays extensionless. Scored views (`--test_cameras`,
   `--eval_root`) and `eval_gt_flat/` stay lossless PNG.

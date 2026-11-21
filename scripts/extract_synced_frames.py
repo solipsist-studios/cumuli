@@ -25,7 +25,7 @@ predict_keypoints_2d.py independently.
 
 Usage:
     python3 extract_synced_frames.py /path/to/movies/dir /path/to/sync_offsets.json /path/to/output/dir [seconds_into_clip] \\
-        [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."] [--output_ext .jpg|.jpeg|.png|.webp] [--jobs N]
+        [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."] [--output_ext .jpg|.jpeg|.png|.webp] [--bit_depth 8|16] [--jobs N]
 
     seconds_into_clip (optional, default 2.0) -- how far into the
     reference camera's clip to grab the frame from.
@@ -51,7 +51,7 @@ from pathlib import Path
 from PIL import Image
 
 from color_correct import apply_pp3, find_pp3, resolve_rawtherapee_cmd
-from image_formats import SUPPORTED_IMAGE_EXTS, save_image
+from image_formats import SUPPORTED_IMAGE_EXTS, ImageFormatError, add_bit_depth_argument, check_bit_depth, save_image
 
 
 def ffmpeg_quality_args(ext: str):
@@ -66,20 +66,21 @@ def ffmpeg_quality_args(ext: str):
     return []  # .png is already lossless, no quality flag needed
 
 
-def ffmpeg_format_args(ext: str):
+def ffmpeg_format_args(ext: str, bit_depth: int = 8):
     """Pixel format and PNG effort. A 10-bit source (yuv420p10le) is written as a 16-bit PNG
     (rgb48be, 69 MB at 5312x4648) unless told otherwise, and every later stage reads 8 bits, so
-    PNG and WebP are written as 8-bit RGB: files about 4x smaller and a much faster encode. PNG
-    compression level 1 is ~3x faster than ffmpeg's default for files about 10% larger. A .jpg
-    keeps ffmpeg's own choice."""
+    PNG and WebP are written as 8-bit RGB by default: files about 4x smaller and a much faster
+    encode. ``bit_depth=16`` (PNG only) keeps the 16-bit RGB, for a strong colour grade that
+    follows. PNG compression level 1 is ~3x faster than ffmpeg's default for files about 10%
+    larger. A .jpg keeps ffmpeg's own choice."""
     if ext == ".png":
-        return ["-pix_fmt", "rgb24", "-compression_level", "1"]
+        return ["-pix_fmt", "rgb48be" if bit_depth == 16 else "rgb24", "-compression_level", "1"]
     if ext == ".webp":
         return ["-pix_fmt", "rgb24"]
     return []
 
 
-def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: Path, ext: str):
+def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: Path, ext: str, bit_depth: int = 8):
     """Extract `count` consecutive frames starting at timestamp_sec.
     Returns the list of written paths (f0, f1, ... order)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -93,7 +94,7 @@ def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: 
         # buffers every frame into ONE file whatever the %02d pattern says; naming libwebp,
         # the still-image encoder, writes one file per frame.
         *(["-c:v", "libwebp"] if ext == ".webp" else []),
-        *ffmpeg_format_args(ext),
+        *ffmpeg_format_args(ext, bit_depth),
         *ffmpeg_quality_args(ext),
         # Name the muxer too, so the output pattern is never taken as a single animated file.
         "-f", "image2",
@@ -122,6 +123,10 @@ def main():
                         help="Override the rawtherapee-cli invocation (default: rawtherapee-cli on PATH, else flatpak).")
     parser.add_argument("--output_ext", choices=SUPPORTED_IMAGE_EXTS, default=None,
                         help="Output image extension (default: .png with --pp3_dir, else .jpg).")
+    add_bit_depth_argument(
+        parser, help="Bits per channel of the written frames (default 8). 16 keeps the source's 16-bit RGB "
+                     "(ffmpeg rgb48be) and is for .png only: about 4x the disk and a slower encode, only useful "
+                     "when a strong colour grade follows. Not available with --pp3_dir.")
     parser.add_argument("--jobs", type=int, default=None,
                         help="Cameras extracted at once (default: the number of cameras, at most 8). Each is one "
                              "mostly single-threaded ffmpeg run holding a frame in memory.")
@@ -147,6 +152,15 @@ def main():
               "(RawTherapee always writes PNG; .webp converts it to lossless WebP).")
         sys.exit(1)
     out_ext = args.output_ext or (".png" if rt_cmd else ".jpg")
+    try:
+        check_bit_depth(out_ext, args.bit_depth)
+    except ImageFormatError as e:
+        print(f"Error: --bit_depth: {e}")
+        sys.exit(1)
+    if args.bit_depth == 16 and rt_cmd:
+        print("Error: --bit_depth 16 isn't supported with --pp3_dir (RawTherapee is run for 8-bit PNG output here). "
+              "Extract 16-bit frames, then colour-correct them with color_adjust.py.")
+        sys.exit(1)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -205,7 +219,8 @@ def main():
 
         try:
             with tempfile.TemporaryDirectory() as tmp:
-                raw_paths = extract_frames(video_path, seek_time, args.window, Path(tmp), ".png" if pp3 else out_ext)
+                raw_paths = extract_frames(video_path, seek_time, args.window, Path(tmp), ".png" if pp3 else out_ext,
+                                           **({"bit_depth": 16} if args.bit_depth == 16 else {}))
                 for k, raw_path in enumerate(raw_paths):
                     if args.window == 1:
                         out_path = args.output_dir / f"{video_path.stem}{out_ext}"

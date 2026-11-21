@@ -9,8 +9,44 @@ SUPPORTED_IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 SUPPORTED_VIDEO_EXTS = (".mp4", ".mov", ".mkv", ".avi")
 
 
-class ImageQualityError(ValueError):
+class ImageFormatError(ValueError):
+    """An option was given for a format that cannot honour it."""
+
+
+class ImageQualityError(ImageFormatError):
     """A quality was given for a format that cannot honour it."""
+
+
+def check_bit_depth(ext, bit_depth):
+    """Validate a per-channel bit depth for the extension ``ext``: 8 anywhere, 16 only for PNG
+    (WebP is 8-bit by format, JPEG is not offered at 16). None means "not given"."""
+    if bit_depth in (None, 8):
+        return bit_depth
+    if bit_depth != 16:
+        raise ImageFormatError(f"bit depth must be 8 or 16, got {bit_depth!r}")
+    if ext.lower() != ".png":
+        raise ImageFormatError(f"16-bit output is available for .png only, not {ext} (WebP and JPEG are 8-bit)")
+    return bit_depth
+
+
+def png_bit_depth(path):
+    """Bits per channel of a PNG file, read from its IHDR chunk (8 or 16); 8 for anything that is not a PNG."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(25)
+    except OSError:
+        return 8
+    if len(head) < 25 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return 8
+    return head[24]
+
+
+def add_bit_depth_argument(parser, flag="--bit_depth", default=8, help=None):
+    """Register an 8/16 per-channel bit depth flag on an argparse parser."""
+    parser.add_argument(
+        flag, type=int, choices=(8, 16), default=default,
+        help=help or "Bits per channel. 16 is for .png only (about 4x the disk and slower to write); "
+                     "default 8. Nothing downstream of the colour step reads more than 8 bits.")
 
 
 def check_image_quality(ext, quality):

@@ -448,6 +448,16 @@ WebP throughout.
 - **Extraction is fast by default.** `extract_synced_frames.py` writes PNG and
   WebP as 8-bit RGB (a 10-bit source otherwise becomes a 16-bit PNG, 69 MB at
   5312x4648) and runs cameras concurrently (`--jobs`).
+- **16-bit is an option, for PNG only.** `extract_synced_frames.py --bit_depth 16`
+  (with `--output_ext .png`), `undistort_frames.py --bit_depth 16` and
+  `color_adjust.py --out_bit_depth 16` keep 16 bits per channel; the default is 8
+  everywhere. It costs about 4x the disk and is slower to write, and is only
+  useful when a strong colour grade follows, because everything after the colour
+  step (the flat dataset, masks, keypoints, poses, the training images) reads 8
+  bits. `color_adjust.py` detects each file's depth and, by default, keeps it;
+  16 in and 8 out is rounded once at the end. WebP and JPEG are 8-bit, so a 16
+  with them is an error, and `--pp3_dir` and `.pp3` profiles are 8-bit only.
+  `build_flat_dataset.py` writes the 8-bit frame the later stages expect.
 - **Choose lossy once, as late as you can.** Quality loss compounds when a lossy
   frame is decoded and encoded again, so keep `extract_synced_frames.py`,
   `color_adjust.py` and `undistort_frames.py` lossless and set the quality at
