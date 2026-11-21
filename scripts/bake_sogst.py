@@ -7,8 +7,9 @@ bake_sogst.py  -  Bake a trained 4D interchange PLY into the .sogst container
 and/or a filtered interchange PLY.
 
 Input is cumuli-trainer's splat_4d.ply: spacetime Gaussians with a position
-at t_center, a velocity, a Gaussian temporal envelope (t_sigma), constant
-rotation and scale, and SH colour (docs/sogst-format.md section 7). The
+at t_center, a velocity, optionally a degree-2 accel, a Gaussian temporal
+envelope (t_sigma), constant rotation and scale, and SH colour
+(docs/sogst-format.md section 7). The
 bake post-filters and optionally smooths those splats, then writes a .sogst
 archive (--output), a filtered interchange PLY (--emit_ply), or both, from
 the same arrays so the two cannot disagree. The PLY carries its own clip
@@ -18,13 +19,15 @@ Steps, in order:
     SH truncation (--sh_degree), SH chroma clamp (--sh_chroma_clamp), SH
     overshoot clamp (--sh_clamp), top-k by visibility (--top_k_fraction),
     3D smoothing (--smooth_px), temporal smoothing (--smooth_frames),
-    lifetime mask-consistency filter (--mask_filter_root), dark-occluder and
-    optional black-floater / main-cluster filters, and the peak-alpha prune.
+    lifetime mask-consistency filter (--mask_filter_root), the dark-occluder
+    filter (on by default; --no_dark_occluder_filter turns it off and
+    --dark_occluder_* retune it), optional black-floater / main-cluster
+    filters, and the peak-alpha prune.
 
 Usage:
     python bake_sogst.py --input train4d_output/splat_4d.ply \
         --output splat_4d.sogst --mask_filter_root dataset_4dgs \
-        --sh_chroma_clamp 0.02 --smooth_px 0.5 --smooth_frames 2
+        --sh_chroma_clamp 0.02 --smooth_px 0.3 --smooth_frames 1
 """
 
 import argparse
@@ -163,8 +166,14 @@ def main_cluster_mask(xyz, opacity_logit, cell_frac=0.03):
     return keep
 
 
-def dark_occluder_mask(f_dc, opacity_logit, log_scales, brightness_thresh=0.05,
-                       opacity_thresh=0.7, size_percentile=75):
+# The dark-occluder test's thresholds. --dark_occluder_* override them.
+DARK_OCCLUDER_DEFAULTS = {'brightness_thresh': 0.05, 'opacity_thresh': 0.7, 'size_percentile': 75.0}
+
+
+def dark_occluder_mask(f_dc, opacity_logit, log_scales,
+                       brightness_thresh=DARK_OCCLUDER_DEFAULTS['brightness_thresh'],
+                       opacity_thresh=DARK_OCCLUDER_DEFAULTS['opacity_thresh'],
+                       size_percentile=DARK_OCCLUDER_DEFAULTS['size_percentile']):
     """Flag oversized, near-black, high-opacity splats.
 
     A known Gaussian-splatting failure mode: the optimizer grows dark
@@ -180,6 +189,14 @@ def dark_occluder_mask(f_dc, opacity_logit, log_scales, brightness_thresh=0.05,
     offset from the main "bright, well-defined subject" splat population,
     consistent with being a distinct (if intermixed) failure population
     rather than the subject's true surface.
+
+    "Oversized" is relative to the file's own splats (``size_percentile`` of
+    their largest axes), so the test cannot tell shadow-filling from real
+    surface on a subject whose legitimately dark regions are large, such as
+    black hair or dark clothing: it removes whichever of those splats are
+    big. Turn the filter off (--no_dark_occluder_filter) or retune the
+    thresholds (--dark_occluder_*) for such subjects, and compare renders
+    over a light background as well as a dark one before trusting it.
     """
     SH_C0 = 0.28209479177387814
     color = np.clip(f_dc * SH_C0 + 0.5, 0.0, 1.0)
@@ -302,7 +319,7 @@ def smooth_time(t_sigma, opacity_logit, smooth_frames, fps):
     Heidi (cumuli-trainer, front-view head frame-to-frame change / held-out
     cam05 LPIPS): 0 -> 6.08 / 0.0097, 2 frames -> 5.74 / 0.0101,
     4 frames -> 5.48 / 0.0108. Spatial --smooth_px 1 -> 5.05 / 0.0120.
-    Long smoothing lets a splat drift further along its velocity, so
+    Long smoothing lets a splat drift further along its trajectory, so
     expect ghosting well before the image softens."""
     if smooth_frames <= 0:
         return t_sigma, opacity_logit
@@ -318,7 +335,7 @@ def smooth_time(t_sigma, opacity_logit, smooth_frames, fps):
 
 def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacity_logit,
                           outside_frac=0.5, downscale=4, time_stride=4, k_sigma=2.0,
-                          alpha_thresh=0.02):
+                          alpha_thresh=0.02, accel=None):
     """Keep-mask from multi-view silhouette consistency, evaluated across each
     splat's visible lifetime rather than only at its temporal centre.
 
@@ -349,17 +366,22 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
     from PIL import Image
 
     root = os.path.expanduser(dataset_root)
-    t = json.load(open(os.path.join(root, 'transforms_train.json')))
+    with open(os.path.join(root, 'transforms_train.json')) as fh:
+        t = json.load(fh)
     cams = {}
+    metas = {}  # (camera, time) -> that frame's own record: cropped rigs move cx/cy per frame
     for fr in t['frames']:
         lab = fr.get('camera_label') or fr['file_path'].split('/')[-2]
         cams.setdefault(lab, {'meta': fr, 'frames': {}})['frames'][round(fr['time'], 4)] = fr['file_path']
+        metas[(lab, round(fr['time'], 4))] = fr
     labels = sorted(cams)
     times = sorted(cams[labels[0]]['frames'])[::max(1, time_stride)]
 
     masks = {}
     for lab in labels:
         for tt in times:
+            if tt not in cams[lab]['frames']:
+                continue  # a camera may lack a timestamp the reference camera has
             a = Image.open(os.path.join(root, cams[lab]['frames'][tt] + '.png')).split()[3]
             if downscale > 1:
                 a = a.resize((a.width // downscale, a.height // downscale), Image.BILINEAR)
@@ -375,9 +397,14 @@ def mask_consistency_keep(dataset_root, xyz, velocity, t_center, t_sigma, opacit
         live = np.where(w > alpha_thresh)[0]
         if not len(live):
             continue
-        pts = xyz[live] + velocity[live] * (tt - t_center[live])[:, None]
+        dt = (tt - t_center[live])[:, None]
+        pts = xyz[live] + velocity[live] * dt
+        if accel is not None:
+            pts = pts + accel[live] * dt * dt
         for lab in labels:
-            m = cams[lab]['meta']
+            if (lab, tt) not in masks:
+                continue
+            m = metas[(lab, tt)]
             mask = masks[(lab, tt)]
             c2w = np.asarray(m['transform_matrix'], np.float64).copy()
             c2w[:3, 1:3] *= -1
@@ -410,15 +437,20 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=False,
                   filter_dark_occluders=False, filter_black_floaters=False,
-                  extra_keep_mask=None, accel=None):
-    """Shared tail: filters, prune, diagnostics, write the outputs."""
+                  extra_keep_mask=None, accel=None, dark_occluder_params=None):
+    """Shared tail: filters, prune, diagnostics, write the outputs.
+
+    dark_occluder_params overrides the dark-occluder thresholds (keys of
+    DARK_OCCLUDER_DEFAULTS); it only matters with filter_dark_occluders."""
     N = xyz.shape[0]
     dist = np.abs(t_center - np.clip(t_center, time_min, time_max))
     peak_weight = np.exp(-0.5 * (dist / np.maximum(t_sigma, 1e-9)) ** 2)
     peak_alpha = (1.0 / (1.0 + np.exp(-opacity_logit))) * peak_weight
     keep = peak_alpha >= prune_threshold
     if filter_dark_occluders:
-        keep &= dark_occluder_mask(f_dc, opacity_logit, log_scales)
+        keep &= dark_occluder_mask(f_dc, opacity_logit, log_scales, **(dark_occluder_params or {}))
+    else:
+        print('  Dark-occluder filter: off')
     if filter_black_floaters:
         keep &= black_floater_mask(f_dc, opacity_logit, log_scales)
     if extra_keep_mask is not None:
@@ -498,9 +530,14 @@ def finish_export(out_path, time_min, time_max, fps, prune_threshold, cov2d_scal
 def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshold,
                      sh_degree=None, sh_clamp=1.5, keep_main_cluster=False,
                      sh_chroma_clamp=0.0, smooth_px=0.0, smooth_frames=0.0, top_k_fraction=1.0, filter_black_floaters=False,
-                     mask_filter_root=None, mask_filter_outside_frac=0.5):
+                     mask_filter_root=None, mask_filter_outside_frac=0.5,
+                     mask_filter_time_stride=4, mask_filter_downscale=4,
+                     dark_occluder=True, dark_occluder_params=None):
     """Bake a 4D interchange PLY: SH truncation and clamps, top-k, smoothing,
-    the mask-consistency filter, then finish_export's filters and writers."""
+    the mask-consistency filter, then finish_export's filters and writers.
+
+    The dark-occluder filter is on unless dark_occluder is False;
+    dark_occluder_params overrides its thresholds (see DARK_OCCLUDER_DEFAULTS)."""
     import cumuli_core_path  # noqa: F401
     from cumuli_core.ply import read_sogst_ply
 
@@ -553,12 +590,16 @@ def convert_from_ply(ply_path, out_path, time_min, time_max, fps, prune_threshol
     if mask_filter_root:
         mask_keep = mask_consistency_keep(mask_filter_root, xyz, velocity, t_center,
                                           t_sigma, opacity_logit,
-                                          outside_frac=mask_filter_outside_frac)
+                                          outside_frac=mask_filter_outside_frac,
+                                          accel=accel,
+                                          time_stride=mask_filter_time_stride,
+                                          downscale=mask_filter_downscale)
 
     finish_export(out_path, time_min, time_max, fps, prune_threshold, None,
                   xyz, quat, log_scales, opacity_logit, f_dc, f_rest,
                   velocity, t_center, t_sigma, keep_main_cluster=keep_main_cluster,
-                  filter_dark_occluders=True,
+                  filter_dark_occluders=dark_occluder,
+                  dark_occluder_params=dark_occluder_params,
                   filter_black_floaters=filter_black_floaters,
                   extra_keep_mask=mask_keep, accel=accel)
 
@@ -616,10 +657,31 @@ if __name__ == '__main__':
     parser.add_argument('--mask_filter_outside_frac', type=float, default=0.5,
                         help='Drop a Gaussian when it lands outside the mask in more than this '
                              'fraction of the tests that resolve it (default 0.5)')
+    parser.add_argument('--mask_filter_time_stride', type=int, default=4,
+                        help='Test every Nth timestamp (default 4). A splat whose lifetime falls '
+                             'between the sampled times is never tested and is kept, so short-lived '
+                             'splats escape the filter; use 1 to test every timestamp')
+    parser.add_argument('--mask_filter_downscale', type=int, default=4,
+                        help='Shrink the masks by this factor before testing (default 4)')
     parser.add_argument('--filter_black_floaters', action='store_true',
                         help='Drop a detached near-black floater cloud around a masked subject '
                              '(deeply-negative mean colour, or dark + low-alpha / spike-elongated) '
                              'while keeping legitimate dark material. Off by default.')
+    parser.add_argument('--no_dark_occluder_filter', action='store_true',
+                        help='Turn off the dark-occluder filter, which otherwise drops oversized, '
+                             'near-black, opaque splats as "shadow-fillers". It can remove real '
+                             'surface on subjects with large dark regions such as black hair or '
+                             'dark clothing.')
+    parser.add_argument('--dark_occluder_brightness', type=float, default=None,
+                        help='Dark-occluder filter: a splat counts as dark when its mean colour is '
+                             f"below this, 0-1 (default {DARK_OCCLUDER_DEFAULTS['brightness_thresh']})")
+    parser.add_argument('--dark_occluder_opacity', type=float, default=None,
+                        help='Dark-occluder filter: a splat counts as opaque when its opacity is '
+                             f"above this, 0-1 (default {DARK_OCCLUDER_DEFAULTS['opacity_thresh']})")
+    parser.add_argument('--dark_occluder_size_percentile', type=float, default=None,
+                        help="Dark-occluder filter: a splat counts as oversized when its largest "
+                             "axis exceeds this percentile of all splats' largest axes, 0-100 "
+                             f"(default {DARK_OCCLUDER_DEFAULTS['size_percentile']:g})")
     parser.add_argument('--shn_count', type=int, default=65536,
                         help='--output only: VQ centroid count for higher-order SH (default: 65536)')
     parser.add_argument('--webp_method', type=int, default=4, choices=range(7),
@@ -627,6 +689,11 @@ if __name__ == '__main__':
     parser.add_argument('--segment_duration', type=float, default=0.1,
                         help='--output only: temporal segment length in seconds for per-segment '
                              'culling (default: 0.1, 0 disables segmentation)')
+    for group in ('means', 'motion', 'accel'):
+        parser.add_argument(f'--{group}_drop_bits', type=int, default=0, choices=range(9),
+                            help=f'--output only: low bits to drop from the 16-bit {group} '
+                                 'planes (default: 0). Encoder-side precision; the decode is '
+                                 'unchanged (docs/sogst-format.md section 2.2.1)')
     parser.add_argument('--emit_ply', type=str, default=None,
                         help='Write the 4D interchange PLY to this path: the per-splat '
                              'spacetime data an external encoder packs '
@@ -646,7 +713,10 @@ if __name__ == '__main__':
                  '(the interchange PLY), or both')
     if args.output:
         SOGST_EXPORT_OPTIONS = {'shn_count': args.shn_count, 'webp_method': args.webp_method,
-                                'segment_duration': args.segment_duration}
+                                'segment_duration': args.segment_duration,
+                                'drop_bits': {'means': args.means_drop_bits,
+                                              'motion': args.motion_drop_bits,
+                                              'accel': args.accel_drop_bits}}
     if args.no_sh:
         if args.sh_degree not in (None, 0):
             sys.exit(f'--no_sh contradicts --sh_degree {args.sh_degree}')
@@ -659,6 +729,17 @@ if __name__ == '__main__':
         sys.exit('--smooth_px needs --mask_filter_root (the dataset with the training cameras)')
     if not (0.0 < args.top_k_fraction <= 1.0):
         sys.exit('--top_k_fraction must be in (0.0, 1.0]')
+    dark_params = {name: value for name, value in (
+        ('brightness_thresh', args.dark_occluder_brightness),
+        ('opacity_thresh', args.dark_occluder_opacity),
+        ('size_percentile', args.dark_occluder_size_percentile)) if value is not None}
+    if args.no_dark_occluder_filter and dark_params:
+        sys.exit('--dark_occluder_* has no effect with --no_dark_occluder_filter')
+    for flag, name, high in (('--dark_occluder_brightness', 'brightness_thresh', 1.0),
+                             ('--dark_occluder_opacity', 'opacity_thresh', 1.0),
+                             ('--dark_occluder_size_percentile', 'size_percentile', 100.0)):
+        if name in dark_params and not (0.0 <= dark_params[name] <= high):
+            sys.exit(f'{flag} must be in [0, {high:g}]')
 
     import cumuli_core_path  # noqa: F401
     from cumuli_core.ply import read_sogst_ply
@@ -670,4 +751,8 @@ if __name__ == '__main__':
                      smooth_frames=args.smooth_frames, top_k_fraction=args.top_k_fraction,
                      filter_black_floaters=args.filter_black_floaters,
                      mask_filter_root=args.mask_filter_root,
-                     mask_filter_outside_frac=args.mask_filter_outside_frac)
+                     mask_filter_outside_frac=args.mask_filter_outside_frac,
+                     mask_filter_time_stride=args.mask_filter_time_stride,
+                     mask_filter_downscale=args.mask_filter_downscale,
+                     dark_occluder=not args.no_dark_occluder_filter,
+                     dark_occluder_params=dark_params or None)

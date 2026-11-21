@@ -195,3 +195,78 @@ def test_a_rebuild_clears_scored_views_from_an_earlier_build(tmp_path, monkeypat
 
     assert not (out / "eval_gt_flat").exists()
     assert not (out / "evalcams").exists()
+
+
+def test_timing_json_puts_each_cameras_offset_on_its_real_views(tmp_path, monkeypatch):
+    """Sub-frame capture offsets ride along as time_offset; the nominal time,
+    which groups the views of one instant, does not move, and the synthetic
+    eval ring (never filmed) gets none."""
+    train = tmp_path / "flipbook_src"
+    evals = tmp_path / "eval_src"
+    out = tmp_path / "dataset"
+    write_flipbook(train, ["00", "01", "02"], 2)
+    write_flipbook(evals, ["e00"], 2)
+    timing = tmp_path / "capture_timing.json"
+    timing.write_text(json.dumps({"cameras": {"00": {"offset_s": 0.0}, "01": {"offset_s": 0.0042},
+                                              "02": {"offset_s": -0.0031}, "e00": {"offset_s": 0.5}}}))
+
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py",
+        "--flipbook_root", str(train), "--eval_root", str(evals), "--timing_json", str(timing),
+        "--out", str(out), "--fps", "24", "--downscale", "1",
+        "--hull_min_views", "1", "--jobs", "2", "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+
+    train_json = json.loads((out / "transforms_train.json").read_text())
+    by_label = {}
+    for f in train_json["frames"]:
+        by_label.setdefault(f["camera_label"], []).append(f)
+    assert all("time_offset" not in f for f in by_label["00"])  # a zero offset is left out
+    assert [f["time_offset"] for f in by_label["01"]] == [0.0042, 0.0042]
+    assert [f["time_offset"] for f in by_label["02"]] == [-0.0031, -0.0031]
+    assert sorted({f["time"] for f in train_json["frames"]}) == [0.0, 1 / 24]
+    test_json = json.loads((out / "transforms_test.json").read_text())
+    assert all("time_offset" not in f for f in test_json["frames"])
+
+
+def test_frame_weights_reach_the_training_views_of_their_frames_through_window_links(tmp_path, monkeypatch):
+    clip = tmp_path / "clip"
+    write_flipbook(clip, ["00", "01"], 4)
+    window = tmp_path / "win"
+    window.mkdir()
+    for i, source in enumerate((2, 3)):  # a window of the clip's last two frames, linked as frame_0000, frame_0001
+        (window / f"frame_{i:04d}").symlink_to(clip / f"frame_{source:04d}")
+    weights = tmp_path / "motion.json"
+    weights.write_text(json.dumps({"frames": {"frame_0002": {"weight": 1.0}, "frame_0003": {"weight": 2.5}}}))
+    out = tmp_path / "dataset"
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py", "--flipbook_root", str(window), "--frame_weights", str(weights),
+        "--test_cameras", "01", "--out", str(out), "--fps", "24", "--downscale", "1", "--hull_min_views", "1",
+        "--jobs", "2", "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+    train = json.loads((out / "transforms_train.json").read_text())["frames"]
+    by_time = {round(f["time"] * 24): f.get("visit_weight") for f in train}
+    assert by_time == {0: None, 1: 2.5}  # window frame 1 is the clip's frame_0003
+    test = json.loads((out / "transforms_test.json").read_text())["frames"]
+    assert all("visit_weight" not in f for f in test)
+
+
+def test_timing_json_carries_each_cameras_rolling_shutter(tmp_path, monkeypatch):
+    train = tmp_path / "flipbook_src"
+    out = tmp_path / "dataset"
+    write_flipbook(train, ["00", "01"], 2)
+    raw = {"model": "OPENCV_FISHEYE", "K": [[700, 0, 4], [0, 700, 3], [0, 0, 1]], "dist": [0.04, 0.05, -0.04, 0.01], "w": 8, "h": 6}
+    timing = tmp_path / "capture_timing.json"
+    timing.write_text(json.dumps({"cameras": {"00": {"offset_s": 0.0, "readout_s": 0.015, "raw_camera": raw},
+                                              "01": {"offset_s": 0.002, "readout_s": 0.0, "raw_camera": raw}}}))
+    run_builder(monkeypatch, [
+        "build_flipbook_4dgs_dataset.py", "--flipbook_root", str(train), "--timing_json", str(timing),
+        "--out", str(out), "--fps", "24", "--downscale", "1", "--hull_min_views", "1", "--jobs", "2",
+        "--init_bbox=-1,-1,-1,1,1,1",
+    ])
+    frames = json.loads((out / "transforms_train.json").read_text())["frames"]
+    zero = [f for f in frames if f["camera_label"] == "00"]
+    one = [f for f in frames if f["camera_label"] == "01"]
+    assert all(f["readout_s"] == 0.015 and f["raw_camera"] == raw for f in zero)
+    assert all("readout_s" not in f and "raw_camera" not in f for f in one)  # a zero readout is a global shutter
+    assert all(f["time_offset"] == 0.002 for f in one)

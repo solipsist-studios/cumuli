@@ -97,12 +97,20 @@ def split16_tolerance(meta, group, axis, values):
         return None
     mins = np.asarray(meta[group]['mins'], dtype=np.float64)
     maxs = np.asarray(meta[group]['maxs'], dtype=np.float64)
-    step = (maxs[axis] - mins[axis]) / 65535.0
+    # An encoder that coarsened the grid records it (spec section 2.2): the
+    # step is then 2**b integers wide.
+    step = (maxs[axis] - mins[axis]) / 65535.0 * (1 << dropped_bits(meta, group, axis))
     # The float32 PLY -> float64 meta -> log/exp round trip costs a few ulp,
     # and a constant-valued axis has mins == maxs and therefore a step of
     # exactly zero. Without this floor such an axis can never pass.
     epsilon = 1e-6 * np.abs(values) + 1e-9
     return step * (1.0 + np.abs(values)) + epsilon    # exp(|T|) == 1 + |value|
+
+
+def dropped_bits(meta, group, axis):
+    """Low bits the encoder dropped on one split-plane axis (0 if unrecorded)."""
+    bits = ((meta or {}).get(group) or {}).get('drop_bits')
+    return int(bits[axis]) if bits else 0
 
 
 def codebook_tolerance(meta, path):
@@ -300,7 +308,13 @@ def canonical_keys(fields, meta):
             maxs = float(np.asarray(params['maxs'])[axis])
             span = (maxs - mins) if maxs > mins else 1.0
             t = np.sign(values) * np.log1p(np.abs(values))
-            keys.append(np.clip(np.rint((t - mins) / span * 65535.0), 0, 65535))
+            q = np.clip(np.rint((t - mins) / span * 65535.0), 0, 65535)
+            # On a coarsened grid, key on the coarse integers the archive
+            # holds, so an unquantized PLY lands on the same keys.
+            step = 1 << dropped_bits(meta, group, axis)
+            if step > 1:
+                q = np.minimum(np.rint(q / step) * step, (65535 // step) * step)
+            keys.append(q)
     return keys
 
 

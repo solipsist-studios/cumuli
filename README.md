@@ -8,9 +8,7 @@ Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio
 Multi-camera capture -> gaussian splat pipeline: sync GoPro footage,
 estimate camera poses (HLOC), predict human keypoints (Sapiens), and
 train a 4D gaussian splat on the real cameras, baked to a streamable
-`.sogst` asset. A Diffuman4D dense-ring
-branch (hallucinating a full 48-camera view ring) is planned but not
-part of this build yet.
+`.sogst` asset.
 
 See [docs/pipeline.md](docs/pipeline.md) for the full walkthrough with
 example commands, stage by stage, and the unified orchestrator that runs
@@ -27,7 +25,8 @@ that runs automatically on every PR.
 scripts/   pipeline scripts, plus run_unified_pipeline.py (the
            recommended single-command entry point) and
            render_frame_sequence.py for multi-frame playback once you
-           have posed cameras
+           have posed cameras. scripts/vendor/ holds third-party code
+           under its own license (see Third-party model licenses)
 deps/      git submodules for the external tools each stage wraps
 configs/   per-rig JSON configs for run_unified_pipeline.py's --config flag
            (SAPIENS_CHECKPOINT_ROOT, HLOC settings), see
@@ -62,9 +61,6 @@ git submodule update --init --recursive
 ```
 
 - `deps/camera-calibration` -- per-camera undistortion (offline_undistort.py)
-- `deps/BiRefNet` -- background removal model (invoked via Diffuman4D's own wrapper script)
-- `deps/sapiens` -- 2D keypoint prediction model (invoked via Diffuman4D's own wrapper script)
-- `deps/Diffuman4D` -- preprocessing scripts (masks, keypoints, triangulation) used by the direct branch today. It also has the diffusion inference model for the 48-camera ring, planned but not wired into this build yet
 - `deps/cumuli-trainer` -- the 4D gaussian splat trainer behind the `train4d` stage (Solipsist, private)
 - `deps/cumuli-core` -- shared 4D library: interchange PLY, `.sogst` decoding, cameras, gsplat rendering, metrics (Solipsist, private)
 
@@ -111,51 +107,6 @@ python3 scripts/extract_synced_frames.py <movies_dir> <sync_offsets.json> <out_d
 
 Continue through `docs/pipeline.md` for the rest of the pipeline.
 
-## How compressed 4DGS methods compare
-
-Published results on the DyNeRF / Neural 3D Video benchmark (6 scenes,
-1352x1014, camera 0 held out), the standard everyone reports on. All
-numbers come from the cited papers, not from our runs. Read the
-footnotes before comparing across rows: the field does not agree on
-SSIM or LPIPS variants, and per-frame sizes must be multiplied by the
-~300-frame sequence length to compare against total-model sizes.
-
-| Method | Source | PSNR (dB) | LPIPS | Size | FPS |
-|---|---|---|---|---|---|
-| Real-Time (rotor) 4DGS | [arXiv 2310.10642](https://arxiv.org/abs/2310.10642) | 32.01 | 0.055 (Alex) | ~2 GB | 114 |
-| SpacetimeGaussians | [arXiv 2312.16812](https://arxiv.org/abs/2312.16812) | 32.05 | 0.044 (Alex) | 200 MB | 140 |
-| 4DGaussians | [arXiv 2310.08528](https://arxiv.org/abs/2310.08528) | 31.15 | 0.049 | 90 MB | 30 |
-| E-D3DGS | [arXiv 2404.03613](https://arxiv.org/abs/2404.03613) | 31.31 | 0.037 | 35 MB | 75 |
-| MEGA | [arXiv 2410.13613](https://arxiv.org/abs/2410.13613) | 31.49 | 0.057 (Alex) | 25 MB | 77 |
-| 4DGS-1K | [arXiv 2503.16422](https://arxiv.org/abs/2503.16422) | 31.88 | 0.052 | 418 MB | 805 |
-| Light4GS [^lg] | [arXiv 2503.13948](https://arxiv.org/abs/2503.13948) | 31.5-31.7 | 0.053-0.064 | 3.8-5.5 MB | 37-40 |
-| OMG4 (L to T) | [arXiv 2510.03857](https://arxiv.org/abs/2510.03857) | 31.99-31.47 | 0.056-0.067 | 5.75-2.09 MB | 202-275 |
-| QUEEN-l [^pf] | [arXiv 2412.04469](https://arxiv.org/abs/2412.04469) | 32.19 | 0.136 (VGG) | 0.75 MB/frame | 248 |
-| 3DGStream [^pf] | [arXiv 2403.01444](https://arxiv.org/abs/2403.01444) | 31.67 | - | 7.6 MB/frame | 215 |
-| HiCoM [^pf] | [arXiv 2411.07541](https://arxiv.org/abs/2411.07541) | 31.17 | - | 0.7-0.9 MB/frame | 274 |
-
-[^lg]: Light4GS reports its N3V average WITHOUT coffee_martini, the
-hardest scene. Averages with and without it differ by ~0.7 dB
-(SpacetimeGaussians reports both: 32.05 with, 32.74 without), so this
-row reads higher than a like-for-like average would.
-[^pf]: Streamable / online methods report per-frame sizes. Multiply by
-~300 frames for the sequence total before comparing with the
-total-model rows.
-
-Caveats that make cross-row comparison approximate: LPIPS backbones
-are mixed (AlexNet values sit in the 0.04-0.07 range, VGG values in the
-0.13-0.25 range, and several papers do not state which they used), and
-"SSIM" spans three protocols (plain SSIM, D-SSIM, and two DSSIM data
-ranges), so we omit the SSIM column entirely. TSOG
-([arXiv 2607.28049](https://arxiv.org/abs/2607.28049)), the closest
-published analog to the `.sogst` container itself, reports only quality
-deltas against its input representation (-0.4 to +0.9 dB at >90% size
-reduction), not absolute benchmark metrics.
-
-This repo's own trainer (cumuli-trainer) has not been scored on this
-benchmark yet. Measurements of the earlier OMG4-based training path are
-in git history.
-
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
@@ -200,8 +151,8 @@ to noncommercial research by Magic Leap.
 
 Note that the external tools this pipeline wraps are **not**
 covered by the PolyForm license: you obtain each of them directly from its
-own project under its own terms. Two of them restrict commercial use,
-and neither restriction is lifted by buying a commercial license to
+own project under its own terms. One of them restricts commercial use,
+and that restriction is not lifted by buying a commercial license to
 this pipeline:
 
 - **SuperPoint** -- the default HLOC feature type
@@ -213,11 +164,11 @@ this pipeline:
   repository-level Apache-2.0 label does not relicense it. Use
   `--feature_type aliked` (ALIKED, BSD-3-Clause, paired with LightGlue,
   Apache-2.0) for a fully permissive feature/matcher stack.
-- **Sapiens (legacy path)** -- `deps/sapiens` and
-  `--model coco_wholebody133` are CC BY-NC 4.0, non-commercial only.
 
-The default keypoint path (`--model goliath308`) uses **Sapiens2**,
-which is under Meta's own Sapiens2 License rather than CC BY-NC. That
+The keypoint stage uses **Sapiens2**, which is under Meta's own Sapiens2
+License. Two Sapiens2 demo files, modified, ship
+in this repository under `scripts/vendor/sapiens2/` with a copy of that
+license; they are not covered by the PolyForm license. That
 agreement *does* permit commercial use, but it carries an acceptable-use
 list that prohibits, among other things, surveillance, **biometric
 processing**, deepfakes and impersonation, and inferring sensitive
@@ -235,6 +186,17 @@ this repository, and the shared library `deps/cumuli-core` is too. Both
 render through gsplat, which is Apache-2.0.
 
 Everything else wrapped by the pipeline (BiRefNet:
-MIT code and weights, Diffuman4D: Apache-2.0, camera-calibration: MIT,
-HLOC: Apache-2.0, LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP:
-BSD-3) is permissively licensed.
+MIT code and weights, camera-calibration: MIT, HLOC: Apache-2.0,
+LightGlue: Apache-2.0, ALIKED: BSD-3-Clause, COLMAP: BSD-3) is
+permissively licensed. The mask and triangulation scripts contain code
+ported from Diffuman4D (Apache-2.0); `scripts/vendor/diffuman4d/`
+carries its license and the attribution notice.
+
+Design references: `refine_sync_visual.py` is adapted from Open4DGS-Core
+(MIT, https://open4dgs.asunemlabs.com), and its header carries that notice. The
+sub-frame timing conventions and the blur-and-shift measure in `eval_render.py`
+were informed by the documentation and a few source excerpts of Open4DGS-Core
+and Open4DGS-Trigs (AGPL-3.0, https://github.com/ASU-NEM-Labs/open4dgs-trigs);
+no Trigs code is included. `frame_motion.py` uses OpenCV's DIS optical flow
+(Kroeger, Timofte, Dai and Van Gool, "Fast Optical Flow using Dense Inverse
+Search", ECCV 2016).

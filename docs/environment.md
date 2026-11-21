@@ -11,17 +11,19 @@ has actually been tested against. Provision it with
 `bash scripts/setup_cumuli_env.sh`, NOT `conda env create` alone:
 `environment.yml` is the package manifest, and the script adds the
 installs a yml cannot express (an editable, submodule-recursive hloc
-checkout, easyvolcap `--no-deps`, and the cumuli-core and cumuli-trainer
-packages editable from `deps/`). On a GPU machine it also triggers
+checkout, and the cumuli-core and cumuli-trainer packages editable from
+`deps/`). On a GPU machine it also triggers
 gsplat's one-time CUDA JIT build, then verifies every import.
 
 ## Requirements
 
 - Linux, NVIDIA GPU with recent drivers (tested on Pop!_OS 24.04 /
-  Ubuntu Noble, driver 580.x). CPU-only or non-NVIDIA GPUs are not
-  supported: HLOC, Sapiens, and Diffuman4D all require CUDA.
+  Ubuntu Noble, driver 580.x). Non-NVIDIA GPUs are not supported.
+  Production runs of HLOC, Sapiens and BiRefNet assume CUDA; the CPU
+  path below exists for CI.
   Comfortably tested on a single RTX 4090 (24GB VRAM). Smaller cards
-  may need reduced `--hloc_max_keypoints` or Diffuman4D batch settings.
+  may need reduced `--hloc_max_keypoints` or `generate_masks.py
+  --batch_size`.
 - No system-wide CUDA toolkit install is required. The env pulls its
   own CUDA runtime via the `torch`/`torchvision` wheel (`+cuXXX` build
   tag). Do not rely on a system `nvcc`.
@@ -47,7 +49,7 @@ LPIPS identical to 4 decimals):
   mask-generation run, not only an import)
 - numpy 2.4.6, scipy 1.17.1, Pillow 12.2.0, opencv-python 4.13.0.92
 - pycolmap 4.0.4, hloc @c13273b (editable, --no-deps, submodules),
-  lightglue @eb42fee, sapiens @7e5bae8, easyvolcap @4cb3c00 (--no-deps)
+  lightglue @eb42fee, sapiens @7e5bae8
 - gsplat 1.5.3, torchmetrics, lpips, open3d 0.19.0
 - cumuli-core and cumuli-trainer (editable from `deps/`, `--no-deps`).
   These replaced the OMG4 trainer after the 2026-08-20 run.
@@ -68,7 +70,8 @@ CI uses.
 Sapiens checkpoints are separate from the env: set
 `SAPIENS_CHECKPOINT_ROOT` (or `--sapiens_checkpoint_root`) to a
 directory holding `detector/` (facebook/detr-resnet-101-dc5 snapshot)
-and `pose/sapiens2_<size>_pose.safetensors`.
+and `pose/sapiens2_<size>_pose.safetensors`. `predict_keypoints_2d.py`
+downloads either one into that directory when it is missing.
 
 ## cumuli-core
 
@@ -125,6 +128,13 @@ wrapper) live directly in `scripts/`. No external checkout is needed.
 Pass `--multiframe_sfm_script` / `--refine_script` only if you want to
 point at a different copy (for example while testing local changes to
 them).
+
+The mask, keypoint and triangulation stages need no external checkout
+either. `birefnet_masks.py` and `triangulate_and_project_keypoints.py`
+contain code ported from Diffuman4D (Apache-2.0, attribution in
+`scripts/vendor/diffuman4d/`), and `scripts/vendor/sapiens2/` holds the
+modified Sapiens2 pose demo `predict_keypoints_2d.py` runs, under the
+Sapiens2 License.
 
 ## Calibration data
 

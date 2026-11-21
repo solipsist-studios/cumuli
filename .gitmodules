@@ -1,18 +1,12 @@
-[submodule "deps/Diffuman4D"]
-	path = deps/Diffuman4D
-	url = https://github.com/solipsist-studios/Diffuman4D
-[submodule "deps/BiRefNet"]
-	path = deps/BiRefNet
-	url = https://github.com/ZhengPeng7/BiRefNet
-[submodule "deps/sapiens"]
-	path = deps/sapiens
-	url = https://github.com/facebookresearch/sapiens
 [submodule "deps/camera-calibration"]
 	path = deps/camera-calibration
 	url = https://github.com/solipsist-studios/camera-calibration
+	branch = main
 [submodule "deps/cumuli-core"]
 	path = deps/cumuli-core
 	url = https://github.com/solipsist-studios/cumuli-core.git
+	branch = main
 [submodule "deps/cumuli-trainer"]
 	path = deps/cumuli-trainer
 	url = https://github.com/solipsist-studios/cumuli-trainer.git
+	branch = main

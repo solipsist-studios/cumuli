@@ -60,13 +60,12 @@ jobs:
           submodules: false
 
       - name: Fetch the pipeline submodules
-        # The capture pipeline's submodules, plus cumuli-core and
+        # camera-calibration (undistortion), plus cumuli-core and
         # cumuli-trainer: the CPU run never trains, but the setup script
         # installs both packages and its verify step imports them.
         run: |
           git submodule update --init \
-            deps/camera-calibration deps/Diffuman4D deps/BiRefNet \
-            deps/sapiens deps/cumuli-core deps/cumuli-trainer
+            deps/camera-calibration deps/cumuli-core deps/cumuli-trainer
 
       - name: Restore cached ffmpeg debs
         # The apt mirror stalled for hours on 2026-08-19 (two failed runs;
@@ -180,7 +179,7 @@ jobs:
           conda run -n cumuli python -c "import hloc, lightglue, pycolmap"
           conda run -n cumuli python -c "import torch, transformers, sapiens.pose"
           conda run -n cumuli python -c "import numpy, cv2, open3d, plyfile"
-          conda run -n cumuli python -c "import easyvolcap.utils.console_utils"
+          conda run -n cumuli python -c "import einops, timm, h5py, huggingface_hub"
 
       - name: Create the cumuli env (cache miss only)
         # One merged env replaces the old five (hloc/diffuman4d/sapiens2/
@@ -201,9 +200,9 @@ jobs:
           key: sapiens-checkpoints-${{ env.SAPIENS_CACHE_VERSION }}
 
       - name: Download Sapiens checkpoints (cache miss only)
-        # Same public repos predict_keypoints.py itself auto-downloads
+        # Same public repos predict_keypoints_2d.py itself auto-downloads
         # from when SAPIENS_CHECKPOINT_ROOT is missing a file (see
-        # deps/Diffuman4D/scripts/preprocess/predict_keypoints.py) --
+        # ensure_pose_checkpoint/ensure_detector there) --
         # fetched here as an explicit pre-flight step instead of relying
         # on that lazy path, because conftest.py's pipeline_prereqs
         # check requires the checkpoint directory to already exist
@@ -212,7 +211,7 @@ jobs:
         # (2026-07-31): this step used to pre-fetch the unused 1b
         # checkpoint (~4GB) while CPU mode (see CPU_SAPIENS_MODEL_SIZE in
         # test_pipeline_end_to_end.py) actually needs 0.4b, which then
-        # fell back to predict_keypoints.py's own lazy auto-download --
+        # fell back to the keypoint script's own lazy auto-download --
         # through the slower/wasteful global HF cache path this same
         # step's own local_dir= approach exists specifically to avoid
         # (see the comment below) -- and ran the already-tight disk

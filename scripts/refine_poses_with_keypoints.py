@@ -198,6 +198,8 @@ def parse_args():
                         help='Observations with initial reprojection error above this are dropped (sync glitches).')
     parser.add_argument('--max_iters', type=int, default=100)
     parser.add_argument('--report_only', action='store_true', help='Only report residuals, do not optimize.')
+    parser.add_argument('--report_json', default=None,
+                        help='Also write the residual summary (before/after, per camera) to this JSON file.')
     parser.add_argument('--face_weight', type=float, default=1.0,
                         help='Extra weight multiplier applied to face/head keypoint observations '
                              '(goliath308 ids 0-4 and 69-307: nose/eyes/ears coarse, plus neck, '
@@ -226,7 +228,7 @@ def triangulate_candidate_points(cams, cam_labels, cam_index, observations, scor
     return points
 
 
-def report_residuals(rvecs, tvecs, pts, obs_points, Ks_all, cam_labels, tag):
+def report_residuals(rvecs, tvecs, pts, obs_points, Ks_all, cam_labels, tag, collect=None):
     """pts supplies the 3D positions (list of {'xyz': ...} or raw arrays); obs_points supplies the
     per-point observation table (same length/order as pts -- may be the same list as pts)."""
     errs_by_cam = defaultdict(list)
@@ -248,6 +250,13 @@ def report_residuals(rvecs, tvecs, pts, obs_points, Ks_all, cam_labels, tag):
     for cam_idx in sorted(errs_by_cam):
         e = np.array(errs_by_cam[cam_idx])
         print(f'    {cam_labels[cam_idx]}: median {np.median(e):7.2f}px  n={len(e)}')
+    if collect is not None:
+        collect[tag.strip().lower()] = {
+            'median_px': float(np.median(all_errs)), 'mean_px': float(all_errs.mean()),
+            'p90_px': float(np.percentile(all_errs, 90)), 'n': int(len(all_errs)),
+            'per_camera': {cam_labels[i]: {'median_px': float(np.median(errs_by_cam[i])),
+                                           'n': len(errs_by_cam[i])} for i in sorted(errs_by_cam)},
+        }
     return all_errs
 
 
@@ -409,9 +418,16 @@ def main():
     tvecs0 = np.array([cams[label]['w2c'][:3, 3] for label in cam_labels])
 
     print('\nInitial reprojection residuals (subject keypoints):')
-    init_errs = report_residuals(rvecs0, tvecs0, points, points, Ks_all, cam_labels, 'BEFORE')
+    report = {}
+    init_errs = report_residuals(rvecs0, tvecs0, points, points, Ks_all, cam_labels, 'BEFORE', report)
+
+    def write_report():
+        if args.report_json:
+            Path(args.report_json).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.report_json).write_text(json.dumps(report, indent=2))
 
     if args.report_only:
+        write_report()
         return
 
     points, n_dropped = drop_outliers(points, rvecs0, tvecs0, Ks_all, args.outlier_px, args.min_views)
@@ -433,7 +449,8 @@ def main():
 
     print('\nRefined reprojection residuals:')
     pts_report = [{'xyz': pts_aligned[i], 'obs': points[i]['obs']} for i in range(n_pts)]
-    final_errs = report_residuals(rv1, tv1, pts_report, points, Ks_all, cam_labels, 'AFTER ')
+    final_errs = report_residuals(rv1, tv1, pts_report, points, Ks_all, cam_labels, 'AFTER ', report)
+    write_report()
     print(f'\nMedian residual: {np.median(init_errs):.2f}px -> {np.median(final_errs):.2f}px')
 
     write_refined_transforms(data, cams, cam_labels, cam_index, rv1, tv1, args.out_transforms)

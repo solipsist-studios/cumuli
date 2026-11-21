@@ -26,8 +26,8 @@ Cleanup per camera:
   3. NO dilation, ever: dilated alpha supervision teaches a white
      background fringe at the silhouette.
 
-conda env: none for the filtering; diffuman4d when --retry is used
-(it invokes deps/Diffuman4D/scripts/preprocess/remove_background.py).
+conda env: none for the filtering; cumuli when --retry is used
+(it runs birefnet_masks.py in a subprocess).
 
 Usage:
     python3 clean_masks.py \\
@@ -55,8 +55,7 @@ from scipy import ndimage
 
 from image_formats import SUPPORTED_IMAGE_EXTS
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-REMOVE_BG_SCRIPT = REPO_ROOT / "deps" / "Diffuman4D" / "scripts" / "preprocess" / "remove_background.py"
+REMOVE_BG_SCRIPT = Path(__file__).resolve().parent / "birefnet_masks.py"
 
 MASK_FOREGROUND_THRESHOLD = 127  # 8-bit grayscale mask: values above this count as foreground
 MASK_WRITE_VALUE = 255           # 8-bit grayscale value written for foreground pixels
@@ -78,9 +77,12 @@ def find_keypoints_json(kp2d_dir: Path, cam: str):
 def load_keypoints(json_path: Path, score_thr: float):
     with open(json_path) as f:
         data = json.load(f)
-    inst = data["instance_info"][0]
-    kpts = np.asarray(inst["keypoints"], dtype=np.float64)
-    scores = np.asarray(inst["keypoint_scores"], dtype=np.float64)
+    # Every instance counts: with several subjects (see associate_subjects.py) a mask
+    # component is kept when any subject's keypoints hit it.
+    if not data["instance_info"]:
+        raise IndexError("instance_info is empty")  # callers fall back to the raw mask
+    kpts = np.concatenate([np.asarray(i["keypoints"], dtype=np.float64).reshape(-1, 2) for i in data["instance_info"]])
+    scores = np.concatenate([np.asarray(i["keypoint_scores"], dtype=np.float64).ravel() for i in data["instance_info"]])
     return kpts[scores >= score_thr]
 
 
@@ -119,9 +121,6 @@ def keypoint_crop_box(kpts: np.ndarray, w: int, h: int, margin: float):
 
 def run_birefnet_on_crops(crops: dict, image_ext: str):
     """crops: {cam: (image_path, box)}. Returns {cam: (crop_mask_array, box)}."""
-    if not REMOVE_BG_SCRIPT.is_file():
-        print(f"Error: {REMOVE_BG_SCRIPT} not found -- is the Diffuman4D submodule checked out?")
-        sys.exit(1)
     out = {}
     with tempfile.TemporaryDirectory() as tmp:
         crops_dir = Path(tmp) / "crops"
@@ -135,7 +134,7 @@ def run_birefnet_on_crops(crops: dict, image_ext: str):
         cmd = [sys.executable, str(REMOVE_BG_SCRIPT), str(crops_dir), str(masks_dir),
                "--image_ext", image_ext]
         print("  Running BiRefNet retry on keypoint-guided crops:", " ".join(cmd))
-        result = subprocess.run(cmd, cwd=str(REPO_ROOT / "deps" / "Diffuman4D"))
+        result = subprocess.run(cmd)
         if result.returncode != 0:
             print("  ERROR: BiRefNet retry failed; continuing with original masks.")
             return {}
@@ -157,7 +156,7 @@ def main():
     parser.add_argument("--out_dir", required=True, type=Path)
     parser.add_argument("--images_dir", type=Path, default=None, help="Original images (needed for --retry)")
     parser.add_argument("--retry", action="store_true",
-                        help="Re-run BiRefNet on a keypoint-guided crop for low-coverage cameras (diffuman4d env)")
+                        help="Re-run BiRefNet on a keypoint-guided crop for low-coverage cameras (cumuli env)")
     parser.add_argument("--score_thr", type=float, default=0.5)
     parser.add_argument("--min_hits", type=int, default=1,
                         help="Keypoint hits required to keep a mask component (default 1)")

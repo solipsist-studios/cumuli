@@ -170,3 +170,25 @@ def test_written_cloud_stays_longer_than_the_trainer_budget(tmp_path, monkeypatc
     assert len(vertex) == 300_000 > 200_000
     assert set(["x", "y", "z", "red", "green", "blue", "time"]).issubset(
         vertex.data.dtype.names)
+
+
+def test_advance_follows_a_degree_2_trajectory():
+    """A window's seed sits where the model renders it at the handover, and a
+    degree-2 model does not render it on the straight line."""
+    fields = make_fields(n=200)
+    for name in ("y", "z"):
+        fields[name] = np.zeros(200, np.float32)
+    rng = np.random.default_rng(2)
+    fields["ax"] = rng.normal(0.0, 3.0, 200).astype(np.float32)
+    fields["ay"] = rng.normal(0.0, 3.0, 200).astype(np.float32)
+    fields["az"] = rng.normal(0.0, 3.0, 200).astype(np.float32)
+
+    t = 1.1
+    dt = t - fields["t_center"].astype(np.float64)
+    points = seeder.advance(fields, t)
+    np.testing.assert_allclose(
+        points[:, 0],
+        fields["x"].astype(np.float64) + fields["vx"].astype(np.float64) * dt
+        + fields["ax"].astype(np.float64) * dt * dt)
+    np.testing.assert_allclose(points[:, 1], fields["ay"].astype(np.float64) * dt * dt)
+    np.testing.assert_allclose(points[:, 2], fields["az"].astype(np.float64) * dt * dt)

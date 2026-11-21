@@ -7,16 +7,16 @@ build_flat_dataset.py
 
 Converts HLOC's output (transforms_multiframe.json + per-camera
 Camera_<id>/0000.<ext> folders from run_hloc.py) into the flat,
-sequentially-2-digit-labeled layout that Diffuman4D's own preprocessing
-scripts (remove_background.py, predict_keypoints.py) and the diffusion
-model itself expect.
+sequentially-2-digit-labeled layout every later stage expects
+(generate_masks.py, predict_keypoints_2d.py, the per-camera poses_2d
+folders and triangulate_and_project_keypoints.py).
 
-IMPORTANT: Diffuman4D's camera_parser.py looks cameras up in transforms.json
-by the literal `camera_label` string, and triangulate_skeleton.py's
---spa_labels/--spa_label_range args format labels as zero-padded 2-digit
-numbers ("00", "01", ... "47") -- matching its own DNA-Rendering
-convention. So camera_label must be a plain 2-digit index, NOT the raw
-"Camera_undistorted_0001" style label HLOC produces. This script is the
+IMPORTANT: the later stages look cameras up in transforms.json by the
+literal `camera_label` string and name per-camera folders and files after
+it, using zero-padded 2-digit numbers ("00", "01", ...), a convention
+inherited from Diffuman4D's DNA-Rendering tooling. So camera_label must be
+a plain 2-digit index, NOT the raw "Camera_undistorted_0001" style label
+HLOC produces. This script is the
 single place that mapping happens; every later stage inherits the 2-digit
 labels from here.
 
@@ -95,9 +95,9 @@ def main():
             continue
 
         # Label from a dense counter of cameras actually written, not the
-        # pre-filter loop index -- downstream Diffuman4D tools consume
-        # --spa_label_range as a contiguous "00".."NN" range, so a skipped
-        # camera must not leave a gap in the numbering.
+        # pre-filter loop index -- labels stay a contiguous "00".."NN"
+        # range (the convention inherited from Diffuman4D's tooling), so a
+        # skipped camera must not leave a gap in the numbering.
         new_label = f"{len(new_frames):02d}"
         dst_img = args.out_images_flat / f"{new_label}{args.out_image_ext}"
 

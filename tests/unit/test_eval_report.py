@@ -117,3 +117,59 @@ def test_camera_names_come_from_the_file_path_basename(tmp_path):
     cams = load_cameras(per_frame_transforms(tmp_path), downscale=1, every=1)
     assert cams[0]["name"] == "came00_frame_00001"
     assert cams[1]["name"] == "came01_frame_00001"
+
+
+def test_views_render_at_the_capture_time_unless_instant_is_asked_for():
+    from types import SimpleNamespace
+
+    from eval_render import view_time
+
+    cam = SimpleNamespace(time=0.5, capture_time=0.5042)
+    assert view_time(cam) == 0.5042
+    assert view_time(cam, "captured") == 0.5042
+    assert view_time(cam, "instant") == 0.5
+    # cumuli_core without sub-frame offsets: the nominal time either way
+    assert view_time(SimpleNamespace(time=0.25)) == 0.25
+
+
+def test_rolling_shutter_readout_applies_only_to_captured_views():
+    from types import SimpleNamespace
+
+    from eval_render import view_readout
+
+    cam = SimpleNamespace(time=0.5, capture_time=0.5042, readout_s=0.018)
+    assert view_readout(cam) == 0.018
+    assert view_readout(cam, "captured") == 0.018
+    assert view_readout(cam, "instant") == 0.0
+    # global shutter, and cumuli_core without readouts
+    assert view_readout(SimpleNamespace(time=0.5, readout_s=0.0)) == 0.0
+    assert view_readout(SimpleNamespace(time=0.5)) == 0.0
+
+
+def test_rolling_shutter_view_slices_each_splat_at_its_row_time():
+    """A splat in the top half of the picture is sliced before the capture time
+    and one in the bottom half after it, by readout x its row fraction; a global
+    shutter slices everything at the capture time."""
+    torch = pytest.importorskip("torch")
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cumuli_core.shutter")
+    from cumuli_core.cameras import Camera
+    from cumuli_core.spacetime import SpacetimeTensors
+
+    from eval_render import slice_view
+
+    # camera at the origin looking down +z, 100 x 100 px, fl 100: y = +-0.25 at
+    # depth 1 is row 25 / 75, row fraction -0.25 / +0.25
+    cam = Camera(name="c", image_path="c", w2c=np.eye(4), K=np.array([[100.0, 0, 50], [0, 100.0, 50], [0, 0, 1]]),
+                 width=100, height=100, time=0.0, readout_s=0.04)
+    n = 2
+    st = SpacetimeTensors(
+        xyz=torch.tensor([[0.0, -0.25, 1.0], [0.0, 0.25, 1.0]]), velocity=torch.tensor([[1.0, 0, 0]] * n),
+        accel=None, quats_wxyz=torch.tensor([[1.0, 0, 0, 0]] * n), log_scales=torch.zeros(n, 3),
+        opacity_logit=torch.zeros(n), t_center=torch.zeros(n), t_sigma=torch.ones(n), sh=torch.zeros(n, 1, 3))
+    w2c = torch.eye(4)
+    means, _ = slice_view(st, cam, 1.0, 0.04, w2c)
+    # x = v * t at t = 1 + 0.04 * (-0.25) and 1 + 0.04 * 0.25 (motion along x keeps the rows)
+    assert means[:, 0].tolist() == pytest.approx([0.99, 1.01], abs=1e-6)
+    means, _ = slice_view(st, cam, 1.0, 0.0, w2c)
+    assert means[:, 0].tolist() == pytest.approx([1.0, 1.0])

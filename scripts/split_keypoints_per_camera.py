@@ -11,7 +11,7 @@ to <out_kp2d_dir>/<images_dir_name>/<camera_label>.json (each in
 {"instance_info": [{"keypoints": ..., "keypoint_scores": ...}]} format,
 split there from vis_pose.py's single combined predictions file) into
 the poses_2d/<camera_label>/<tem_label>.json layout
-triangulate_skeleton.py expects.
+triangulate_and_project_keypoints.py expects.
 
 Usage:
     python3 split_keypoints_per_camera.py \\

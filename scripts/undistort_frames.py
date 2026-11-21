@@ -52,10 +52,10 @@ Output:
 """
 
 import argparse
+import os
 import pickle
-import subprocess
 import sys
-import tempfile
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -64,7 +64,12 @@ from PIL import Image
 from image_formats import SUPPORTED_IMAGE_EXTS
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-UNDISTORT_SCRIPT = REPO_ROOT / "deps" / "camera-calibration" / "offline_undistort.py"
+CALIBRATION_DIR = REPO_ROOT / "deps" / "camera-calibration"
+UNDISTORT_SCRIPT = CALIBRATION_DIR / "offline_undistort.py"
+
+# PNG compression level 1 (cv2's default is 3): several times faster to encode for a file only
+# slightly larger. The frames are intermediate files that later stages read straight back.
+PNG_COMPRESSION = 1
 
 SCALE_TOLERANCE = 0.02  # 2%: beyond this, image_size vs media disagreement is treated as a scaled-K bug
 
@@ -156,6 +161,12 @@ def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, a
     return calib, False
 
 
+def write_image(path: Path, img) -> bool:
+    import cv2
+    params = [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION] if Path(path).suffix.lower() == ".png" else []
+    return bool(cv2.imwrite(str(path), img, params))
+
+
 def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: str, out_path: Path):
     """One remap from the native (distorted) frame directly to the target pinhole geometry."""
     import cv2
@@ -182,9 +193,89 @@ def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: st
     else:
         map1, map2 = cv2.initUndistortRectifyMap(K, D, None, K_t, (t_w, t_h), cv2.CV_16SC2)
     out = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-    if not cv2.imwrite(str(out_path), out):
+    if not write_image(out_path, out):
         raise ValueError(f"could not write {out_path}")
     return (t_w, t_h), K_t
+
+
+def default_jobs() -> int:
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return max(1, os.cpu_count() or 1)
+
+
+def process_camera(job: dict):
+    """Undistort one camera. Returns (camera id, ok, log lines); runs in a worker process, so it prints nothing itself."""
+    cam_id, frame_path = job["cam_id"], Path(job["frame_path"])
+    log = []
+    calib_path = resolve_calib_path(job["calib_dir"], cam_id)
+    if not calib_path.is_file():
+        return cam_id, False, [f"  SKIP {cam_id}: no calibration file at {calib_path}"]
+    try:
+        with Image.open(frame_path) as im:
+            media_w, media_h = im.size
+    except OSError as e:
+        return cam_id, False, [f"  ERROR {cam_id}: could not read {frame_path}: {e}"]
+
+    try:
+        calib = load_pkl(calib_path)
+        calib, _ = validate_and_rescale(calib, media_w, media_h, cam_id, allow_rescale=not job["no_rescale"])
+    except Exception as e:
+        # Broad on purpose: a calibration file can fail in ways beyond validate_and_rescale's own
+        # ValueError (unreadable or truncated pickle, or one that is not the expected dict). Any of
+        # these must skip just this camera, not crash the whole batch.
+        return cam_id, False, [f"  ERROR {cam_id}: {e}"]
+
+    out_pkl_path = job["out_pkl_dir"] / f"Camera_{cam_id}.pkl"
+    out_path = job["out_dir"] / f"{cam_id}{job['image_ext']}"
+
+    if job["target_pkl_dir"] is not None:
+        target_path = resolve_calib_path(job["target_pkl_dir"], cam_id)
+        if not target_path.is_file():
+            return cam_id, False, [f"  SKIP {cam_id}: no target pkl at {target_path}"]
+        try:
+            target = load_pkl(target_path)
+            log.append(f"  Undistorting {cam_id} (single warp) ...")
+            (t_w, t_h), K_t = single_warp_undistort(frame_path, calib, target, job["model"], out_path)
+        except Exception as e:
+            return cam_id, False, log + [f"  ERROR {cam_id}: {e}"]
+        undistorted_calib = {
+            "camera_matrix": K_t,
+            "distortion_coefficients": np.zeros((1, 4), dtype=np.float64),
+            "rotation_vectors": None,
+            "translation_vectors": None,
+            "reprojection_error": None,
+            "image_size": (t_w, t_h),
+            "model": "OPENCV",
+        }
+        with open(out_pkl_path, "wb") as f:
+            pickle.dump(undistorted_calib, f)
+        return cam_id, True, log
+
+    # Default mode: the same work offline_undistort.py does for one image, called in-process so a
+    # camera costs no interpreter start-up. The model comes from the calibration file, as it does there.
+    import cv2
+    sys.path.insert(0, str(CALIBRATION_DIR))
+    import offline_undistort as ou
+
+    log.append(f"  Undistorting {cam_id} ...")
+    try:
+        mtx = np.asarray(calib["camera_matrix"], dtype=np.float64)
+        dist = np.asarray(calib["distortion_coefficients"], dtype=np.float64)
+        fisheye = ou.infer_model(calib.get("model"), dist) == "OPENCV_FISHEYE"
+        img = cv2.imread(str(frame_path), flags=cv2.IMREAD_COLOR + cv2.IMREAD_IGNORE_ORIENTATION)
+        if img is None:
+            raise ValueError(f"could not read {frame_path}")
+        undistorted = ou.undistort_image(img, mtx, dist, fisheye=fisheye)
+        if not write_image(out_path, undistorted):
+            raise ValueError(f"could not write {out_path}")
+        data = ou.build_undistorted_calibration_data(mtx, dist, (media_w, media_h), fisheye)
+        with open(out_pkl_path, "wb") as f:
+            pickle.dump(data, f)
+    except Exception as e:
+        return cam_id, False, log + [f"  ERROR undistorting {cam_id}:\n{e}"]
+    return cam_id, True, log
 
 
 def main():
@@ -201,6 +292,8 @@ def main():
                              "mode, mapping native fisheye frames directly to that geometry in one resample.")
     parser.add_argument("--no_rescale", action="store_true",
                         help="Reject (instead of auto-rescaling) calibrations whose image_size disagrees with the media.")
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="Cameras to undistort at once (default: one per CPU core). Each holds a full-size frame in memory.")
     args = parser.parse_args()
 
     if args.target_pkl_dir is None and not UNDISTORT_SCRIPT.is_file():
@@ -222,102 +315,24 @@ def main():
     mode = "single-warp (native -> target pinhole)" if args.target_pkl_dir else "offline_undistort.py wrapper"
     print(f"Found {len(frame_paths)} frames in {args.frames_dir} -- mode: {mode}")
 
+    jobs = [dict(cam_id=p.stem, frame_path=p, calib_dir=args.calib_dir, out_dir=args.out_dir, out_pkl_dir=args.out_pkl_dir,
+                 model=args.model, image_ext=args.image_ext, target_pkl_dir=args.target_pkl_dir, no_rescale=args.no_rescale)
+            for p in frame_paths]
+    workers = max(1, min(args.jobs or default_jobs(), len(jobs)))
+    print(f"Undistorting {len(jobs)} cameras with {workers} worker(s)")
     ok, failed = 0, []
-    with tempfile.TemporaryDirectory() as tmp:
-        for frame_path in frame_paths:
-            cam_id = frame_path.stem
-            calib_path = resolve_calib_path(args.calib_dir, cam_id)
-            if not calib_path.is_file():
-                print(f"  SKIP {cam_id}: no calibration file at {calib_path}")
-                failed.append(cam_id)
-                continue
-
-            try:
-                with Image.open(frame_path) as im:
-                    media_w, media_h = im.size
-            except OSError as e:
-                print(f"  ERROR {cam_id}: could not read {frame_path}: {e}")
-                failed.append(cam_id)
-                continue
-
-            try:
-                calib = load_pkl(calib_path)
-                calib, rescaled = validate_and_rescale(calib, media_w, media_h, cam_id,
-                                                       allow_rescale=not args.no_rescale)
-            except Exception as e:
-                # Broad on purpose, matching the single-warp branch's own
-                # per-camera catch below: a calibration file can fail in
-                # ways beyond validate_and_rescale's own ValueError --
-                # permission-denied or corrupted/truncated (OSError/
-                # pickle.PickleError/EOFError), or a pickle that loads fine
-                # but isn't the expected dict shape at all (TypeError/
-                # KeyError, e.g. a stray file from a different pipeline
-                # version). Any of these must skip just this camera, not
-                # crash the whole batch.
-                print(f"  ERROR {cam_id}: {e}")
-                failed.append(cam_id)
-                continue
-
-            out_pkl_path = args.out_pkl_dir / f"Camera_{cam_id}.pkl"
-
-            if args.target_pkl_dir is not None:
-                target_path = resolve_calib_path(args.target_pkl_dir, cam_id)
-                if not target_path.is_file():
-                    print(f"  SKIP {cam_id}: no target pkl at {target_path}")
-                    failed.append(cam_id)
-                    continue
-                try:
-                    target = load_pkl(target_path)
-                    out_path = args.out_dir / f"{cam_id}{args.image_ext}"
-                    print(f"  Undistorting {cam_id} (single warp) ...")
-                    (t_w, t_h), K_t = single_warp_undistort(frame_path, calib, target, args.model, out_path)
-                except Exception as e:
-                    print(f"  ERROR {cam_id}: {e}")
-                    failed.append(cam_id)
-                    continue
-                undistorted_calib = {
-                    "camera_matrix": K_t,
-                    "distortion_coefficients": np.zeros((1, 4), dtype=np.float64),
-                    "rotation_vectors": None,
-                    "translation_vectors": None,
-                    "reprojection_error": None,
-                    "image_size": (t_w, t_h),
-                    "model": "OPENCV",
-                }
-                with open(out_pkl_path, "wb") as f:
-                    pickle.dump(undistorted_calib, f)
-                ok += 1
-                continue
-
-            # wrapper mode: if the calibration was rescaled, offline_undistort.py must
-            # see the corrected values, so point it at a corrected temp pkl.
-            if rescaled:
-                calib_path = Path(tmp) / f"Camera_{cam_id}.pkl"
-                with open(calib_path, "wb") as f:
-                    pickle.dump(calib, f)
-
-            # Pass -o as a full file path (with suffix), not a bare directory:
-            # offline_undistort.py's single-image mode only writes the exact
-            # <camera_id>.jpg name we want when the output target has a
-            # suffix. A bare directory triggers its batch-mode naming
-            # (undistorted_<name>), which would silently break every
-            # downstream stage expecting <camera_id>.jpg.
-            out_frame_path = args.out_dir / f"{cam_id}{args.image_ext}"
-            cmd = [
-                sys.executable, str(UNDISTORT_SCRIPT),
-                "-c", str(calib_path),
-                str(frame_path),
-                "-o", str(out_frame_path),
-                "-u", str(out_pkl_path),
-                "--model", args.model,
-            ]
-            print(f"  Undistorting {cam_id} ...")
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"  ERROR undistorting {cam_id}:\n{result.stderr}")
-                failed.append(cam_id)
-                continue
+    if workers == 1:
+        results = map(process_camera, jobs)
+    else:
+        pool = ProcessPoolExecutor(max_workers=workers)
+        results = pool.map(process_camera, jobs)
+    for cam_id, good, lines in results:
+        for line in lines:
+            print(line, flush=True)
+        if good:
             ok += 1
+        else:
+            failed.append(cam_id)
 
     print(f"\nDone. {ok}/{len(frame_paths)} cameras undistorted into {args.out_dir}")
     if failed:

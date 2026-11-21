@@ -4,6 +4,7 @@
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -104,10 +105,11 @@ def test_main_no_longer_accepts_model_flag(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# run_goliath308 -- subprocess.run is monkeypatched (it shells out to the
-# Diffuman4D Sapiens2 preprocess script, not runnable in this environment);
-# everything around that boundary (path checks, env dict, cmd construction,
-# exit-code propagation, calling split_combined_predictions) is real.
+# run_goliath308 -- subprocess.run and resolve_model_files/default_device
+# are monkeypatched (they shell out to the vendored Sapiens2 vis_pose.py
+# and download checkpoints, not runnable here); everything around that
+# boundary (cmd construction, exit-code propagation, calling
+# split_combined_predictions) is real.
 # --------------------------------------------------------------------------
 
 class Args:
@@ -132,60 +134,64 @@ def write_combined_predictions(out_kp2d_dir, cameras=("00", "01")):
     return predictions_json
 
 
-def test_run_goliath308_errors_when_predict_keypoints_script_missing(tmp_path, monkeypatch, capsys):
+@pytest.fixture
+def fake_models(monkeypatch):
+    """Stub checkpoint resolution; records the (root, size) it was asked for."""
+    asked = []
+
+    def resolve(ckpt_root, size):
+        asked.append((ckpt_root, size))
+        return (ckpt_root / "pose" / f"sapiens2_{size}_pose.safetensors",
+                Path(f"/sapiens/pose/configs/sapiens2_{size}.py"),
+                str(ckpt_root / "detector" / "detr-resnet-101-dc5"))
+    monkeypatch.setattr(pk2d, "resolve_model_files", resolve)
+    monkeypatch.setattr(pk2d, "default_device", lambda: "cpu")
+    return asked
+
+
+def test_vis_pose_script_ships_in_repo():
+    assert pk2d.VIS_POSE_SCRIPT.is_file()
+    assert (pk2d.VIS_POSE_SCRIPT.parent / "pose_render_utils.py").is_file()
+    assert (pk2d.VIS_POSE_SCRIPT.parent / "LICENSE.md").is_file()
+
+
+def test_run_goliath308_errors_without_checkpoint_root(tmp_path, capsys):
     images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "does_not_exist.py")
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir)
     with pytest.raises(SystemExit) as exc_info:
-        pk2d.run_goliath308(args, None)
+        pk2d.run_goliath308(Args(images_dir, out_kp2d_dir, fmasks_dir), None)
     assert exc_info.value.code == 1
-    assert "hloc_validation branch" in capsys.readouterr().out
+    assert "SAPIENS_CHECKPOINT_ROOT" in capsys.readouterr().out
 
 
-def test_run_goliath308_propagates_nonzero_subprocess_exit_code(tmp_path, monkeypatch):
+def test_run_goliath308_propagates_nonzero_subprocess_exit_code(tmp_path, monkeypatch, fake_models):
     images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")  # just needs .is_file() to be True
-
-    def fake_run(cmd, cwd=None, env=None):
-        return subprocess.CompletedProcess(cmd, 7, stdout="", stderr="boom")
-    monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
-
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir)
+    monkeypatch.setattr(pk2d.subprocess, "run",
+                        lambda cmd: subprocess.CompletedProcess(cmd, 7, stdout="", stderr="boom"))
     with pytest.raises(SystemExit) as exc_info:
-        pk2d.run_goliath308(args, None)
+        pk2d.run_goliath308(Args(images_dir, out_kp2d_dir, fmasks_dir), "/ckpt")
     assert exc_info.value.code == 7
 
 
-def test_run_goliath308_errors_when_combined_predictions_file_missing(tmp_path, monkeypatch, capsys):
+def test_run_goliath308_errors_when_combined_predictions_file_missing(tmp_path, monkeypatch, capsys,
+                                                                     fake_models):
     images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
-
-    def fake_run(cmd, cwd=None, env=None):
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")  # succeeds but writes nothing
-    monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
-
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir)
+    monkeypatch.setattr(pk2d.subprocess, "run", lambda cmd: subprocess.CompletedProcess(cmd, 0))
     with pytest.raises(SystemExit) as exc_info:
-        pk2d.run_goliath308(args, None)
+        pk2d.run_goliath308(Args(images_dir, out_kp2d_dir, fmasks_dir), "/ckpt")
     assert exc_info.value.code == 1
     assert "expected combined predictions file not found" in capsys.readouterr().out
 
 
-def test_run_goliath308_success_splits_combined_predictions_into_per_camera_files(tmp_path, monkeypatch):
+def test_run_goliath308_success_splits_combined_predictions_into_per_camera_files(tmp_path, monkeypatch,
+                                                                                  fake_models):
     images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
 
-    def fake_run(cmd, cwd=None, env=None):
-        # simulate the external script's own output side effect
+    def fake_run(cmd):
         write_combined_predictions(out_kp2d_dir, cameras=("00", "01"))
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0)
     monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
 
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir)
-    pk2d.run_goliath308(args, None)
+    pk2d.run_goliath308(Args(images_dir, out_kp2d_dir, fmasks_dir), "/ckpt")
 
     assert (out_kp2d_dir / images_dir.name / "00.json").is_file()
     assert (out_kp2d_dir / images_dir.name / "01.json").is_file()
@@ -194,97 +200,91 @@ def test_run_goliath308_success_splits_combined_predictions_into_per_camera_file
     assert written == {"instance_info": [{"keypoints": [1.0, 2.0], "keypoint_scores": [0.9]}]}
 
 
-def test_run_goliath308_cmd_and_cwd_construction(tmp_path, monkeypatch):
+def test_run_goliath308_cmd_construction(tmp_path, monkeypatch, fake_models):
     images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
-
     calls = []
-    def fake_run(cmd, cwd=None, env=None):
-        calls.append((cmd, cwd, env))
-        write_combined_predictions(out_kp2d_dir, cameras=())
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
 
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir)
-    pk2d.run_goliath308(args, None)
-
-    assert len(calls) == 1
-    cmd, cwd, env = calls[0]
-    assert cmd == [sys.executable, str(pk2d.PREDICT_KEYPOINTS_SCRIPT),
-                    str(images_dir), str(out_kp2d_dir), "--fmasks_dir", str(fmasks_dir)]
-    assert cwd == str(pk2d.DIFFUMAN4D_ROOT / "scripts" / "preprocess")
-    assert "SAPIENS_CHECKPOINT_ROOT" not in env  # ckpt_root was None -- must not inject a bogus env entry
-
-
-def test_run_goliath308_omits_model_size_flags_at_default_1b(tmp_path, monkeypatch):
-    images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
-
-    calls = []
-    def fake_run(cmd, cwd=None, env=None):
+    def fake_run(cmd):
         calls.append(cmd)
         write_combined_predictions(out_kp2d_dir, cameras=())
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0)
     monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
 
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir, sapiens_model_size="1b")
-    pk2d.run_goliath308(args, None)
+    pk2d.run_goliath308(Args(images_dir, out_kp2d_dir, fmasks_dir), "/ckpt")
 
-    assert "--sapiens_model_size" not in calls[0]
-    assert "--sapiens_ckpt_path" not in calls[0]
+    assert calls == [[
+        sys.executable, str(pk2d.VIS_POSE_SCRIPT),
+        "/ckpt/detector/detr-resnet-101-dc5", "/sapiens/pose/configs/sapiens2_1b.py",
+        "/ckpt/pose/sapiens2_1b_pose.safetensors",
+        "--input", str(images_dir), "--output", str(out_kp2d_dir),
+        "--fmasks-dir", str(fmasks_dir),
+        "--kpt-thr", "0.3", "--max-bone-sigma", "0.0", "--max-bilateral-ratio", "3.5",
+        "--device", "cpu",
+    ]]
+    assert fake_models == [(Path("/ckpt"), "1b")]
 
 
-def test_run_goliath308_forwards_smaller_model_size(tmp_path, monkeypatch):
+def test_run_goliath308_forwards_smaller_model_size(tmp_path, monkeypatch, fake_models):
     # Real CI failure (2026-07-30): the actual GitHub runner has only
     # ~7.75GB RAM, and the 1b checkpoint alone peaks at 6.5-7.6GB -- CPU
     # mode uses a smaller checkpoint instead (0.4b measured at 4.1GB peak
-    # on the real fixture). This proves the override path constructs the
-    # right same-named checkpoint + matching config, not just that it's
-    # non-default.
+    # on the real fixture).
     images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
 
-    calls = []
-    def fake_run(cmd, cwd=None, env=None):
-        calls.append(cmd)
+    def fake_run(cmd):
         write_combined_predictions(out_kp2d_dir, cameras=())
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(cmd, 0)
     monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
 
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir, sapiens_model_size="0.4b")
-    pk2d.run_goliath308(args, "/ckpt/root")
-
-    cmd = calls[0]
-    assert cmd[cmd.index("--sapiens_ckpt_path") + 1] == "/ckpt/root/pose/sapiens2_0.4b_pose.safetensors"
-    assert cmd[cmd.index("--config_path") + 1] == (
-        "configs/keypoints308/shutterstock_goliath_3po/"
-        "sapiens2_0.4b_keypoints308_shutterstock_goliath_3po-1024x768.py"
-    )
+    pk2d.run_goliath308(Args(images_dir, out_kp2d_dir, fmasks_dir, sapiens_model_size="0.4b"), "/ckpt/root")
+    assert fake_models == [(Path("/ckpt/root"), "0.4b")]
 
 
-def test_run_goliath308_sets_env_var_when_ckpt_root_given(tmp_path, monkeypatch):
-    images_dir, out_kp2d_dir, fmasks_dir = make_dirs(tmp_path)
-    monkeypatch.setattr(pk2d, "PREDICT_KEYPOINTS_SCRIPT", tmp_path / "predict_keypoints.py")
-    pk2d.PREDICT_KEYPOINTS_SCRIPT.write_text("")
-    monkeypatch.delenv("SAPIENS_CHECKPOINT_ROOT", raising=False)
+# --------------------------------------------------------------------------
+# Model file resolution -- the Hugging Face downloads are monkeypatched.
+# --------------------------------------------------------------------------
 
-    calls = []
-    def fake_run(cmd, cwd=None, env=None):
-        calls.append(env)
-        write_combined_predictions(out_kp2d_dir, cameras=())
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-    monkeypatch.setattr(pk2d.subprocess, "run", fake_run)
+def test_ensure_pose_checkpoint_keeps_existing_file(tmp_path, monkeypatch):
+    # Returns before importing huggingface_hub, so this also runs (and
+    # proves no download is attempted) where that package is absent.
+    ckpt = tmp_path / "pose" / "sapiens2_1b_pose.safetensors"
+    ckpt.parent.mkdir()
+    ckpt.write_text("weights")
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)  # any import would raise
+    assert pk2d.ensure_pose_checkpoint(ckpt, "1b") == ckpt
 
-    args = Args(images_dir, out_kp2d_dir, fmasks_dir)
-    pk2d.run_goliath308(args, "/ckpt/root")
 
-    assert calls[0]["SAPIENS_CHECKPOINT_ROOT"] == "/ckpt/root"
-    # base os.environ must still be present -- confirms env is a copy, not a fresh dict
-    import os
-    assert calls[0]["PATH"] == os.environ["PATH"]
+def test_ensure_pose_checkpoint_downloads_matching_repo(tmp_path, monkeypatch):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    cached = tmp_path / "hf_cache" / "sapiens2_0.4b_pose.safetensors"
+    cached.parent.mkdir()
+    cached.write_text("weights")
+    asked = []
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download",
+                        lambda repo_id, filename: asked.append((repo_id, filename)) or str(cached))
+    monkeypatch.delenv("SAPIENS_HF_REPO", raising=False)
+    ckpt = tmp_path / "root" / "pose" / "sapiens2_0.4b_pose.safetensors"
+    assert pk2d.ensure_pose_checkpoint(ckpt, "0.4b") == ckpt
+    assert ckpt.read_text() == "weights"
+    assert asked == [("facebook/sapiens2-pose-0.4b", "sapiens2_0.4b_pose.safetensors")]
+
+
+def test_ensure_detector_falls_back_to_repo_id_when_download_fails(tmp_path, monkeypatch, capsys):
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+
+    def boom(**kw):
+        raise OSError("offline")
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", boom)
+    monkeypatch.delenv("SAPIENS_DETECTOR_HF_REPO", raising=False)
+    assert pk2d.ensure_detector(tmp_path / "detector") == "facebook/detr-resnet-101-dc5"
+    assert "falling back" in capsys.readouterr().out
+
+
+def test_ensure_detector_uses_existing_snapshot(tmp_path):
+    detector = tmp_path / "detector"
+    detector.mkdir()
+    (detector / "config.json").write_text("{}")
+    assert pk2d.ensure_detector(detector) == str(detector)
 
 
 # --------------------------------------------------------------------------

@@ -873,10 +873,22 @@ def test_extract_and_match_features_builds_aliked_config(tmp_path, monkeypatch):
 
     args = Args()
     args.feature_type = "aliked"
+    args.aliked_model = "aliked-n32"
     args.max_keypoints = 2048
     args.resize_max = 512
 
     mfs.extract_and_match_features(args, tmp_path, tmp_path, ["Camera_0001/000000.jpg"])
 
     assert calls["feat_conf"]["model"]["name"] == "aliked"
+    assert calls["feat_conf"]["model"]["model_name"] == "aliked-n32"
+    assert calls["feat_conf"]["output"].startswith("feats-aliked-n32-")
     assert calls["feat_conf"]["model"]["max_num_keypoints"] == 2048
+
+
+def test_refined_pinhole_intrinsics_are_written_like_the_calibration_files():
+    out = mfs.refined_as_output_intrinsics({
+        "Camera_0001": ("PINHOLE", 100, 80, [1500.0, 1501.0, 50.0, 40.0]),
+        "Camera_0002": ("OPENCV", 100, 80, [1.0, 2.0, 3.0, 4.0, 0.1, 0.2, 0.0, 0.0]),
+    })
+    assert out["Camera_0001"] == ("OPENCV", 100, 80, [1500.0, 1501.0, 50.0, 40.0, 0.0, 0.0, 0.0, 0.0])
+    assert out["Camera_0002"][0] == "OPENCV" and out["Camera_0002"][3][4] == 0.1  # a camera that has distortion keeps it

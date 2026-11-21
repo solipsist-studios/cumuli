@@ -278,8 +278,13 @@ def parse_args():
     parser.add_argument('--num_timestamps', type=int, default=12)
     parser.add_argument('--timestamps', help='Comma-separated explicit frame indices (overrides --num_timestamps).')
     parser.add_argument('--feature_type', default='superpoint', choices=['superpoint', 'aliked'])
+    parser.add_argument('--aliked_model', default='aliked-n16', choices=['aliked-n16', 'aliked-n32', 'aliked-n16rot'],
+                        help='Which ALIKED weights, with --feature_type aliked. (aliked-t16 is left out: its 64-number '
+                             'descriptors do not fit the pretrained LightGlue matcher.)')
     parser.add_argument('--resize_max', type=int, default=2048)
     parser.add_argument('--max_keypoints', type=int, default=8192)
+    parser.add_argument('--cross_camera_pairs_only', action='store_true',
+                        help='Match only images from different cameras (skips same-camera pairs across moments).')
     parser.add_argument('--refine_intrinsics', action='store_true',
                         help='Refine focal length + distortion during BA (shared per camera; well-posed with many timestamps).')
     parser.add_argument('--refine_principal_point', action='store_true')
@@ -372,8 +377,9 @@ def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
         matcher_conf = match_features.confs['superpoint+lightglue']
     else:
         feature_conf = {
-            'output': f'feats-aliked-n{args.max_keypoints}-r{args.resize_max}',
-            'model': {'name': 'aliked', 'model_name': 'aliked-n16', 'max_num_keypoints': args.max_keypoints},
+            'output': (f'feats-aliked-n{args.max_keypoints}-r{args.resize_max}' if args.aliked_model == 'aliked-n16'
+                       else f'feats-{args.aliked_model}-n{args.max_keypoints}-r{args.resize_max}'),
+            'model': {'name': 'aliked', 'model_name': args.aliked_model, 'max_num_keypoints': args.max_keypoints},
             'preprocessing': {'grayscale': False, 'resize_max': args.resize_max},
         }
         matcher_conf = match_features.confs['aliked+lightglue']
@@ -382,6 +388,12 @@ def extract_and_match_features(args, frames_dir, outputs_dir, all_images):
     feature_path = extract_features.main(feature_conf, frames_dir, outputs_dir, image_list=all_images)
     sfm_pairs = outputs_dir / 'pairs-exhaustive.txt'
     pairs_from_exhaustive.main(sfm_pairs, image_list=all_images)
+    if getattr(args, 'cross_camera_pairs_only', False):
+        # Two moments of one static camera see the same view from the same place: thousands of matches and no
+        # baseline. They outvote the cross-camera pairs when the mapper picks its starting pair and leave the
+        # model stuck on a couple of images, so only pairs between different cameras are matched.
+        lines = [ln for ln in sfm_pairs.read_text().splitlines() if ln.split()[0].split('/')[0] != ln.split()[1].split('/')[0]]
+        sfm_pairs.write_text('\n'.join(lines) + '\n')
     with open(sfm_pairs) as f:
         n_pairs = sum(1 for _ in f)
     print(f'Matching {n_pairs} pairs...')
@@ -488,10 +500,22 @@ def extract_refined_intrinsics(rec):
     return refined_intrinsics
 
 
+def refined_as_output_intrinsics(refined_intrinsics):
+    """Refined intrinsics in the form `write_transforms` takes. A plain pinhole camera is written as OPENCV with zero
+    distortion, the same shape the undistorted calibration files give, so whatever reads the transforms is unaffected."""
+    out = {}
+    for label, (model, w, h, params) in refined_intrinsics.items():
+        out[label] = ('OPENCV', w, h, list(params[:4]) + [0.0, 0.0, 0.0, 0.0]) if model == 'PINHOLE' else (model, w, h, list(params))
+    return out
+
+
 def export_results(args, outputs_dir, rec, camera_labels, all_images, avg_poses, per_camera_stats,
                    refined_intrinsics):
     undistorted_intrinsics = None
-    if args.undistorted_calibration_dir:
+    if args.refine_intrinsics:
+        # The point of refining is to use the result, so it wins over the calibration files' intrinsics.
+        undistorted_intrinsics = refined_as_output_intrinsics(refined_intrinsics)
+    elif args.undistorted_calibration_dir:
         undistorted_intrinsics = load_undistorted_intrinsics(args.undistorted_calibration_dir, camera_labels)
 
     ply_path = outputs_dir / 'background_points.ply'

@@ -32,7 +32,6 @@ CPU_ONLY=0
 if [ "${1:-}" = "--cpu" ]; then CPU_ONLY=1; fi
 
 HLOC_COMMIT=c13273bd0ecc2917a35910fd843712a1c6243193
-EASYVOLCAP_COMMIT=4cb3c000a31b8764834c79792b355f110d947e75
 
 if [ "$CPU_ONLY" = 1 ]; then
     echo "=== create $ENV_NAME (cpu): torch swapped BEFORE install ==="
@@ -41,7 +40,7 @@ if [ "$CPU_ONLY" = 1 ]; then
     # sets on an already-tight disk budget (the failure mode the old
     # per-env CI creation was engineered around). So cpu torch is
     # installed FIRST, before the yml's requirements: no transitive
-    # dependency (diffusers, lpips, kornia, ...) can then drag the
+    # dependency (lpips, kornia, timm, ...) can then drag the
     # CUDA-bundled PyPI torch in during resolution, because pip only
     # installs torch if it is not already present.
     export PIP_NO_CACHE_DIR=1
@@ -91,11 +90,6 @@ fi
     && git submodule update --init --recursive)
 "$PY" -m pip install --no-deps -e "$HLOC_SRC"
 
-echo "=== easyvolcap: --no-deps @${EASYVOLCAP_COMMIT:0:7} ==="
-# --no-deps: its declared dependency set would override the yml's pins.
-"$PY" -m pip install --no-deps \
-    "git+https://github.com/zju3dv/EasyVolcap.git@$EASYVOLCAP_COMMIT"
-
 echo "=== cumuli-core: editable from deps/cumuli-core, --no-deps ==="
 # The shared library (interchange PLY, cameras, spacetime slice, renderer,
 # metrics). --no-deps: torch, gsplat, lpips and torchmetrics come from the
@@ -140,10 +134,9 @@ if [ "$CPU_ONLY" = 1 ]; then export CUMULI_VERIFY_CPU=1; fi
 import importlib, os, sys
 cpu_only = os.environ.get("CUMULI_VERIFY_CPU") == "1"
 core = ["torch", "torchvision", "numpy", "scipy", "PIL", "cv2", "pycolmap",
-        "hloc", "plyfile", "fire", "open3d", "transformers", "gsplat",
-        "lpips", "torchmetrics", "omegaconf",
-        "easyvolcap.utils.console_utils", "easyvolcap.utils.parallel_utils",
-        "sapiens.pose", "diffusers", "hydra", "kornia",
+        "hloc", "plyfile", "open3d", "transformers", "gsplat",
+        "lpips", "torchmetrics", "omegaconf", "huggingface_hub",
+        "sapiens.pose", "kornia", "einops", "timm", "h5py",
         "cumuli_core.ply", "cumuli_core.spacetime", "cumuli_core.render",
         "cumuli_core.metrics", "cumuli_trainer"]
 gpu = []

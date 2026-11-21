@@ -5,7 +5,7 @@
 """
 build_flipbook_4dgs_dataset.py – Assemble a D-NeRF-style 4D training
 dataset from a *flipbook* capture layout (frame-major, as produced by the
-Diffuman4D preprocessing flow) instead of build_4dgs_dataset.py's
+per-frame mask/keypoint chain) instead of build_4dgs_dataset.py's
 camera-major layout.
 
 Input (--flipbook_root, for example capture_flipbook/):
@@ -59,6 +59,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -220,6 +221,43 @@ def flatten_gt(rgba_path, dst):
     Image.fromarray(rgb.astype(np.uint8)).save(dst, optimize=False)
 
 
+def load_time_offsets(path):
+    """{label: seconds} from a capture-timing file, {} without one."""
+    if not path:
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    out = {}
+    for label, cam in (data.get('cameras') or {}).items():
+        offset = float(cam.get('offset_s', 0.0)) if isinstance(cam, dict) else float(cam)
+        if offset:
+            out[str(label)] = offset
+    return out
+
+
+def load_frame_weights(path):
+    """{clip frame folder name: visit weight} from frame_motion.py's report, {} without one."""
+    if not path:
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    return {str(name): float(v.get('weight', 1.0)) for name, v in (data.get('frames') or {}).items()}
+
+
+def load_rolling_shutter(path):
+    """{label: {"readout_s": s, "raw_camera": {...}}} from a capture-timing file's cameras, for the ones whose
+    sensor reads out over time (readout_s > 0, with the raw camera that maps an image pixel to its sensor line)."""
+    if not path:
+        return {}
+    with open(path) as f:
+        data = json.load(f)
+    out = {}
+    for label, cam in (data.get('cameras') or {}).items():
+        if isinstance(cam, dict) and float(cam.get('readout_s') or 0.0) > 0 and cam.get('raw_camera'):
+            out[str(label)] = {'readout_s': float(cam['readout_s']), 'raw_camera': cam['raw_camera']}
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -268,6 +306,17 @@ def main():
     parser.add_argument('--hull_min_views', type=int, default=9,
                         help='min cameras whose mask must contain a hull point '
                              '(default: 9)')
+    parser.add_argument('--timing_json', default=None,
+                        help='Per-camera sub-frame capture offsets: {"cameras": {"<label>": {"offset_s": s}}}. '
+                             'Each training/test view of that camera gets "time_offset": s next to its '
+                             'nominal "time" (capture = time + time_offset, seconds). Cameras the file does '
+                             'not name get none, as without the file. A camera entry may also carry '
+                             '"readout_s" (rolling-shutter readout, top to bottom of the raw sensor) and '
+                             '"raw_camera" ({model, K, dist, w, h} of the raw footage); both go on its views.')
+    parser.add_argument('--frame_weights', default=None,
+                        help="frame_motion.py's report: each training view of a frame whose weight is not 1 gets "
+                             '"visit_weight" (how many times as often training visits it). Keyed by the clip '
+                             "frame folder's name, so a window of linked frames finds its weights too.")
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
 
@@ -285,6 +334,8 @@ def main():
     # --dedupe removes holds.
     frame_idx = list(range(len(frame_dirs)))
     n_source_frames = len(frame_dirs)
+    # the clip's own frame folder for each source index: a window's frame_i links to the clip's frame_NNNN
+    source_name = {i: Path(os.path.realpath(d)).name for i, d in enumerate(frame_dirs)}
     if args.dedupe:
         n_before = len(frame_dirs)
         frame_dirs, frame_idx = drop_duplicate_frames(frame_dirs, labels[0])
@@ -419,6 +470,22 @@ def main():
 
     # ── transforms jsons (per-frame intrinsics, cameras differ) ────────────
     ds = args.downscale
+    time_offsets = load_time_offsets(args.timing_json)
+    rolling = load_rolling_shutter(args.timing_json)
+    frame_weights = load_frame_weights(args.frame_weights)
+    weighted = False  # set for the training rows only: test views are scored, not trained
+    if frame_weights:
+        heavy = {source_name[i]: frame_weights.get(source_name[i], 1.0) for i in frame_idx}
+        boosted = {n: w for n, w in heavy.items() if w != 1.0}
+        print(f'  frame weights: {len(boosted)} of {len(heavy)} frames visited more '
+              f'(mean weight {sum(heavy.values()) / max(len(heavy), 1):.3f})')
+    if rolling:
+        print(f'  rolling shutter: {len(rolling)} cameras, readout '
+              + ', '.join(sorted({f"{r['readout_s'] * 1e3:.2f} ms" for r in rolling.values()})))
+    if time_offsets:
+        named = {l: time_offsets[l] for l in labels if l in time_offsets}
+        print(f'  sub-frame timing: {len(named)}/{len(labels)} cameras, offsets '
+              f'{min(named.values(), default=0) * 1e3:+.2f} to {max(named.values(), default=0) * 1e3:+.2f} ms')
 
     def entries(cam_labels, source_rig=None, subdir='realcams', namer=None):
         source_rig = rig if source_rig is None else source_rig
@@ -428,7 +495,7 @@ def main():
             fl_x, fl_y, cx, cy = cam['intr']
             for i in frame_idx:
                 name = namer(label, i) if namer else f'frame_{i + 1:05d}'
-                rows.append({
+                row = {
                     'file_path': f'{subdir}/cam{label}/{name}',
                     'camera_label': label,
                     'time': i / args.fps,
@@ -436,14 +503,24 @@ def main():
                     'cx': cx / ds, 'cy': cy / ds,
                     'w': cam['w'] // ds, 'h': cam['h'] // ds,
                     'transform_matrix': cam['c2w_gl'].tolist(),
-                })
+                }
+                # Real cameras only: an eval rig's synthetic views were not filmed.
+                if subdir == 'realcams' and label in time_offsets:
+                    row['time_offset'] = time_offsets[label]
+                if subdir == 'realcams' and label in rolling:
+                    row.update(rolling[label])
+                if weighted and frame_weights.get(source_name[i], 1.0) != 1.0:
+                    row['visit_weight'] = frame_weights[source_name[i]]
+                rows.append(row)
         return rows
 
     excluded = set(args.test_cameras) | set(args.holdout_cameras)
     train_labels = [c for c in labels if c not in excluded]
+    weighted = True
+    train_rows = entries(train_labels)
+    weighted = False
     with open(out / 'transforms_train.json', 'w') as f:
-        json.dump({'camera_model': 'OPENCV', 'frames': entries(train_labels)},
-                  f, indent=1)
+        json.dump({'camera_model': 'OPENCV', 'frames': train_rows}, f, indent=1)
 
     test_rows = []
     if eval_rig:

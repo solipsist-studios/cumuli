@@ -12,7 +12,7 @@ body:
         [SECURITY.md](https://github.com/solipsist-studios/volumetric-capture-pipeline/blob/main/SECURITY.md).
 
         Bugs in the wrapped tools (COLMAP, HLOC, the 4D trainer stack,
-        Sapiens, BiRefNet, Diffuman4D) should go upstream to those projects.
+        Sapiens, BiRefNet) should go upstream to those projects.
 
   - type: dropdown
     id: stage

@@ -2,18 +2,15 @@
 # Required Notice: Copyright 2026 Solipsist Studios Inc. (https://solipsist.studio)
 #
 # The single pipeline environment. Replaces hloc + sapiens2 + queen + omg4
-# (and, if the BiRefNet stack proves compatible, diffuman4d). Create with
-# scripts/setup_cumuli_env.sh, NOT with `conda env create` alone: three
-# installs cannot be expressed in a yml and live in that script:
+# + diffuman4d. Create with scripts/setup_cumuli_env.sh, NOT with
+# `conda env create` alone: two installs cannot be expressed in a yml and
+# live in that script:
 #
 #   1. hloc: git clone --recurse-submodules @c13273b, then
 #      `pip install --no-deps -e`. hloc==1.5 is not on PyPI, and a plain
 #      `pip install git+URL` never fetches the SuperGluePretrainedNetwork
 #      submodule SuperPoint imports.
-#   2. easyvolcap: `pip install --no-deps git+...@4cb3c00`. Its declared
-#      dependency set (torch+torchaudio+cuda-python+tensorboard+trimble+
-#      open3d+...) would override this file's deliberate pins.
-#   3. cumuli-core and cumuli-trainer: `pip install --no-deps -e` from the
+#   2. cumuli-core and cumuli-trainer: `pip install --no-deps -e` from the
 #      deps/ submodules, so a resolver pass cannot move torch or gsplat.
 #      gsplat then JIT-builds its CUDA kernels against THIS env's torch on
 #      first use (the setup script triggers that once).
@@ -26,11 +23,8 @@
 # reprojection and mask-coverage gates are the drift detectors for that
 # choice.
 #
-# transformers 5.12.1 serves both Sapiens2 (DETR classes) and (pending
-# the setup script's probe) BiRefNet's dynamically downloaded model
-# code, which was previously verified only against 4.49.0. If that probe
-# fails, the diffuman4d env stays separate (see docs/environment.md) and
-# the "diffuman4d extras" block below can be dropped.
+# transformers 5.12.1 serves both Sapiens2 (DETR classes) and BiRefNet's
+# dynamically downloaded model code (birefnet_masks.py).
 name: cumuli
 channels:
   - defaults
@@ -48,7 +42,6 @@ dependencies:
       - pycolmap==4.0.4
       - opencv-python==4.13.0.92
       - plyfile==1.1.4
-      - fire==0.7.1
       - huggingface_hub==1.19.0
       - gdown  # hloc declares it. Harmless, and silences pip's resolver
       # hloc's matcher (hloc itself installs --no-deps via the setup
@@ -57,14 +50,14 @@ dependencies:
       # the historical hloc.yml omitted it and CI's shallow `import hloc`
       # probe never noticed.
       - git+https://github.com/cvg/LightGlue.git@eb42fee2d71449efb0aa5c10549752b5d75384d8
-      # Sapiens2 keypoint stack (predict_keypoints_2d.py imports sapiens.pose)
+      # Sapiens2 keypoint stack (scripts/vendor/sapiens2/vis_pose.py imports
+      # sapiens.pose; the sapiens package itself imports rich, accelerate
+      # and prettytable)
       - git+https://github.com/facebookresearch/sapiens2.git@7e5bae88456ac418ff0e58e74106c9fe192055d4
-      # queen's traced import set (triangulation, generic scripts)
-      - open3d==0.19.0
-      - pdbr==0.9.7
       - rich==15.0.0
-      - ujson==5.13.0
-      - ruamel.yaml==0.19.1
+      - accelerate
+      - prettytable
+      - open3d==0.19.0  # triangulate_and_project_keypoints.py's point cloud
       - tqdm==4.67.3
       - matplotlib>=3.4.0  # deps/camera-calibration/requirements.txt
       # trainer / bake / eval (cumuli-trainer, bake_sogst.py, eval_render.py)
@@ -76,19 +69,10 @@ dependencies:
       - ninja
       - gsplat==1.5.3
       - torchmetrics
-      - kornia
+      - kornia  # also hloc's matchers and BiRefNet's remote code
       - imagesize
-      # diffuman4d extras: the risky merge (BiRefNet + Diffuman4D tooling
-      # on transformers 5 / torch 2.13). Drop this block in the 2-env
-      # fallback.
-      - diffusers[torch]==0.33.1
-      - hydra-core==1.3.2
-      - hydra-colorlog==1.2.0
-      - hydra-optuna-sweeper==1.2.0
+      - h5py  # hloc's feature and match files
+      # BiRefNet's model code, fetched from Hugging Face at load time
+      # (birefnet_masks.py, trust_remote_code), imports these
       - einops
       - timm
-      - scikit-image
-      - h5py
-      - accelerate
-      - prettytable
-      - tabulate
