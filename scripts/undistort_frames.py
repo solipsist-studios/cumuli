@@ -61,7 +61,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from image_formats import SUPPORTED_IMAGE_EXTS
+from image_formats import (SUPPORTED_IMAGE_EXTS, ImageFormatError, ImageQualityError, add_bit_depth_argument,
+                           add_quality_argument, check_bit_depth, check_image_quality, cv2_write_params, save_image)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CALIBRATION_DIR = REPO_ROOT / "deps" / "camera-calibration"
@@ -161,13 +162,36 @@ def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, a
     return calib, False
 
 
-def write_image(path: Path, img) -> bool:
+def write_image(path: Path, img, quality=None) -> bool:
+    """Write the BGR array ``img`` in the format of ``path``'s extension. .webp is lossless unless a quality is
+    given (OpenCV's own default would be lossy, quality 95).
+
+    Lossless WebP goes through PIL at encoder effort 0, not cv2: cv2's lossless setting is maximum effort
+    (7.6 s on a 5312x4648 frame), PIL method 0 is 5.5 s and still 7x slower than PNG level 1 (0.77 s), so
+    prefer PNG for the working frames and WebP for the compressed stage."""
+    if Path(path).suffix.lower() == ".webp":
+        from PIL import Image
+        try:
+            save_image(Image.fromarray(img[..., ::-1]), path, quality, webp_method=0 if quality is None else None)
+        except (OSError, ValueError):
+            return False
+        return True
     import cv2
-    params = [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION] if Path(path).suffix.lower() == ".png" else []
-    return bool(cv2.imwrite(str(path), img, params))
+    return bool(cv2.imwrite(str(path), img, cv2_write_params(Path(path).suffix, quality, PNG_COMPRESSION)))
 
 
-def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: str, out_path: Path):
+def read_bgr(frame_path, bit_depth: int = 8):
+    """Read a frame as BGR. At bit_depth 8 (the default) a 16-bit PNG is reduced to 8 bits, as it always
+    was; at 16 a 16-bit PNG stays uint16 (an 8-bit file stays uint8)."""
+    import cv2
+    flags = cv2.IMREAD_COLOR + cv2.IMREAD_IGNORE_ORIENTATION
+    if bit_depth == 16:
+        flags += cv2.IMREAD_ANYDEPTH
+    return cv2.imread(str(frame_path), flags=flags)
+
+
+def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: str, out_path: Path, quality=None,
+                          bit_depth: int = 8):
     """One remap from the native (distorted) frame directly to the target pinhole geometry."""
     import cv2
 
@@ -184,7 +208,7 @@ def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: st
     check_camera_matrix_sane(K, "camera_matrix")
     check_camera_matrix_sane(K_t, "target camera_matrix")
 
-    img = cv2.imread(str(frame_path), flags=cv2.IMREAD_COLOR + cv2.IMREAD_IGNORE_ORIENTATION)
+    img = read_bgr(frame_path, bit_depth)
     if img is None:
         raise ValueError(f"could not read {frame_path}")
 
@@ -193,7 +217,7 @@ def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: st
     else:
         map1, map2 = cv2.initUndistortRectifyMap(K, D, None, K_t, (t_w, t_h), cv2.CV_16SC2)
     out = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-    if not write_image(out_path, out):
+    if not write_image(out_path, out, quality):
         raise ValueError(f"could not write {out_path}")
     return (t_w, t_h), K_t
 
@@ -228,7 +252,9 @@ def process_camera(job: dict):
         return cam_id, False, [f"  ERROR {cam_id}: {e}"]
 
     out_pkl_path = job["out_pkl_dir"] / f"Camera_{cam_id}.pkl"
-    out_path = job["out_dir"] / f"{cam_id}{job['image_ext']}"
+    out_ext = job.get("out_image_ext") or job["image_ext"]
+    out_quality = job.get("out_image_quality")
+    out_path = job["out_dir"] / f"{cam_id}{out_ext}"
 
     if job["target_pkl_dir"] is not None:
         target_path = resolve_calib_path(job["target_pkl_dir"], cam_id)
@@ -237,7 +263,9 @@ def process_camera(job: dict):
         try:
             target = load_pkl(target_path)
             log.append(f"  Undistorting {cam_id} (single warp) ...")
-            (t_w, t_h), K_t = single_warp_undistort(frame_path, calib, target, job["model"], out_path)
+            (t_w, t_h), K_t = single_warp_undistort(frame_path, calib, target, job["model"], out_path,
+                                                          **({} if out_quality is None else {"quality": out_quality}),
+                                                          **({"bit_depth": 16} if job.get("bit_depth") == 16 else {}))
         except Exception as e:
             return cam_id, False, log + [f"  ERROR {cam_id}: {e}"]
         undistorted_calib = {
@@ -264,11 +292,13 @@ def process_camera(job: dict):
         mtx = np.asarray(calib["camera_matrix"], dtype=np.float64)
         dist = np.asarray(calib["distortion_coefficients"], dtype=np.float64)
         fisheye = ou.infer_model(calib.get("model"), dist) == "OPENCV_FISHEYE"
-        img = cv2.imread(str(frame_path), flags=cv2.IMREAD_COLOR + cv2.IMREAD_IGNORE_ORIENTATION)
+        # ou.undistort_image only calls cv2.remap / cv2.undistort, which take uint16, so 16-bit works here
+        # with no change to camera-calibration (the default read is what made it 8-bit).
+        img = read_bgr(frame_path, job.get("bit_depth", 8))
         if img is None:
             raise ValueError(f"could not read {frame_path}")
         undistorted = ou.undistort_image(img, mtx, dist, fisheye=fisheye)
-        if not write_image(out_path, undistorted):
+        if not write_image(out_path, undistorted, out_quality):
             raise ValueError(f"could not write {out_path}")
         data = ou.build_undistorted_calibration_data(mtx, dist, (media_w, media_h), fisheye)
         with open(out_pkl_path, "wb") as f:
@@ -287,6 +317,16 @@ def main():
     parser.add_argument("--model", default="OPENCV_FISHEYE", choices=["OPENCV", "OPENCV_FISHEYE"])
     parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS,
                          help="Extension of frames in frames_dir (default: .jpg)")
+    parser.add_argument("--out_image_ext", default=None, choices=SUPPORTED_IMAGE_EXTS,
+                         help="Extension of the undistorted frames (default: the same as --image_ext). "
+                              ".webp is lossless unless --out_image_quality is set, and lossless WebP is SLOW "
+                              "(about 7x the encode time of PNG, which is written at compression level 1): use "
+                              "it for the compressed stage, not the working frames.")
+    add_quality_argument(parser, "--out_image_quality")
+    add_bit_depth_argument(
+        parser, help="Bits per channel (default 8). 16 reads a 16-bit PNG as uint16, keeps it through the remap and "
+                     "writes a 16-bit PNG (about 4x the disk, slower); for .png output only. 8-bit input files stay "
+                     "8-bit. Only useful when a strong colour grade follows, since later stages read 8 bits.")
     parser.add_argument("--target_pkl_dir", type=Path, default=None,
                         help="Per-camera TARGET pinhole pkls (Camera_<camera_id>.pkl): enables single-warp "
                              "mode, mapping native fisheye frames directly to that geometry in one resample.")
@@ -295,6 +335,16 @@ def main():
     parser.add_argument("--jobs", type=int, default=None,
                         help="Cameras to undistort at once (default: one per CPU core). Each holds a full-size frame in memory.")
     args = parser.parse_args()
+    try:
+        check_image_quality(args.out_image_ext or args.image_ext, args.out_image_quality)
+    except ImageQualityError as e:
+        print(f"Error: --out_image_quality: {e}")
+        sys.exit(1)
+    try:
+        check_bit_depth(args.out_image_ext or args.image_ext, args.bit_depth)
+    except ImageFormatError as e:
+        print(f"Error: --bit_depth: {e}")
+        sys.exit(1)
 
     if args.target_pkl_dir is None and not UNDISTORT_SCRIPT.is_file():
         print(f"Error: {UNDISTORT_SCRIPT} not found -- is the camera-calibration submodule checked out?")
@@ -316,7 +366,8 @@ def main():
     print(f"Found {len(frame_paths)} frames in {args.frames_dir} -- mode: {mode}")
 
     jobs = [dict(cam_id=p.stem, frame_path=p, calib_dir=args.calib_dir, out_dir=args.out_dir, out_pkl_dir=args.out_pkl_dir,
-                 model=args.model, image_ext=args.image_ext, target_pkl_dir=args.target_pkl_dir, no_rescale=args.no_rescale)
+                 model=args.model, image_ext=args.image_ext, out_image_ext=args.out_image_ext,
+                 out_image_quality=args.out_image_quality, bit_depth=args.bit_depth, target_pkl_dir=args.target_pkl_dir, no_rescale=args.no_rescale)
             for p in frame_paths]
     workers = max(1, min(args.jobs or default_jobs(), len(jobs)))
     print(f"Undistorting {len(jobs)} cameras with {workers} worker(s)")

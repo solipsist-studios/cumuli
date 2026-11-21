@@ -53,7 +53,7 @@ import numpy as np
 from PIL import Image, UnidentifiedImageError
 from scipy import ndimage
 
-from image_formats import SUPPORTED_IMAGE_EXTS
+from image_formats import SUPPORTED_IMAGE_EXTS, save_image
 
 REMOVE_BG_SCRIPT = Path(__file__).resolve().parent / "birefnet_masks.py"
 
@@ -129,7 +129,7 @@ def run_birefnet_on_crops(crops: dict, image_ext: str):
         boxes = {}
         for cam, (image_path, box) in crops.items():
             with Image.open(image_path) as im:
-                im.crop(box).save(crops_dir / f"{cam}{image_ext}")
+                save_image(im.crop(box), crops_dir / f"{cam}{image_ext}")   # lossless for .webp
             boxes[cam] = box
         cmd = [sys.executable, str(REMOVE_BG_SCRIPT), str(crops_dir), str(masks_dir),
                "--image_ext", image_ext]

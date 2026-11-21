@@ -69,6 +69,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 from plyfile import PlyData, PlyParseError
+
+from image_formats import ImageQualityError, add_quality_argument, check_image_quality, save_image
 from scipy.spatial.transform import Rotation
 
 
@@ -106,7 +108,7 @@ def validate_frame(fr):
     return None
 
 
-def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
+def bake_rgba(image_path: Path, mask_path: Path, out_path: Path, quality=None):
     img = Image.open(image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
     if mask.size != img.size:
@@ -123,10 +125,11 @@ def bake_rgba(image_path: Path, mask_path: Path, out_path: Path):
     rgba_arr = np.dstack([img_arr, mask_arr])
     rgba = Image.fromarray(rgba_arr, mode="RGBA")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    rgba.save(out_path)
+    save_image(rgba, out_path, quality)
 
 
-def bake_masks(frames, masks_dir: Path, images_dir: Path, out_dir: Path, rgba_subdir: str):
+def bake_masks(frames, masks_dir: Path, images_dir: Path, out_dir: Path, rgba_subdir: str,
+               out_ext: str = ".png", quality=None):
     print(f"Baking masks from {masks_dir} (images from {images_dir}) "
           f"into {out_dir / rgba_subdir} ...")
     n_baked, n_missing = 0, []
@@ -134,12 +137,12 @@ def bake_masks(frames, masks_dir: Path, images_dir: Path, out_dir: Path, rgba_su
         label = fr["camera_label"]
         image_path = images_dir / f"{label}{Path(fr['file_path']).suffix}"
         mask_path = masks_dir / f"{label}.png"
-        out_path = out_dir / rgba_subdir / f"{label}.png"
+        out_path = out_dir / rgba_subdir / f"{label}{out_ext}"
         if not image_path.is_file() or not mask_path.is_file():
             n_missing.append(label)
             continue
         try:
-            bake_rgba(image_path, mask_path, out_path)
+            bake_rgba(image_path, mask_path, out_path, quality)
         except (OSError, UnidentifiedImageError) as e:
             print(f"  WARNING: could not bake {label} ({e}), treating as missing")
             n_missing.append(label)
@@ -159,7 +162,7 @@ def write_cameras_txt(sparse_dir: Path, frames):
             f.write(f"{i} PINHOLE {fr['w']} {fr['h']} {fr['fl_x']} {fr['fl_y']} {fr['cx']} {fr['cy']}\n")
 
 
-def write_images_txt(sparse_dir: Path, frames, image_subdir: str, masks_dir, rgba_subdir: str):
+def write_images_txt(sparse_dir: Path, frames, image_subdir: str, masks_dir, rgba_subdir: str, out_ext: str = ".png"):
     """Image line + empty points2D line, one camera_id per image (1:1)."""
     with open(sparse_dir / "images.txt", "w") as f:
         f.write("# Image list with two lines of data per image:\n")
@@ -170,7 +173,7 @@ def write_images_txt(sparse_dir: Path, frames, image_subdir: str, masks_dir, rgb
             R, t = opengl_c2w_to_colmap_w2c(c2w)
             qx, qy, qz, qw = Rotation.from_matrix(R).as_quat()
             if masks_dir is not None:
-                name = f"{rgba_subdir}/{fr['camera_label']}.png"
+                name = f"{rgba_subdir}/{fr['camera_label']}{out_ext}"
             else:
                 name = f"{image_subdir}/{fr['camera_label']}{Path(fr['file_path']).suffix}"
             f.write(f"{i} {qw} {qx} {qy} {qz} {t[0]} {t[1]} {t[2]} {i} {name}\n")
@@ -210,7 +213,16 @@ def main():
                               "When given, bakes RGBA images and points images.txt at --rgba_subdir instead.")
     parser.add_argument("--rgba_subdir", default="images_rgba",
                          help="Subdir under out_dir to write baked RGBA images (only used with --masks_dir)")
+    parser.add_argument("--out_image_ext", default=".png", choices=(".png", ".webp"),
+                         help="Format of the baked RGBA images (default .png; only used with --masks_dir). "
+                              ".webp is lossless unless --out_image_quality is set.")
+    add_quality_argument(parser, "--out_image_quality")
     args = parser.parse_args()
+    try:
+        check_image_quality(args.out_image_ext, args.out_image_quality)
+    except ImageQualityError as e:
+        print(f"Error: --out_image_quality: {e}")
+        sys.exit(1)
 
     try:
         with open(args.transforms) as f:
@@ -244,10 +256,11 @@ def main():
 
     if args.masks_dir is not None:
         images_dir = args.images_dir or (args.out_dir / args.image_subdir)
-        bake_masks(frames, args.masks_dir, images_dir, args.out_dir, args.rgba_subdir)
+        bake_masks(frames, args.masks_dir, images_dir, args.out_dir, args.rgba_subdir,
+                   args.out_image_ext, args.out_image_quality)
 
     write_cameras_txt(sparse_dir, frames)
-    write_images_txt(sparse_dir, frames, args.image_subdir, args.masks_dir, args.rgba_subdir)
+    write_images_txt(sparse_dir, frames, args.image_subdir, args.masks_dir, args.rgba_subdir, args.out_image_ext)
     try:
         verts = write_points3d_txt(sparse_dir, args.points_ply)
     except (PlyParseError, KeyError) as e:
