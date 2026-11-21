@@ -62,7 +62,7 @@ import numpy as np
 from PIL import Image
 
 from image_formats import (SUPPORTED_IMAGE_EXTS, ImageQualityError, add_quality_argument,
-                           check_image_quality, cv2_write_params)
+                           check_image_quality, cv2_write_params, save_image)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CALIBRATION_DIR = REPO_ROOT / "deps" / "camera-calibration"
@@ -163,8 +163,19 @@ def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, a
 
 
 def write_image(path: Path, img, quality=None) -> bool:
-    """Write ``img`` in the format of ``path``'s extension. .webp is lossless unless a quality is given
-    (OpenCV's own default would be lossy, quality 95)."""
+    """Write the BGR array ``img`` in the format of ``path``'s extension. .webp is lossless unless a quality is
+    given (OpenCV's own default would be lossy, quality 95).
+
+    Lossless WebP goes through PIL at encoder effort 0, not cv2: cv2's lossless setting is maximum effort
+    (7.6 s on a 5312x4648 frame), PIL method 0 is 5.5 s and still 7x slower than PNG level 1 (0.77 s), so
+    prefer PNG for the working frames and WebP for the compressed stage."""
+    if Path(path).suffix.lower() == ".webp":
+        from PIL import Image
+        try:
+            save_image(Image.fromarray(img[..., ::-1]), path, quality, webp_method=0 if quality is None else None)
+        except (OSError, ValueError):
+            return False
+        return True
     import cv2
     return bool(cv2.imwrite(str(path), img, cv2_write_params(Path(path).suffix, quality, PNG_COMPRESSION)))
 
@@ -294,7 +305,9 @@ def main():
                          help="Extension of frames in frames_dir (default: .jpg)")
     parser.add_argument("--out_image_ext", default=None, choices=SUPPORTED_IMAGE_EXTS,
                          help="Extension of the undistorted frames (default: the same as --image_ext). "
-                              ".webp is lossless unless --out_image_quality is set.")
+                              ".webp is lossless unless --out_image_quality is set, and lossless WebP is SLOW "
+                              "(about 7x the encode time of PNG, which is written at compression level 1): use "
+                              "it for the compressed stage, not the working frames.")
     add_quality_argument(parser, "--out_image_quality")
     parser.add_argument("--target_pkl_dir", type=Path, default=None,
                         help="Per-camera TARGET pinhole pkls (Camera_<camera_id>.pkl): enables single-warp "

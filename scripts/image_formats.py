@@ -34,20 +34,27 @@ def check_image_quality(ext, quality):
     return quality
 
 
-def pil_save_kwargs(ext, quality=None, png_compress_level=None):
+LOSSLESS_WEBP_METHOD = 2   # encoder effort 0-6; lossless WebP at the default 4 is ~10x slower than PNG level 1
+
+
+def pil_save_kwargs(ext, quality=None, png_compress_level=None, webp_method=None):
     """Keyword arguments for ``PIL.Image.save`` for an output with extension ``ext``.
 
     ``.webp`` with no quality is LOSSLESS (PIL's own default is lossy, quality
-    80). ``.webp`` with a quality is lossy (method 4), and the alpha channel
-    stays lossless in either case. ``.png`` keeps ``png_compress_level`` when
-    given. Lossy encoding happens only when a quality was passed.
+    80) at encoder effort ``webp_method`` (default ``LOSSLESS_WEBP_METHOD``;
+    measured on a 5312x4648 frame method 0 is 5.5 s, 4 is 9.3 s, 6 is 47.6 s, against
+    0.77 s for PNG level 1). ``.webp`` with a quality is lossy (method 4 unless
+    ``webp_method`` is given), and the alpha channel stays lossless in either
+    case. ``.png`` keeps ``png_compress_level`` when given. Lossy encoding
+    happens only when a quality was passed.
     """
     ext = ext.lower()
     quality = check_image_quality(ext, quality)
     if ext == ".webp":
         if quality is None:
-            return {"lossless": True, "quality": 100, "method": 4}
-        return {"lossless": False, "quality": quality, "method": 4}
+            return {"lossless": True, "quality": 100,
+                    "method": LOSSLESS_WEBP_METHOD if webp_method is None else webp_method}
+        return {"lossless": False, "quality": quality, "method": 4 if webp_method is None else webp_method}
     if ext == ".png" and png_compress_level is not None:
         return {"compress_level": png_compress_level}
     return {}
@@ -57,7 +64,10 @@ def cv2_write_params(ext, quality=None, png_compress_level=None):
     """The ``params`` list for ``cv2.imwrite`` for an output with extension ``ext``.
 
     OpenCV's WebP encoder is lossless when the quality is above 100, and lossy
-    otherwise; with no quality given this returns the lossless setting.
+    otherwise; with no quality given this returns the lossless setting. That
+    setting runs the encoder at maximum effort (7.6 s on a 5312x4648 frame), so
+    write lossless WebP through ``save_image`` instead, which can pick a faster
+    method.
     """
     import cv2
 
@@ -70,9 +80,9 @@ def cv2_write_params(ext, quality=None, png_compress_level=None):
     return []
 
 
-def save_image(image, path, quality=None, png_compress_level=None):
+def save_image(image, path, quality=None, png_compress_level=None, webp_method=None):
     """Save a PIL image to ``path``, choosing encoder settings from its extension."""
-    image.save(path, **pil_save_kwargs(Path(path).suffix, quality, png_compress_level))
+    image.save(path, **pil_save_kwargs(Path(path).suffix, quality, png_compress_level, webp_method))
 
 
 def add_quality_argument(parser, flag="--image_quality"):

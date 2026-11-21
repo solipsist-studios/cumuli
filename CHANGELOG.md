@@ -21,6 +21,17 @@
 - Fixed: `extract_synced_frames.py --window N` with `--output_ext .webp` wrote
   one animated file instead of N frames (ffmpeg picked the animated WebP
   encoder).
+- `extract_synced_frames.py` is faster. ffmpeg wrote a 10-bit source as a
+  16-bit PNG (69 MB at 5312x4648) that every later stage reads as 8-bit; PNG and
+  WebP are now written as 8-bit RGB, and PNG at compression level 1 (about 3x
+  faster to encode, files about 10% larger). Cameras are extracted concurrently,
+  with `--jobs N` (default: the number of cameras, at most 8).
+- Lossless WebP is slow to encode (5312x4648: PNG level 1 0.77 s, WebP method 0
+  5.5 s, method 4 9.3 s, method 6 47.6 s). Lossless WebP now encodes at method 2
+  (method 0 in `undistort_frames.py`, through PIL, not cv2's maximum-effort
+  setting). `build_flat_dataset.py` converts its cameras in a thread pool
+  (`--jobs`); `build_flipbook_4dgs_dataset.py` already did. Use PNG for the
+  working frames and WebP for the compressed stage.
 - A training frame that is not PNG carries its extension in its transforms
   `file_path`; PNG stays extensionless. Scored views (`--test_cameras`,
   `--eval_root`) and `eval_gt_flat/` stay lossless PNG.

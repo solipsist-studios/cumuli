@@ -439,6 +439,15 @@ WebP throughout.
   95 0.7 MB.
 - **JPEG is not offered for training images.** They are RGBA, with the mask in
   alpha, and JPEG has no alpha channel.
+- **Lossless WebP is slow to write.** On a 5312x4648 frame PNG at compression
+  level 1 (what the scripts write) takes 0.77 s, lossless WebP 5.5 s at encoder
+  method 0 and 9.3 s at method 4 (the files are about 40% smaller than PNG).
+  Use PNG for the working frames (extract, colour, undistort) and WebP for the
+  compressed stage; `build_flat_dataset.py` and `build_flipbook_4dgs_dataset.py`
+  encode their cameras in parallel (`--jobs`).
+- **Extraction is fast by default.** `extract_synced_frames.py` writes PNG and
+  WebP as 8-bit RGB (a 10-bit source otherwise becomes a 16-bit PNG, 69 MB at
+  5312x4648) and runs cameras concurrently (`--jobs`).
 - **Choose lossy once, as late as you can.** Quality loss compounds when a lossy
   frame is decoded and encoded again, so keep `extract_synced_frames.py`,
   `color_adjust.py` and `undistort_frames.py` lossless and set the quality at

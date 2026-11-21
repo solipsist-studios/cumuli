@@ -25,7 +25,7 @@ predict_keypoints_2d.py independently.
 
 Usage:
     python3 extract_synced_frames.py /path/to/movies/dir /path/to/sync_offsets.json /path/to/output/dir [seconds_into_clip] \\
-        [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."] [--output_ext .jpg|.jpeg|.png|.webp]
+        [--window N] [--pp3_dir /path/to/thumbs] [--rawtherapee_cmd "..."] [--output_ext .jpg|.jpeg|.png|.webp] [--jobs N]
 
     seconds_into_clip (optional, default 2.0) -- how far into the
     reference camera's clip to grab the frame from.
@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image
@@ -65,6 +66,19 @@ def ffmpeg_quality_args(ext: str):
     return []  # .png is already lossless, no quality flag needed
 
 
+def ffmpeg_format_args(ext: str):
+    """Pixel format and PNG effort. A 10-bit source (yuv420p10le) is written as a 16-bit PNG
+    (rgb48be, 69 MB at 5312x4648) unless told otherwise, and every later stage reads 8 bits, so
+    PNG and WebP are written as 8-bit RGB: files about 4x smaller and a much faster encode. PNG
+    compression level 1 is ~3x faster than ffmpeg's default for files about 10% larger. A .jpg
+    keeps ffmpeg's own choice."""
+    if ext == ".png":
+        return ["-pix_fmt", "rgb24", "-compression_level", "1"]
+    if ext == ".webp":
+        return ["-pix_fmt", "rgb24"]
+    return []
+
+
 def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: Path, ext: str):
     """Extract `count` consecutive frames starting at timestamp_sec.
     Returns the list of written paths (f0, f1, ... order)."""
@@ -79,6 +93,7 @@ def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: 
         # buffers every frame into ONE file whatever the %02d pattern says; naming libwebp,
         # the still-image encoder, writes one file per frame.
         *(["-c:v", "libwebp"] if ext == ".webp" else []),
+        *ffmpeg_format_args(ext),
         *ffmpeg_quality_args(ext),
         # Name the muxer too, so the output pattern is never taken as a single animated file.
         "-f", "image2",
@@ -107,6 +122,9 @@ def main():
                         help="Override the rawtherapee-cli invocation (default: rawtherapee-cli on PATH, else flatpak).")
     parser.add_argument("--output_ext", choices=SUPPORTED_IMAGE_EXTS, default=None,
                         help="Output image extension (default: .png with --pp3_dir, else .jpg).")
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="Cameras extracted at once (default: the number of cameras, at most 8). Each is one "
+                             "mostly single-threaded ffmpeg run holding a frame in memory.")
     args = parser.parse_args()
 
     if not args.movies_dir.is_dir():
@@ -157,18 +175,14 @@ def main():
     print(f"Reference camera: {reference_camera}")
     print(f"Extracting {args.window} frame(s) at {args.seconds_into_clip:.2f}s (reference camera time) for all cameras...\n")
 
-    failed = []
-    for name, data in offsets.items():
+    def process_camera(name, data):
+        """Extract one camera's frame(s). Returns (ok, log lines); the caller prints a camera's lines together."""
         video_path = args.movies_dir / name
         if not video_path.is_file():
-            print(f"  WARNING: {video_path} not found, skipping")
-            failed.append(name)
-            continue
+            return False, [f"  WARNING: {video_path} not found, skipping"]
 
         if "error" in data:
-            print(f"  WARNING: {name} has no sync data (failed in compute_sync_offsets.py: {data['error']}), skipping")
-            failed.append(name)
-            continue
+            return False, [f"  WARNING: {name} has no sync data (failed in compute_sync_offsets.py: {data['error']}), skipping"]
 
         fps = data["fps"]
         frame_offset = data["frame_offset"]
@@ -180,15 +194,14 @@ def main():
         seek_time = args.seconds_into_clip - (frame_offset / fps)
 
         if seek_time < 0:
-            print(f"  WARNING: {name} starts too late to extract a frame at "
-                  f"{args.seconds_into_clip:.2f}s reference time (would need negative seek). "
-                  f"Try a larger seconds_into_clip value. Skipping.")
-            failed.append(name)
-            continue
+            return False, [f"  WARNING: {name} starts too late to extract a frame at "
+                           f"{args.seconds_into_clip:.2f}s reference time (would need negative seek). "
+                           f"Try a larger seconds_into_clip value. Skipping."]
 
+        log = []
         pp3 = find_pp3(args.pp3_dir, video_path.stem) if rt_cmd else None
         if rt_cmd and pp3 is None:
-            print(f"  WARNING: no .pp3 profile matches camera {video_path.stem!r}; writing uncorrected frames.")
+            log.append(f"  WARNING: no .pp3 profile matches camera {video_path.stem!r}; writing uncorrected frames.")
 
         try:
             with tempfile.TemporaryDirectory() as tmp:
@@ -213,10 +226,24 @@ def main():
                     else:
                         shutil.move(str(raw_path), str(out_path))
             cc = f" + pp3 {pp3.name}" if pp3 else ""
-            print(f"  {name}: seeking to {seek_time:.3f}s, {args.window} frame(s){cc}")
+            log.append(f"  {name}: seeking to {seek_time:.3f}s, {args.window} frame(s){cc}")
+            return True, log
         except (subprocess.CalledProcessError, RuntimeError) as e:
-            print(f"  ERROR extracting frames from {name}: {e}")
-            failed.append(name)
+            return False, log + [f"  ERROR extracting frames from {name}: {e}"]
+
+    # The cameras are independent ffmpeg runs and one encode is mostly single-threaded (a 5K PNG is
+    # seconds on one core), so several at a time is close to linear. Results are reported in camera
+    # order, each camera's lines together.
+    jobs = max(1, min(args.jobs or min(len(offsets), 8), max(len(offsets), 1)))
+    failed = []
+    with ThreadPoolExecutor(max_workers=jobs) as pool:
+        futures = [(name, pool.submit(process_camera, name, data)) for name, data in offsets.items()]
+        for name, future in futures:
+            ok, lines = future.result()
+            for line in lines:
+                print(line, flush=True)
+            if not ok:
+                failed.append(name)
 
     print(f"\nDone. Extracted frames are in {args.output_dir}")
     if failed:

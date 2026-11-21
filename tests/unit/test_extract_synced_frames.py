@@ -388,7 +388,7 @@ def test_main_extraction_exception_marks_camera_failed_and_exits_1(tmp_path, mon
     out = capsys.readouterr().out
     assert "ERROR extracting frames from 0002.mp4" in out
     assert "Failed/skipped cameras" in out and "0002.mp4" in out
-    assert calls == ["0001.mp4", "0002.mp4"]  # 0001 still got processed
+    assert sorted(calls) == ["0001.mp4", "0002.mp4"]  # 0001 still got processed (cameras run concurrently, in any order)
     assert (out_dir / "0001.jpg").is_file()
     assert not (out_dir / "0002.jpg").exists()
 

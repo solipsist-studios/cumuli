@@ -308,3 +308,170 @@ def test_pp3_with_webp_converts_rawtherapees_png_to_lossless_webp(tmp_path, monk
     assert b"VP8L" in (out / "0001.webp").read_bytes()[:32]
     with Image.open(out / "0001.webp") as im:
         assert (np.asarray(im.convert("RGB")) == corrected).all()
+
+
+# ------------------------------------------------------------ extraction speed
+def png_bit_depth(path):
+    return path.read_bytes()[24]      # the IHDR bit depth: 8 for rgb24, 16 for rgb48
+
+
+def test_ffmpeg_format_args_per_extension():
+    assert esf.ffmpeg_format_args(".png") == ["-pix_fmt", "rgb24", "-compression_level", "1"]
+    assert esf.ffmpeg_format_args(".webp") == ["-pix_fmt", "rgb24"]
+    assert esf.ffmpeg_format_args(".jpg") == [] == esf.ffmpeg_format_args(".jpeg")
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs ffmpeg")
+def test_a_10_bit_source_is_written_as_a_smaller_8_bit_png(tmp_path):
+    """ffmpeg writes a yuv420p10le source as a 16-bit PNG unless told otherwise; every later stage
+    reads 8 bits, so the extra bits only cost disk and encode time."""
+    clip = tmp_path / "0001.mkv"
+    # Sensor-like noise: a clean test pattern compresses so well that the 16-bit cost hides.
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "testsrc2=size=320x240:rate=10:duration=1,noise=alls=25:allf=t",
+                    "-pix_fmt", "yuv420p10le", "-c:v", "ffv1", str(clip)], check=True)
+    before = tmp_path / "before.png"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(clip), "-frames:v", "1", str(before)], check=True)
+    (after,) = esf.extract_frames(clip, 0.0, 1, tmp_path / "out", ".png")
+    assert png_bit_depth(before) == 16 and png_bit_depth(after) == 8
+    print(f"16-bit PNG {before.stat().st_size} bytes -> 8-bit level-1 PNG {after.stat().st_size} bytes "
+          f"({before.stat().st_size / after.stat().st_size:.1f}x smaller)")
+    assert after.stat().st_size < before.stat().st_size / 1.5
+    with Image.open(after) as im:
+        assert im.mode == "RGB" and im.size == (320, 240)
+
+
+def test_png_extraction_asks_for_rgb24_and_compression_level_1(tmp_path, monkeypatch):
+    commands = []
+    monkeypatch.setattr(esf.subprocess, "run", lambda cmd, check: commands.append(cmd))
+    with pytest.raises(RuntimeError):                  # nothing is written, so the frame count check fires
+        esf.extract_frames(tmp_path / "0001.mp4", 0.0, 1, tmp_path / "o", ".png")
+    cmd = commands[0]
+    assert cmd[cmd.index("-pix_fmt") + 1] == "rgb24" and cmd[cmd.index("-compression_level") + 1] == "1"
+    commands.clear()
+    with pytest.raises(RuntimeError):
+        esf.extract_frames(tmp_path / "0001.mp4", 0.0, 1, tmp_path / "o", ".jpg")
+    assert "-pix_fmt" not in commands[0] and "-compression_level" not in commands[0]
+
+
+def run_cameras(tmp_path, monkeypatch, n, *extra):
+    """Run main() over n fake cameras; returns the most extractions seen running at once."""
+    import threading
+    import time
+
+    movies = tmp_path / "movies"
+    movies.mkdir()
+    entries = {}
+    for k in range(1, n + 1):
+        (movies / f"{k:04d}.mp4").write_bytes(b"")
+        entries[f"{k:04d}.mp4"] = {"fps": 30.0, "frame_offset": 3}
+    offsets = tmp_path / "o.json"
+    offsets.write_text(json.dumps({"reference_camera": "0001.mp4", "offsets": entries}))
+    lock, state = threading.Lock(), {"now": 0, "peak": 0}
+
+    def fake_extract(video_path, seek, count, out_dir, ext):
+        with lock:
+            state["now"] += 1
+            state["peak"] = max(state["peak"], state["now"])
+        time.sleep(0.15)
+        with lock:
+            state["now"] -= 1
+        out_dir.mkdir(parents=True, exist_ok=True)
+        p = out_dir / f"{video_path.stem}_01{ext}"
+        p.write_bytes(b"")
+        return [p]
+
+    monkeypatch.setattr(esf, "extract_frames", fake_extract)
+    monkeypatch.setattr(sys, "argv", ["p", str(movies), str(offsets), str(tmp_path / "out"), *extra])
+    esf.main()
+    return state["peak"], sorted(p.name for p in (tmp_path / "out").iterdir())
+
+
+def test_cameras_are_extracted_concurrently_by_default(tmp_path, monkeypatch):
+    peak, files = run_cameras(tmp_path, monkeypatch, 4)
+    assert peak >= 2 and files == ["0001.jpg", "0002.jpg", "0003.jpg", "0004.jpg"]
+
+
+def test_jobs_one_extracts_one_camera_at_a_time(tmp_path, monkeypatch):
+    peak, files = run_cameras(tmp_path, monkeypatch, 3, "--jobs", "1")
+    assert peak == 1 and len(files) == 3
+
+
+def test_jobs_caps_the_concurrency(tmp_path, monkeypatch):
+    peak, _ = run_cameras(tmp_path, monkeypatch, 6, "--jobs", "2")
+    assert peak == 2
+
+
+def test_a_failed_camera_still_exits_1_with_the_others_written(tmp_path, monkeypatch, capsys):
+    (tmp_path / "movies").mkdir()
+    (tmp_path / "movies" / "0001.mp4").write_bytes(b"")           # 0002.mp4 is in the offsets but missing
+    offsets = tmp_path / "o.json"
+    offsets.write_text(json.dumps({"reference_camera": "0001.mp4", "offsets": {
+        "0001.mp4": {"fps": 30.0, "frame_offset": 3}, "0002.mp4": {"fps": 30.0, "frame_offset": 3}}}))
+
+    def fake_extract(video_path, seek, count, out_dir, ext):
+        out_dir.mkdir(parents=True, exist_ok=True)
+        p = out_dir / f"{video_path.stem}_01{ext}"
+        p.write_bytes(b"")
+        return [p]
+
+    monkeypatch.setattr(esf, "extract_frames", fake_extract)
+    monkeypatch.setattr(sys, "argv", ["p", str(tmp_path / "movies"), str(offsets), str(tmp_path / "out")])
+    with pytest.raises(SystemExit) as e:
+        esf.main()
+    assert e.value.code == 1
+    assert "Failed/skipped cameras: ['0002.mp4']" in capsys.readouterr().out
+    assert (tmp_path / "out" / "0001.jpg").is_file()
+
+
+# ------------------------------------------------------------ WebP encode cost
+def test_lossless_webp_defaults_to_a_fast_encoder_method():
+    assert fmt_kwargs(".webp")["method"] == 2
+    assert fmt_kwargs(".webp", webp_method=0)["method"] == 0
+    assert fmt_kwargs(".webp", quality=50)["method"] == 4
+
+
+def fmt_kwargs(ext, **kw):
+    import image_formats
+
+    return image_formats.pil_save_kwargs(ext, **kw)
+
+
+def test_undistort_writes_lossless_webp_with_pil_method_0_not_cv2(tmp_path, monkeypatch):
+    seen = {}
+    real = uf.save_image
+
+    def spy(image, path, quality=None, png_compress_level=None, webp_method=None):
+        seen.update(quality=quality, webp_method=webp_method)
+        return real(image, path, quality, png_compress_level, webp_method)
+
+    monkeypatch.setattr(uf, "save_image", spy)
+    img = noise(40, 56, 4)
+    assert uf.write_image(tmp_path / "a.webp", img)
+    assert seen == {"quality": None, "webp_method": 0}
+    # BGR in, RGB out: the channel order survives the PIL path
+    with Image.open(tmp_path / "a.webp") as im:
+        assert (np.asarray(im.convert("RGB")) == img[..., ::-1]).all()
+    assert uf.write_image(tmp_path / "q.webp", img, 40)
+    assert seen == {"quality": 40, "webp_method": None}
+
+
+def test_flat_dataset_converts_in_parallel_and_keeps_label_order(tmp_path, monkeypatch):
+    und = tmp_path / "und"
+    frames = []
+    for k in range(1, 6):
+        d = und / f"Camera_{k:04d}"
+        d.mkdir(parents=True)
+        Image.fromarray(noise(24, 32, k)).save(d / "0000.png")
+        frames.append({"camera_label": f"Camera_undistorted_{k:04d}"})
+    tf = tmp_path / "t.json"
+    tf.write_text(json.dumps({"frames": frames}))
+    out = tmp_path / "flat"
+    monkeypatch.setattr(sys, "argv", ["p", "--transforms", str(tf), "--undistorted_dir", str(und), "--image_ext", ".png",
+                                      "--out_images_flat", str(out), "--out_transforms", str(tmp_path / "o.json"),
+                                      "--out_image_ext", ".webp", "--jobs", "4"])
+    bfd.main()
+    assert sorted(p.name for p in out.iterdir()) == [f"{k:02d}.webp" for k in range(5)]   # no temp files left
+    for k in range(5):
+        with Image.open(out / f"{k:02d}.webp") as im:
+            assert (np.asarray(im.convert("RGB")) == noise(24, 32, k + 1)).all()          # label k is camera k+1

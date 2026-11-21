@@ -43,6 +43,7 @@ import argparse
 import json
 import shutil
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image
@@ -63,6 +64,9 @@ def main():
     parser.add_argument("--out_image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
                          help="Extension to save flat images as. .webp is lossless unless --out_image_quality is set.")
     add_quality_argument(parser, "--out_image_quality")
+    parser.add_argument("--jobs", type=int, default=None,
+                        help="Images converted at once (default: the number of cameras, at most 8). Lossless "
+                             ".webp is several seconds per 5K frame, so it benefits from the parallelism.")
     args = parser.parse_args()
     try:
         check_image_quality(args.out_image_ext, args.out_image_quality)
@@ -90,6 +94,7 @@ def main():
     label_map = {}
     skipped = []
 
+    todo = []   # (frame, old_label, cam_id, src_img) for every camera whose image exists
     for frame in frames:
         old_label = frame["camera_label"]  # e.g. "Camera_undistorted_0001"
         cam_id = old_label.replace("Camera_undistorted_", "").replace("Camera_", "")
@@ -99,32 +104,45 @@ def main():
             print(f"  WARNING: no image found for {old_label} at {src_img}, skipping")
             skipped.append(old_label)
             continue
+        todo.append((frame, old_label, cam_id, src_img))
 
-        # Label from a dense counter of cameras actually written, not the
-        # pre-filter loop index -- labels stay a contiguous "00".."NN"
-        # range (the convention inherited from Diffuman4D's tooling), so a
-        # skipped camera must not leave a gap in the numbering.
-        new_label = f"{len(new_frames):02d}"
-        dst_img = args.out_images_flat / f"{new_label}{args.out_image_ext}"
+    def convert(i, src_img):
+        """Write one camera's image under a temporary name (same extension, so the encoder is picked
+        right); it is renamed to its label once every earlier camera's outcome is known."""
+        tmp_img = args.out_images_flat / f".tmp{i:04d}{args.out_image_ext}"
+        if args.out_image_ext.lower() == args.image_ext.lower() and args.out_image_quality is None:
+            shutil.copy(src_img, tmp_img)
+        else:   # a quality means a re-encode even when the extension matches
+            with Image.open(src_img) as im:
+                save_image(im.convert("RGB"), tmp_img, args.out_image_quality)
+        return tmp_img
 
-        try:
-            if args.out_image_ext.lower() == args.image_ext.lower() and args.out_image_quality is None:
-                shutil.copy(src_img, dst_img)
-            else:   # a quality means a re-encode even when the extension matches
-                with Image.open(src_img) as im:
-                    save_image(im.convert("RGB"), dst_img, args.out_image_quality)
-        except Exception as e:
-            print(f"  WARNING: could not read/convert image for {old_label} at {src_img} ({e}), skipping")
-            skipped.append(old_label)
-            continue
+    # The encode (lossless WebP is seconds per 5K frame) runs in a thread pool: PIL releases the GIL.
+    workers = max(1, min(args.jobs or min(len(todo), 8), max(len(todo), 1)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(convert, i, item[3]) for i, item in enumerate(todo)]
+        for (frame, old_label, cam_id, src_img), future in zip(todo, futures):
+            try:
+                tmp_img = future.result()
+            except Exception as e:
+                print(f"  WARNING: could not read/convert image for {old_label} at {src_img} ({e}), skipping")
+                skipped.append(old_label)
+                continue
 
-        label_map[new_label] = old_label
-        print(f"  {old_label} (cam {cam_id}) -> {new_label}{args.out_image_ext}")
+            # Label from a dense counter of cameras actually written, not the
+            # pre-filter loop index -- labels stay a contiguous "00".."NN"
+            # range (the convention inherited from Diffuman4D's tooling), so a
+            # skipped camera must not leave a gap in the numbering.
+            new_label = f"{len(new_frames):02d}"
+            tmp_img.replace(args.out_images_flat / f"{new_label}{args.out_image_ext}")
 
-        new_frame = dict(frame)
-        new_frame["camera_label"] = new_label
-        new_frame["file_path"] = f"images_flat/{new_label}{args.out_image_ext}"
-        new_frames.append(new_frame)
+            label_map[new_label] = old_label
+            print(f"  {old_label} (cam {cam_id}) -> {new_label}{args.out_image_ext}")
+
+            new_frame = dict(frame)
+            new_frame["camera_label"] = new_label
+            new_frame["file_path"] = f"images_flat/{new_label}{args.out_image_ext}"
+            new_frames.append(new_frame)
 
     if skipped:
         print(f"\nERROR: {len(skipped)} camera(s) missing an undistorted image, skipped: {skipped}")
