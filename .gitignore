@@ -9,3 +9,4 @@ mutants/
 .hypothesis/
 tests/integration/artifacts/
 .claude/
+.vscode/
