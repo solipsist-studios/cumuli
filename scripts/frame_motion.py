@@ -26,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 
 def load_gray(path: Path, scale: float):
     import cv2
@@ -60,9 +62,10 @@ def flow_speed(prev, nxt, mask, percentile: float) -> float | None:
     return float(np.percentile(values, percentile))
 
 
-def camera_speeds(frames: list[Path], label: str, image_dir: str, mask_dir: str | None, scale: float, percentile: float):
+def camera_speeds(frames: list[Path], label: str, image_dir: str, mask_dir: str | None, scale: float, percentile: float,
+                  image_ext: str = ".png"):
     """Per frame, this camera's subject speed in full-resolution pixels per frame (None where it cannot say)."""
-    grays = [load_gray(d / image_dir / f"{label}.png", scale) for d in frames]
+    grays = [load_gray(d / image_dir / f"{label}{image_ext}", scale) for d in frames]
     masks = []
     for d, g in zip(frames, grays):
         masks.append(None if g is None or not mask_dir else load_mask(d / mask_dir / f"{label}.png", g.shape))
@@ -101,6 +104,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--frames_root", required=True, help="folder of frame_NNNN/ (links are followed)")
     ap.add_argument("--image_dir", default="images_flat")
+    ap.add_argument("--image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
+                    help="extension of the frames in --image_dir (default .png); masks stay PNG")
     ap.add_argument("--mask_dir", default="fmasks_clean", help="'' to measure the whole picture")
     ap.add_argument("--max_side", type=int, default=960, help="flow is computed at this longest side")
     ap.add_argument("--percentile", type=float, default=90.0)
@@ -113,13 +118,15 @@ def main(argv=None) -> int:
     frames = sorted(p for p in Path(args.frames_root).glob("frame_*") if p.is_dir())
     if len(frames) < 2:
         raise SystemExit(f"{args.frames_root}: need at least two frames")
-    labels = sorted(p.stem for p in (frames[0] / args.image_dir).glob("*.png"))
-    first = load_gray(frames[0] / args.image_dir / f"{labels[0]}.png", 1.0)
+    labels = sorted(p.stem for p in (frames[0] / args.image_dir).glob(f"*{args.image_ext}"))
+    if not labels:
+        raise SystemExit(f"{frames[0] / args.image_dir}: no {args.image_ext} images")
+    first = load_gray(frames[0] / args.image_dir / f"{labels[0]}{args.image_ext}", 1.0)
     scale = min(1.0, args.max_side / max(first.shape))
     print(f"{len(frames)} frames, {len(labels)} cameras, flow at {scale:.3f} of full size", flush=True)
     with ThreadPoolExecutor(args.jobs) as pool:
         per_camera = dict(zip(labels, pool.map(lambda l: camera_speeds(frames, l, args.image_dir, args.mask_dir or None,
-                                                                         scale, args.percentile), labels)))
+                                                                         scale, args.percentile, args.image_ext), labels)))
     names = [Path(os.path.realpath(d)).name for d in frames]  # windows link frame_i to the clip's frame_NNNN
     speeds = {}
     for i, name in enumerate(names):

@@ -36,6 +36,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from image_formats import SUPPORTED_IMAGE_EXTS
 from refine_poses_with_keypoints import load_transforms, match_camera, triangulate_linear  # noqa: E402
 
 # Gates. Each has a command-line flag; main() overwrites these from the arguments.
@@ -201,6 +202,8 @@ def main():
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--num_subjects", type=int, default=2)
     ap.add_argument("--ref_camera", default="Camera_0007")
+    ap.add_argument("--image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
+                    help="extension of the frames in --images_dir (default .png)")
     ap.add_argument("--images_dir", help="with --merge_out: per-camera images; drops detections that are much darker (--dark_ratio), much taller (--size_ratio) or cut off by the frame edge (--edge_margin_px) compared with the anchor subject in that camera")
     ap.add_argument("--merge_out", action="store_true",
                     help="write <out_dir>/<camera>/000000.json holding ALL chosen subjects (for clean_masks.py); one pred dir")
@@ -252,7 +255,7 @@ def main():
                 from PIL import Image
                 anchor_cams = {c: i for c, i in clusters[0]}
                 def luma(c, i):
-                    im = Image.open(Path(args.images_dir) / f"{c}.png").convert("L")
+                    im = Image.open(Path(args.images_dir) / f"{c}{args.image_ext}").convert("L")
                     b = inst[c][i]["raw"]["bbox"][:4]; w, h = b[2] - b[0], b[3] - b[1]
                     r = np.asarray(im.crop((int(b[0] + .25 * w), int(b[1] + .2 * h), int(b[0] + .75 * w), int(b[1] + .7 * h))).reduce(2), float)
                     return float(np.median(r))
@@ -263,7 +266,7 @@ def main():
                         if cc != c or i == ai:
                             continue
                         b = inst[c][i]["raw"]["bbox"]
-                        iw, ih = Image.open(Path(args.images_dir) / f"{c}.png").size
+                        iw, ih = Image.open(Path(args.images_dir) / f"{c}{args.image_ext}").size
                         m = EDGE_MARGIN
                         edge = b[0] <= m or b[1] <= m or b[2] >= iw - m or b[3] >= ih - m   # cut off by the frame
                         if luma(c, i) < DARK_RATIO * la or (b[3] - b[1]) > SIZE_RATIO * ha or edge:

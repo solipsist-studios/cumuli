@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+- Frame image formats. Frames can be written as lossless or lossy WebP, not
+  only PNG. `.webp` with no quality is lossless; a quality (1-100) makes a lossy
+  WebP whose alpha channel stays lossless. A quality with `.png` or `.jpg` is an
+  error, and JPEG is not offered for training images (no alpha). Defaults are
+  unchanged. New flags: `color_adjust.py --image_quality`,
+  `build_flat_dataset.py --out_image_quality`,
+  `undistort_frames.py --out_image_ext --out_image_quality`,
+  `build_flipbook_4dgs_dataset.py --image_ext --out_image_ext --out_image_quality`,
+  `build_4dgs_dataset.py --out_image_ext --out_image_quality`,
+  `build_colmap_sparse.py --out_image_ext --out_image_quality`,
+  `frame_motion.py`, `refine_sync_visual.py` and `associate_subjects.py`
+  `--image_ext`. `extract_synced_frames.py --pp3_dir` accepts
+  `--output_ext .webp`.
+- Fixed: `color_adjust.py` and `build_flat_dataset.py` wrote `.webp` as lossy
+  quality 80, and `undistort_frames.py` as OpenCV's lossy quality 95. All are
+  lossless now.
+- Fixed: `extract_synced_frames.py --window N` with `--output_ext .webp` wrote
+  one animated file instead of N frames (ffmpeg picked the animated WebP
+  encoder).
+- A training frame that is not PNG carries its extension in its transforms
+  `file_path`; PNG stays extensionless. Scored views (`--test_cameras`,
+  `--eval_root`) and `eval_gt_flat/` stay lossless PNG.
+
 ## 0.2.0
 
 Pins cumuli-core 0.2.0, cumuli-trainer 0.2.0 and camera-calibration 0.2.0.

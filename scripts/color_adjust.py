@@ -30,7 +30,7 @@ Settings file:
    "cameras": {"0001": {"method": "adjust", "adjust": {...}}}}      (optional per-camera overrides)
 
 Usage:
-    python3 color_adjust.py --settings settings.json --in_dir frames/ --out_dir corrected/ [--image_ext .png]
+    python3 color_adjust.py --settings settings.json --in_dir frames/ --out_dir corrected/ [--image_ext .png|.webp] [--image_quality 1-100]
 Cameras are matched by filename stem, ignoring a leading "undistorted_".
 """
 
@@ -44,6 +44,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from image_formats import ImageQualityError, add_quality_argument, check_image_quality, save_image
 
 ADJUST_KEYS = ("exposure", "temperature", "contrast", "saturation")
 TEMPERATURE_GAIN = 0.15
@@ -175,12 +177,24 @@ def correct_file(path, out_path, cfg, lut_cache):
         pp3 = find_pp3(Path(cfg["pp3_dir"]), camera_of(path))
         if pp3 is None:
             raise SystemExit(f"Error: no .pp3 for camera {camera_of(path)} in {cfg['pp3_dir']}")
-        apply_pp3(resolve_rawtherapee_cmd(cfg.get("rawtherapee_cmd")), path, pp3, out_path)
+        rt_cmd = resolve_rawtherapee_cmd(cfg.get("rawtherapee_cmd"))
+        if out_path.suffix.lower() == ".png":
+            apply_pp3(rt_cmd, path, pp3, out_path)
+            return
+        # RawTherapee always writes PNG whatever the extension says, so render to a
+        # PNG beside the output and re-encode it in the requested format.
+        rendered = out_path.with_name(out_path.name + ".rt.png")
+        try:
+            apply_pp3(rt_cmd, path, pp3, rendered)
+            with Image.open(rendered) as image:
+                save_image(image.convert("RGB"), out_path, cfg.get("image_quality"))
+        finally:
+            rendered.unlink(missing_ok=True)
         return
     with Image.open(path) as image:
         out = correct_image(np.asarray(image.convert("RGB")), cfg, lut_cache)
-    extra = {"compress_level": 1} if out_path.suffix.lower() == ".png" else {}
-    Image.fromarray(out).save(out_path, **extra)
+    # PNG at a light compression level; .webp lossless unless an image_quality is set.
+    save_image(Image.fromarray(out), out_path, cfg.get("image_quality"), png_compress_level=1)
 
 
 _LUTS = {}
@@ -243,7 +257,9 @@ def main():
     parser.add_argument("--settings", required=True, type=Path)
     parser.add_argument("--in_dir", required=True, type=Path, nargs="+", help="One or more folders of frames; each is paired with the --out_dir at the same position.")
     parser.add_argument("--out_dir", required=True, type=Path, nargs="+")
-    parser.add_argument("--image_ext", default=".png")
+    parser.add_argument("--image_ext", default=".png",
+                        help="Extension of the input frames; the corrected frames keep it. .webp output is lossless unless --image_quality is set.")
+    add_quality_argument(parser)
     parser.add_argument("--manifest", type=Path, default=None,
                         help="A file that records the images already corrected. With it, a run carries on from an earlier one: "
                              "an image whose input, correction, LUT and profile are unchanged, and whose output is there, is not done again.")
@@ -251,6 +267,10 @@ def main():
     args = parser.parse_args()
     if len(args.in_dir) != len(args.out_dir):
         sys.exit("Error: --in_dir and --out_dir need the same number of folders.")
+    try:
+        check_image_quality(args.image_ext, args.image_quality)
+    except ImageQualityError as e:
+        sys.exit(f"Error: --image_quality: {e}")
 
     settings = json.loads(args.settings.read_text())
     previous = load_manifest(args.manifest)
@@ -263,6 +283,8 @@ def main():
         for path in files:
             camera = camera_of(path)
             cfg = camera_settings(settings, camera)
+            if args.image_quality is not None:   # also enters the manifest signature
+                cfg = dict(cfg, image_quality=args.image_quality)
             out_path = out_dir / path.name
             stat = path.stat()
             entry = {"sig": correction_signature(cfg, camera, digests), "in": [stat.st_size, stat.st_mtime_ns]}

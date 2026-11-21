@@ -426,6 +426,44 @@ the radius from the triangulated subject's median.
 Run `--report_only` first to see the keep/drop split before you write
 anything.
 
+## Frame image formats
+
+Every stage writes PNG (or, for the first extraction, JPEG) unless told
+otherwise, and every stage reads the extension it is given, so a run can use
+WebP throughout.
+
+- **`.webp` is lossless unless a quality is given.** `--image_quality` or
+  `--out_image_quality` (1-100) makes a lossy WebP; the alpha channel of the RGBA
+  training images stays lossless. A quality with `.png` or `.jpg` is an error.
+  Measured on 2656x2324 frames: PNG 6.9 MB, lossless WebP 4.6 MB, WebP quality
+  95 0.7 MB.
+- **JPEG is not offered for training images.** They are RGBA, with the mask in
+  alpha, and JPEG has no alpha channel.
+- **Choose lossy once, as late as you can.** Quality loss compounds when a lossy
+  frame is decoded and encoded again, so keep `extract_synced_frames.py`,
+  `color_adjust.py` and `undistort_frames.py` lossless and set the quality at
+  the last writer, `build_flipbook_4dgs_dataset.py --out_image_quality`.
+- **Where the extension is set:** `extract_synced_frames.py --output_ext`
+  (`--pp3_dir` takes `.png` or `.webp`, converting RawTherapee's PNG to lossless
+  WebP); `color_adjust.py --image_ext` (input and output) and `--image_quality`;
+  `undistort_frames.py --image_ext` in and `--out_image_ext` out (default: the
+  same); `build_flat_dataset.py --image_ext` and `--out_image_ext`;
+  `build_flipbook_4dgs_dataset.py --image_ext` (the `images_flat` frames) and
+  `--out_image_ext` (`.png` or `.webp`, the training images);
+  `frame_motion.py`, `refine_sync_visual.py`, `associate_subjects.py` and
+  `run_hloc.py --image_ext`; `generate_masks.py`, `clean_masks.py` and
+  `birefnet_masks.py --image_ext`; `build_colmap_sparse.py --out_image_ext`.
+  Masks stay PNG everywhere.
+- **`file_path` in the training transforms.** PNG frames are extensionless, as
+  before; a `.webp` frame carries its extension (`realcams/cam00/frame_00001.webp`),
+  because cumuli-core finds a frame by trying no extension and then `.png`,
+  `.jpg` and `.jpeg`.
+- **Scored views never go lossy.** `--test_cameras`, `--eval_root` and
+  `eval_gt_flat/` stay lossless PNG whatever `--out_image_ext` says, so held-out
+  ground truth never takes a lossy pass. `eval_render.py` looks the ground
+  truth up as `<file_path basename>.png`.
+- `run_unified_pipeline.py` still uses PNG for the 4D dataset stage.
+
 ## Added in 0.2.0
 
 These scripts and flags are optional extensions of the stages above. Each

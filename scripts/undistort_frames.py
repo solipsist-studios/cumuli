@@ -61,7 +61,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from image_formats import SUPPORTED_IMAGE_EXTS
+from image_formats import (SUPPORTED_IMAGE_EXTS, ImageQualityError, add_quality_argument,
+                           check_image_quality, cv2_write_params)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CALIBRATION_DIR = REPO_ROOT / "deps" / "camera-calibration"
@@ -161,13 +162,14 @@ def validate_and_rescale(calib: dict, media_w: int, media_h: int, cam_id: str, a
     return calib, False
 
 
-def write_image(path: Path, img) -> bool:
+def write_image(path: Path, img, quality=None) -> bool:
+    """Write ``img`` in the format of ``path``'s extension. .webp is lossless unless a quality is given
+    (OpenCV's own default would be lossy, quality 95)."""
     import cv2
-    params = [cv2.IMWRITE_PNG_COMPRESSION, PNG_COMPRESSION] if Path(path).suffix.lower() == ".png" else []
-    return bool(cv2.imwrite(str(path), img, params))
+    return bool(cv2.imwrite(str(path), img, cv2_write_params(Path(path).suffix, quality, PNG_COMPRESSION)))
 
 
-def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: str, out_path: Path):
+def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: str, out_path: Path, quality=None):
     """One remap from the native (distorted) frame directly to the target pinhole geometry."""
     import cv2
 
@@ -193,7 +195,7 @@ def single_warp_undistort(frame_path: Path, calib: dict, target: dict, model: st
     else:
         map1, map2 = cv2.initUndistortRectifyMap(K, D, None, K_t, (t_w, t_h), cv2.CV_16SC2)
     out = cv2.remap(img, map1, map2, interpolation=cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT)
-    if not write_image(out_path, out):
+    if not write_image(out_path, out, quality):
         raise ValueError(f"could not write {out_path}")
     return (t_w, t_h), K_t
 
@@ -228,7 +230,9 @@ def process_camera(job: dict):
         return cam_id, False, [f"  ERROR {cam_id}: {e}"]
 
     out_pkl_path = job["out_pkl_dir"] / f"Camera_{cam_id}.pkl"
-    out_path = job["out_dir"] / f"{cam_id}{job['image_ext']}"
+    out_ext = job.get("out_image_ext") or job["image_ext"]
+    out_quality = job.get("out_image_quality")
+    out_path = job["out_dir"] / f"{cam_id}{out_ext}"
 
     if job["target_pkl_dir"] is not None:
         target_path = resolve_calib_path(job["target_pkl_dir"], cam_id)
@@ -237,7 +241,8 @@ def process_camera(job: dict):
         try:
             target = load_pkl(target_path)
             log.append(f"  Undistorting {cam_id} (single warp) ...")
-            (t_w, t_h), K_t = single_warp_undistort(frame_path, calib, target, job["model"], out_path)
+            (t_w, t_h), K_t = single_warp_undistort(frame_path, calib, target, job["model"], out_path,
+                                                          **({} if out_quality is None else {"quality": out_quality}))
         except Exception as e:
             return cam_id, False, log + [f"  ERROR {cam_id}: {e}"]
         undistorted_calib = {
@@ -268,7 +273,7 @@ def process_camera(job: dict):
         if img is None:
             raise ValueError(f"could not read {frame_path}")
         undistorted = ou.undistort_image(img, mtx, dist, fisheye=fisheye)
-        if not write_image(out_path, undistorted):
+        if not write_image(out_path, undistorted, out_quality):
             raise ValueError(f"could not write {out_path}")
         data = ou.build_undistorted_calibration_data(mtx, dist, (media_w, media_h), fisheye)
         with open(out_pkl_path, "wb") as f:
@@ -287,6 +292,10 @@ def main():
     parser.add_argument("--model", default="OPENCV_FISHEYE", choices=["OPENCV", "OPENCV_FISHEYE"])
     parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS,
                          help="Extension of frames in frames_dir (default: .jpg)")
+    parser.add_argument("--out_image_ext", default=None, choices=SUPPORTED_IMAGE_EXTS,
+                         help="Extension of the undistorted frames (default: the same as --image_ext). "
+                              ".webp is lossless unless --out_image_quality is set.")
+    add_quality_argument(parser, "--out_image_quality")
     parser.add_argument("--target_pkl_dir", type=Path, default=None,
                         help="Per-camera TARGET pinhole pkls (Camera_<camera_id>.pkl): enables single-warp "
                              "mode, mapping native fisheye frames directly to that geometry in one resample.")
@@ -295,6 +304,11 @@ def main():
     parser.add_argument("--jobs", type=int, default=None,
                         help="Cameras to undistort at once (default: one per CPU core). Each holds a full-size frame in memory.")
     args = parser.parse_args()
+    try:
+        check_image_quality(args.out_image_ext or args.image_ext, args.out_image_quality)
+    except ImageQualityError as e:
+        print(f"Error: --out_image_quality: {e}")
+        sys.exit(1)
 
     if args.target_pkl_dir is None and not UNDISTORT_SCRIPT.is_file():
         print(f"Error: {UNDISTORT_SCRIPT} not found -- is the camera-calibration submodule checked out?")
@@ -316,7 +330,8 @@ def main():
     print(f"Found {len(frame_paths)} frames in {args.frames_dir} -- mode: {mode}")
 
     jobs = [dict(cam_id=p.stem, frame_path=p, calib_dir=args.calib_dir, out_dir=args.out_dir, out_pkl_dir=args.out_pkl_dir,
-                 model=args.model, image_ext=args.image_ext, target_pkl_dir=args.target_pkl_dir, no_rescale=args.no_rescale)
+                 model=args.model, image_ext=args.image_ext, out_image_ext=args.out_image_ext,
+                 out_image_quality=args.out_image_quality, target_pkl_dir=args.target_pkl_dir, no_rescale=args.no_rescale)
             for p in frame_paths]
     workers = max(1, min(args.jobs or default_jobs(), len(jobs)))
     print(f"Undistorting {len(jobs)} cameras with {workers} worker(s)")

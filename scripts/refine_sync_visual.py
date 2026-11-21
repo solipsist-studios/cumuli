@@ -61,6 +61,8 @@ from pathlib import Path
 
 import numpy as np
 
+from image_formats import SUPPORTED_IMAGE_EXTS
+
 CONVENTION = "capture_time = frame_time + offset_s (seconds; PLUS: a positive offset means the camera fired later)"
 
 
@@ -587,6 +589,8 @@ def main(argv=None) -> int:
     ap.add_argument("--transforms", required=True, help="Camera poses transforms.json (undistorted pinhole cameras)")
     ap.add_argument("--frames_root", required=True, help="folder of frame_NNNN/ folders with <image_dir>/<label>.png")
     ap.add_argument("--image_dir", default="images_flat")
+    ap.add_argument("--image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
+                    help="extension of the frames in --image_dir (default .png); masks stay PNG")
     ap.add_argument("--mask_dir", default="fmasks", help="per-frame masks <mask_dir>/<label>.png; matches are kept "
                                                        "where either camera's mask says subject ('' for none)")
     ap.add_argument("--fps", type=float, required=True)
@@ -638,7 +642,7 @@ def main(argv=None) -> int:
     print(f"{len(labels)} cameras, {len(pairs)} pairs, frames {[frame_dirs[i].name for i in picks]}, RoMa {args.roma}", flush=True)
 
     matcher = Matcher(args.roma, samples=args.samples)
-    image = lambda i, l: frame_dirs[i] / args.image_dir / f"{l}.png"  # noqa: E731
+    image = lambda i, l: frame_dirs[i] / args.image_dir / f"{l}{args.image_ext}"  # noqa: E731
     mask = lambda i, l: (frame_dirs[i] / args.mask_dir / f"{l}.png") if args.mask_dir else None  # noqa: E731
     measured: dict[tuple[str, str], list[dict]] = {}
     total = len(pairs) * len(picks)
@@ -655,8 +659,8 @@ def main(argv=None) -> int:
             counts["subject"] = int(len(uv_a))
             row = None
             if len(uv_a) >= 20:
-                seq_a = [d / args.image_dir / f"{a}.png" for d in frame_dirs]
-                seq_b = [d / args.image_dir / f"{b}.png" for d in frame_dirs]
+                seq_a = [d / args.image_dir / f"{a}{args.image_ext}" for d in frame_dirs]
+                seq_b = [d / args.image_dir / f"{b}{args.image_ext}" for d in frame_dirs]
                 va, aa, oka = track(seq_a, fi, uv_a, half=half)
                 vb, ab, okb = track(seq_b, fi, uv_b, half=half)
                 moving = oka & okb & (np.maximum(np.linalg.norm(va, axis=1), np.linalg.norm(vb, axis=1)) >= 0.5)

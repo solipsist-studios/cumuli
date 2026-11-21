@@ -26,7 +26,7 @@ Usage:
         --undistorted_dir /path/to/undistorted \\
         --out_images_flat /path/to/images_flat \\
         --out_transforms /path/to/transforms.json \\
-        [--image_ext .jpg] [--out_image_ext .png]
+        [--image_ext .jpg] [--out_image_ext .png|.webp] [--out_image_quality 1-100]
 
 Output:
     out_images_flat/00.png, 01.png, ... (real cameras, sorted by original
@@ -47,7 +47,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from image_formats import SUPPORTED_IMAGE_EXTS
+from image_formats import (SUPPORTED_IMAGE_EXTS, ImageQualityError, add_quality_argument,
+                           check_image_quality, save_image)
 
 
 def main():
@@ -60,8 +61,13 @@ def main():
     parser.add_argument("--image_ext", default=".jpg", choices=SUPPORTED_IMAGE_EXTS,
                          help="Extension of source frames under undistorted_dir")
     parser.add_argument("--out_image_ext", default=".png", choices=SUPPORTED_IMAGE_EXTS,
-                         help="Extension to save flat images as")
+                         help="Extension to save flat images as. .webp is lossless unless --out_image_quality is set.")
+    add_quality_argument(parser, "--out_image_quality")
     args = parser.parse_args()
+    try:
+        check_image_quality(args.out_image_ext, args.out_image_quality)
+    except ImageQualityError as e:
+        sys.exit(f"Error: --out_image_quality: {e}")
 
     try:
         with open(args.transforms) as f:
@@ -102,10 +108,11 @@ def main():
         dst_img = args.out_images_flat / f"{new_label}{args.out_image_ext}"
 
         try:
-            if args.out_image_ext.lower() == args.image_ext.lower():
+            if args.out_image_ext.lower() == args.image_ext.lower() and args.out_image_quality is None:
                 shutil.copy(src_img, dst_img)
-            else:
-                Image.open(src_img).convert("RGB").save(dst_img)
+            else:   # a quality means a re-encode even when the extension matches
+                with Image.open(src_img) as im:
+                    save_image(im.convert("RGB"), dst_img, args.out_image_quality)
         except Exception as e:
             print(f"  WARNING: could not read/convert image for {old_label} at {src_img} ({e}), skipping")
             skipped.append(old_label)

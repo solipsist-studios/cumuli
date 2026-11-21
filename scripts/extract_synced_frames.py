@@ -33,9 +33,10 @@ Usage:
 Output:
     window=1: output_dir/0001.jpg, output_dir/0002.jpg, ...
     window=N: output_dir/f0/0001.jpg ... output_dir/f{N-1}/0001.jpg, ...
-    (.png instead of .jpg when --pp3_dir is used; override with --output_ext,
-    though --pp3_dir output can only be .png -- RawTherapee always writes PNG
-    bytes here regardless of the requested extension)
+    (.png instead of .jpg when --pp3_dir is used; override with --output_ext.
+    --pp3_dir takes .png or .webp: RawTherapee always writes PNG, which .webp
+    converts to LOSSLESS WebP and then removes the PNG. Colour-stage output is
+    never lossy, so there is no quality flag here.)
 """
 
 import argparse
@@ -46,8 +47,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from PIL import Image
+
 from color_correct import apply_pp3, find_pp3, resolve_rawtherapee_cmd
-from image_formats import SUPPORTED_IMAGE_EXTS
+from image_formats import SUPPORTED_IMAGE_EXTS, save_image
 
 
 def ffmpeg_quality_args(ext: str):
@@ -72,7 +75,13 @@ def extract_frames(video_path: Path, timestamp_sec: float, count: int, out_dir: 
         "-ss", f"{timestamp_sec:.6f}",
         "-i", str(video_path),
         "-frames:v", str(count),
+        # For ".webp" ffmpeg 6.1 picks the animated encoder (libwebp_anim) by default, which
+        # buffers every frame into ONE file whatever the %02d pattern says; naming libwebp,
+        # the still-image encoder, writes one file per frame.
+        *(["-c:v", "libwebp"] if ext == ".webp" else []),
         *ffmpeg_quality_args(ext),
+        # Name the muxer too, so the output pattern is never taken as a single animated file.
+        "-f", "image2",
         str(pattern),
     ]
     subprocess.run(cmd, check=True)
@@ -115,9 +124,9 @@ def main():
         rt_cmd = resolve_rawtherapee_cmd(args.rawtherapee_cmd)
         print(f"Color correction enabled: {' '.join(rt_cmd)} (~6s/frame)")
 
-    if rt_cmd and args.output_ext not in (None, ".png"):
-        print("Error: --output_ext other than .png isn't supported with --pp3_dir "
-              "(RawTherapee color correction always writes PNG bytes here).")
+    if rt_cmd and args.output_ext not in (None, ".png", ".webp"):
+        print("Error: --output_ext other than .png or .webp isn't supported with --pp3_dir "
+              "(RawTherapee always writes PNG; .webp converts it to lossless WebP).")
         sys.exit(1)
     out_ext = args.output_ext or (".png" if rt_cmd else ".jpg")
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -190,8 +199,17 @@ def main():
                     else:
                         out_path = args.output_dir / f"f{k}" / f"{video_path.stem}{out_ext}"
                         out_path.parent.mkdir(parents=True, exist_ok=True)
-                    if pp3 is not None:
+                    if pp3 is not None and out_ext == ".png":
                         apply_pp3(rt_cmd, raw_path, pp3, out_path)
+                    elif pp3 is not None:
+                        # RawTherapee writes PNG whatever the extension: render, then re-encode lossless.
+                        rendered = out_path.with_name(out_path.stem + ".rt.png")
+                        try:
+                            apply_pp3(rt_cmd, raw_path, pp3, rendered)
+                            with Image.open(rendered) as im:
+                                save_image(im, out_path)
+                        finally:
+                            rendered.unlink(missing_ok=True)
                     else:
                         shutil.move(str(raw_path), str(out_path))
             cc = f" + pp3 {pp3.name}" if pp3 else ""
