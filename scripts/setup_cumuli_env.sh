@@ -18,6 +18,8 @@
 #   TORCH_CUDA_ARCH_LIST  compute capability for gsplat's JIT build
 #                         (default: probed from nvidia-smi)
 #   MAX_JOBS              parallel build jobs (default: nproc)
+#   CUDA_HOME             CUDA toolkit for gsplat's JIT build (default: nvcc
+#                         on PATH); needs nvcc >= 12, same major as torch's CUDA
 set -euo pipefail
 
 # CONDA may arrive as the conda EXECUTABLE or (per setup-miniconda's
@@ -32,6 +34,43 @@ CPU_ONLY=0
 if [ "${1:-}" = "--cpu" ]; then CPU_ONLY=1; fi
 
 HLOC_COMMIT=c13273bd0ecc2917a35910fd843712a1c6243193
+
+# gsplat compiles its CUDA kernels once, with the system nvcc (not the
+# CUDA runtime in the torch wheel), using -std=c++20. nvcc only accepts
+# that from CUDA 12.0, and torch refuses a toolkit of another major
+# version than its own wheel. Check both up front and say what to do,
+# instead of surfacing a ninja traceback after the env is built.
+# Usage: check_nvcc [torch_cuda_version]
+check_nvcc() {
+    local want="${1:-}" nvcc ver major
+    nvcc="${CUDA_HOME:+$CUDA_HOME/bin/nvcc}"
+    if [ -z "$nvcc" ] || [ ! -x "$nvcc" ]; then nvcc="$(command -v nvcc || true)"; fi
+    if [ -z "$nvcc" ]; then
+        echo "FAIL: nvcc (CUDA toolkit) not found; gsplat needs it for its one-time CUDA build." >&2
+        echo "  Install a CUDA ${want:-12+} toolkit, then set CUDA_HOME and PATH, e.g.:" >&2
+        echo "    export CUDA_HOME=/usr/local/cuda-${want:-13.0}; export PATH=\"\$CUDA_HOME/bin:\$PATH\"" >&2
+        echo "  (Use --cpu to skip the GPU build.)" >&2
+        exit 1
+    fi
+    ver="$("$nvcc" --version | sed -n 's/.*release \([0-9]*\.[0-9]*\).*/\1/p' | head -1)"
+    major="${ver%%.*}"
+    if [ -z "$major" ] || [ "$major" -lt 12 ]; then
+        echo "FAIL: $nvcc is CUDA ${ver:-unknown}; gsplat needs nvcc 12.0 or newer (it builds with -std=c++20)." >&2
+        echo "  Point at a newer toolkit before re-running, e.g.:" >&2
+        echo "    export CUDA_HOME=/usr/local/cuda-${want:-13.0}; export PATH=\"\$CUDA_HOME/bin:\$PATH\"" >&2
+        echo "  or remove the old one (an older nvcc earlier on PATH wins; check: which -a nvcc)." >&2
+        exit 1
+    fi
+    if [ -n "$want" ] && [ "${want%%.*}" != "$major" ]; then
+        echo "FAIL: $nvcc is CUDA $ver but this env's torch was built for CUDA $want." >&2
+        echo "  Torch needs a toolkit of the same major version (${want%%.*}.x). Set CUDA_HOME to one:" >&2
+        echo "    export CUDA_HOME=/usr/local/cuda-${want}; export PATH=\"\$CUDA_HOME/bin:\$PATH\"" >&2
+        exit 1
+    fi
+    export CUDA_HOME="${CUDA_HOME:-$(dirname "$(dirname "$(readlink -f "$nvcc")")")}"
+    echo "nvcc: $nvcc (CUDA $ver)"
+}
+if [ "$CPU_ONLY" = 0 ]; then check_nvcc; fi
 
 if [ "$CPU_ONLY" = 1 ]; then
     echo "=== create $ENV_NAME (cpu): torch swapped BEFORE install ==="
@@ -107,6 +146,7 @@ TRAINER="$REPO_ROOT/deps/cumuli-trainer"
 
 if [ "$CPU_ONLY" = 0 ]; then
     echo "=== gsplat CUDA JIT build (once, against this env's torch) ==="
+    check_nvcc "$("$PY" -c 'import torch; print(torch.version.cuda)')"
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 || true)"
         TORCH_CUDA_ARCH_LIST="${CAP:-12.0}"
