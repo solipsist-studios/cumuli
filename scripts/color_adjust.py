@@ -30,7 +30,7 @@ Settings file:
    "cameras": {"0001": {"method": "adjust", "adjust": {...}}}}      (optional per-camera overrides)
 
 Usage:
-    python3 color_adjust.py --settings settings.json --in_dir frames/ --out_dir corrected/ [--image_ext .png]
+    python3 color_adjust.py --settings settings.json --in_dir frames/ --out_dir corrected/ [--image_ext .png|.webp] [--image_quality 1-100] [--out_bit_depth 8|16]
 Cameras are matched by filename stem, ignoring a leading "undistorted_".
 """
 
@@ -44,6 +44,9 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
+
+from image_formats import (ImageFormatError, add_bit_depth_argument, add_quality_argument, check_bit_depth,
+                           check_image_quality, png_bit_depth, save_image)
 
 ADJUST_KEYS = ("exposure", "temperature", "contrast", "saturation")
 TEMPERATURE_GAIN = 0.15
@@ -162,6 +165,61 @@ def correct_image(array8, cfg, lut_cache):
     return np.clip(np.rint(rgb * 255.0), 0, 255).astype(np.uint8)
 
 
+def read_rgb(path):
+    """(RGB array, bits per channel): uint8, or uint16 for a 16-bit PNG. PIL would truncate a 16-bit PNG
+    to 8 bits, so those are read through OpenCV; the depth is auto-detected from each file."""
+    if png_bit_depth(path) == 16:
+        import cv2
+        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR + cv2.IMREAD_ANYDEPTH + cv2.IMREAD_IGNORE_ORIENTATION)
+        if bgr is None:
+            raise ValueError(f"could not read {path}")
+        return np.ascontiguousarray(bgr[..., ::-1]), (16 if bgr.dtype == np.uint16 else 8)
+    with Image.open(path) as image:
+        return np.asarray(image.convert("RGB")), 8
+
+
+def correct_array(array, cfg, lut_cache, out_bits=None, strip_rows=512):
+    """uint8 or uint16 [h, w, 3] in; out at `out_bits` (default: the input's depth).
+
+    8 bits in and out takes `correct_image` (with its lookup-table fast path). Anything involving 16 bits
+    goes through the general float path, one strip of rows at a time to keep memory flat (every step is
+    per pixel), and is rounded once, at the end, to the output depth: 16 bits in, 8 out rounds, it does
+    not truncate."""
+    in_bits = 16 if array.dtype == np.uint16 else 8
+    out_bits = out_bits or in_bits
+    if in_bits == 8 and out_bits == 8:
+        return correct_image(array, cfg, lut_cache)
+    in_max, out_max = float((1 << in_bits) - 1), float((1 << out_bits) - 1)
+    method = cfg.get("method", "none")
+    if method == "lut":
+        path = cfg.get("lut")
+        if path not in lut_cache:
+            lut_cache[path] = read_cube(path)
+    elif method not in ("none", "adjust"):
+        raise ValueError(f"Unknown method {method!r}.")
+    params = {k: float(cfg.get("adjust", {}).get(k, 0.0)) for k in ADJUST_KEYS}
+    out = np.empty(array.shape, np.uint16 if out_bits == 16 else np.uint8)
+    for top in range(0, array.shape[0], strip_rows):
+        rgb = array[top:top + strip_rows].astype(np.float64) / in_max
+        if method == "adjust":
+            rgb = adjust(rgb, **params)
+        elif method == "lut":
+            rgb = apply_lut(rgb, *lut_cache[cfg.get("lut")])
+        out[top:top + strip_rows] = np.clip(np.rint(rgb * out_max), 0, out_max).astype(out.dtype)
+    return out
+
+
+def write_corrected(out, out_path, quality=None):
+    """Write a corrected array: 16-bit as a 16-bit PNG at compression level 1 (via OpenCV), else as 8-bit."""
+    if out.dtype == np.uint16:
+        import cv2
+        if not cv2.imwrite(str(out_path), np.ascontiguousarray(out[..., ::-1]), [cv2.IMWRITE_PNG_COMPRESSION, 1]):
+            raise ValueError(f"could not write {out_path}")
+        return
+    # PNG at a light compression level; .webp lossless unless an image_quality is set.
+    save_image(Image.fromarray(out), out_path, quality, png_compress_level=1)
+
+
 def camera_of(path):
     stem = Path(path).stem
     return stem[len("undistorted_"):] if stem.startswith("undistorted_") else stem
@@ -172,15 +230,29 @@ def correct_file(path, out_path, cfg, lut_cache):
     if cfg.get("method") == "pp3":
         from color_correct import apply_pp3, find_pp3, resolve_rawtherapee_cmd
 
+        if cfg.get("out_bit_depth") == 16 or png_bit_depth(path) == 16:
+            raise SystemExit("Error: 16-bit frames are not supported with a .pp3 profile (RawTherapee is run for "
+                             "8-bit PNG output here); use the adjust or lut method.")
         pp3 = find_pp3(Path(cfg["pp3_dir"]), camera_of(path))
         if pp3 is None:
             raise SystemExit(f"Error: no .pp3 for camera {camera_of(path)} in {cfg['pp3_dir']}")
-        apply_pp3(resolve_rawtherapee_cmd(cfg.get("rawtherapee_cmd")), path, pp3, out_path)
+        rt_cmd = resolve_rawtherapee_cmd(cfg.get("rawtherapee_cmd"))
+        if out_path.suffix.lower() == ".png":
+            apply_pp3(rt_cmd, path, pp3, out_path)
+            return
+        # RawTherapee always writes PNG whatever the extension says, so render to a
+        # PNG beside the output and re-encode it in the requested format.
+        rendered = out_path.with_name(out_path.name + ".rt.png")
+        try:
+            apply_pp3(rt_cmd, path, pp3, rendered)
+            with Image.open(rendered) as image:
+                save_image(image.convert("RGB"), out_path, cfg.get("image_quality"))
+        finally:
+            rendered.unlink(missing_ok=True)
         return
-    with Image.open(path) as image:
-        out = correct_image(np.asarray(image.convert("RGB")), cfg, lut_cache)
-    extra = {"compress_level": 1} if out_path.suffix.lower() == ".png" else {}
-    Image.fromarray(out).save(out_path, **extra)
+    array, in_bits = read_rgb(path)
+    out = correct_array(array, cfg, lut_cache, cfg.get("out_bit_depth") or in_bits)
+    write_corrected(out, out_path, cfg.get("image_quality"))
 
 
 _LUTS = {}
@@ -243,7 +315,14 @@ def main():
     parser.add_argument("--settings", required=True, type=Path)
     parser.add_argument("--in_dir", required=True, type=Path, nargs="+", help="One or more folders of frames; each is paired with the --out_dir at the same position.")
     parser.add_argument("--out_dir", required=True, type=Path, nargs="+")
-    parser.add_argument("--image_ext", default=".png")
+    parser.add_argument("--image_ext", default=".png",
+                        help="Extension of the input frames; the corrected frames keep it. .webp output is lossless unless --image_quality is set.")
+    add_quality_argument(parser)
+    add_bit_depth_argument(
+        parser, "--out_bit_depth", default=None,
+        help="Bits per channel of the corrected frames. The input depth (8 or 16) is detected from each file; the "
+             "default is to keep it. 16 is for .png only (about 4x the disk, slower); 8 from a 16-bit input rounds "
+             "once at the end. Not available with a .pp3 profile.")
     parser.add_argument("--manifest", type=Path, default=None,
                         help="A file that records the images already corrected. With it, a run carries on from an earlier one: "
                              "an image whose input, correction, LUT and profile are unchanged, and whose output is there, is not done again.")
@@ -251,6 +330,14 @@ def main():
     args = parser.parse_args()
     if len(args.in_dir) != len(args.out_dir):
         sys.exit("Error: --in_dir and --out_dir need the same number of folders.")
+    try:
+        check_image_quality(args.image_ext, args.image_quality)
+    except ImageFormatError as e:
+        sys.exit(f"Error: --image_quality: {e}")
+    try:
+        check_bit_depth(args.image_ext, args.out_bit_depth)
+    except ImageFormatError as e:
+        sys.exit(f"Error: --out_bit_depth: {e}")
 
     settings = json.loads(args.settings.read_text())
     previous = load_manifest(args.manifest)
@@ -263,6 +350,10 @@ def main():
         for path in files:
             camera = camera_of(path)
             cfg = camera_settings(settings, camera)
+            if args.image_quality is not None:   # also enters the manifest signature
+                cfg = dict(cfg, image_quality=args.image_quality)
+            if args.out_bit_depth is not None:   # so does this: a copy at another depth is not up to date
+                cfg = dict(cfg, out_bit_depth=args.out_bit_depth)
             out_path = out_dir / path.name
             stat = path.stat()
             entry = {"sig": correction_signature(cfg, camera, digests), "in": [stat.st_size, stat.st_mtime_ns]}

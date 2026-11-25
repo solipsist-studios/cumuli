@@ -71,6 +71,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 from build_4dgs_dataset import (
     project, in_mask, write_ply_with_time, convert_image,
 )
+from image_formats import (SUPPORTED_IMAGE_EXTS, ImageQualityError, add_quality_argument,
+                           check_image_quality)
 
 
 def load_flipbook_rig(frame_dirs):
@@ -109,7 +111,7 @@ def load_flipbook_rig(frame_dirs):
     return rig
 
 
-def drop_duplicate_frames(frame_dirs, ref_label):
+def drop_duplicate_frames(frame_dirs, ref_label, image_ext='.png'):
     """Drop frames whose reference-camera image is byte-identical to the
     previous kept frame's, returning (kept_dirs, kept_indices).
 
@@ -125,7 +127,7 @@ def drop_duplicate_frames(frame_dirs, ref_label):
     kept_dirs, kept_idx = [], []
     last_hash = None
     for i, d in enumerate(frame_dirs):
-        h = hashlib.md5((d / 'images_flat' / f'{ref_label}.png').read_bytes()).hexdigest()
+        h = hashlib.md5((d / 'images_flat' / f'{ref_label}{image_ext}').read_bytes()).hexdigest()
         if h != last_hash:
             kept_dirs.append(d)
             kept_idx.append(i)
@@ -148,7 +150,7 @@ def hull_votes(rig, masks, pts):
 
 
 def carve_frame(frame_dir, rig, masks_dir, bbox, n_target, min_views,
-                color_cams, rng):
+                color_cams, rng, image_ext='.png'):
     """Visual-hull points + colours for one frame: [K,3] pts, [K,3] rgb."""
     labels = sorted(rig)
     masks = load_frame_masks(frame_dir, labels, masks_dir)
@@ -167,7 +169,7 @@ def carve_frame(frame_dir, rig, masks_dir, bbox, n_target, min_views,
     rgb = np.zeros((len(pts), 3), dtype=np.float64)
     n_seen = np.zeros(len(pts), dtype=np.int32)
     for label in color_cams:
-        img = np.asarray(Image.open(frame_dir / 'images_flat' / f'{label}.png').convert('RGB'))
+        img = np.asarray(Image.open(frame_dir / 'images_flat' / f'{label}{image_ext}').convert('RGB'))
         u, v, front = project(rig[label]['w2c'], *rig[label]['intr'], pts)
         ok = in_mask(masks[label], u, v, front)
         ui = np.clip(u, 0, img.shape[1] - 1).astype(np.int32)
@@ -295,6 +297,16 @@ def main():
                              'rigs cannot be compared.')
     parser.add_argument('--masks_dir', default='fmasks_clean',
                         help='per-frame mask subdirectory (default: fmasks_clean)')
+    parser.add_argument('--image_ext', default='.png', choices=SUPPORTED_IMAGE_EXTS,
+                        help='extension of the source frames, frame_NNNN/images_flat/<label>{ext} '
+                             '(default .png). Masks stay PNG.')
+    parser.add_argument('--out_image_ext', default='.png', choices=('.png', '.webp'),
+                        help='extension of the RGBA training images under realcams/ (default .png). '
+                             '.webp is lossless unless --out_image_quality is set; JPEG is not offered '
+                             'because the mask lives in the alpha channel. Scored views (--test_cameras, '
+                             '--eval_root) and eval_gt_flat/ are always lossless PNG, so ground truth '
+                             'never takes a lossy pass.')
+    add_quality_argument(parser, '--out_image_quality')
     parser.add_argument('--dedupe', action='store_true',
                         help='drop frames whose images are byte-identical to the previous '
                              'kept frame (held frames from dropped source video frames). '
@@ -319,6 +331,10 @@ def main():
                              "frame folder's name, so a window of linked frames finds its weights too.")
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
+    try:
+        check_image_quality(args.out_image_ext, args.out_image_quality)
+    except ImageQualityError as e:
+        sys.exit(f'ERROR: --out_image_quality: {e}')
 
     root = Path(args.flipbook_root).expanduser()
     out = Path(args.out).expanduser()
@@ -338,7 +354,7 @@ def main():
     source_name = {i: Path(os.path.realpath(d)).name for i, d in enumerate(frame_dirs)}
     if args.dedupe:
         n_before = len(frame_dirs)
-        frame_dirs, frame_idx = drop_duplicate_frames(frame_dirs, labels[0])
+        frame_dirs, frame_idx = drop_duplicate_frames(frame_dirs, labels[0], args.image_ext)
         print(f'  dedupe: {n_before} frame dirs -> {len(frame_dirs)} unique '
               f'({n_before - len(frame_dirs)} held frames dropped; survivors keep '
               'their original timestamps)')
@@ -406,7 +422,7 @@ def main():
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
         futs = {pool.submit(carve_frame, d, rig, args.masks_dir, bbox,
                             per_frame, args.hull_min_views, color_cams,
-                            np.random.default_rng(1000 + i)): i
+                            np.random.default_rng(1000 + i), args.image_ext): i
                 for i, d in enumerate(frame_dirs)}
         for n_done, fut in enumerate(concurrent.futures.as_completed(futs), 1):
             hull[futs[fut]] = fut.result()
@@ -423,15 +439,20 @@ def main():
     print(f'  points3d.ply: {len(pts):,} points over [{times.min():.3f}, {times.max():.3f}]s')
 
     # ── RGBA images (parallel) ─────────────────────────────────────────────
+    # A scored camera is ground truth, so it is always written lossless as PNG
+    # whatever --out_image_ext says; every other camera trains from that format.
+    scored = set(args.test_cameras)
+    cam_ext = {label: '.png' if label in scored else args.out_image_ext for label in labels}
     jobs = []
     for label in labels:
         (out / 'realcams' / f'cam{label}').mkdir(parents=True, exist_ok=True)
         for i, d in enumerate(frame_dirs):
-            jobs.append((d / 'images_flat' / f'{label}.png',
+            jobs.append((d / 'images_flat' / f'{label}{args.image_ext}',
                          d / args.masks_dir / f'{label}.png',
-                         out / 'realcams' / f'cam{label}' / f'frame_{frame_idx[i] + 1:05d}.png'))
+                         out / 'realcams' / f'cam{label}' / f'frame_{frame_idx[i] + 1:05d}{cam_ext[label]}',
+                         None if cam_ext[label] == '.png' else args.out_image_quality))
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futs = [pool.submit(convert_image, s, m, d, args.downscale) for s, m, d in jobs]
+        futs = [pool.submit(convert_image, s, m, d, args.downscale, q) for s, m, d, q in jobs]
         for n_done, fut in enumerate(concurrent.futures.as_completed(futs), 1):
             fut.result()
             if n_done % 100 == 0 or n_done == len(jobs):
@@ -456,7 +477,7 @@ def main():
         for label in eval_labels:
             (out / 'evalcams' / f'cam{label}').mkdir(parents=True, exist_ok=True)
             for i, d in enumerate(eval_frame_dirs):
-                jobs.append((d / 'images_flat' / f'{label}.png',
+                jobs.append((d / 'images_flat' / f'{label}{args.image_ext}',
                              d / args.masks_dir / f'{label}.png',
                              out / 'evalcams' / f'cam{label}' /
                              f'{eval_basename(label, frame_idx[i])}.png'))
@@ -495,6 +516,11 @@ def main():
             fl_x, fl_y, cx, cy = cam['intr']
             for i in frame_idx:
                 name = namer(label, i) if namer else f'frame_{i + 1:05d}'
+                # core finds a PNG by trying ".png"; any other format has to say so, and a
+                # scored view's name (its basename) must stay extensionless: eval_render
+                # finds its ground truth as <basename>.png.
+                if subdir == 'realcams' and cam_ext[label] != '.png':
+                    name += cam_ext[label]
                 row = {
                     'file_path': f'{subdir}/cam{label}/{name}',
                     'camera_label': label,
@@ -544,7 +570,7 @@ def main():
         n_gt = 0
         for label in args.test_cameras:
             for i in frame_idx:
-                flatten_gt(out / 'realcams' / f'cam{label}' / f'frame_{i + 1:05d}.png',
+                flatten_gt(out / 'realcams' / f'cam{label}' / f'frame_{i + 1:05d}{cam_ext[label]}',
                            out / 'eval_gt_flat' / f'frame_{i + 1:05d}.png')
                 n_gt += 1
         for label in sorted(eval_rig):

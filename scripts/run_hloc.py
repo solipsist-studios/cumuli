@@ -88,7 +88,7 @@ def add_extra_moments(frames_root: Path, extra_dirs, camera_ids, image_ext: str)
 def build_init_transforms(undistorted_pkl_dir: Path, camera_ids, out_path: Path,
                            fallback_w=5568, fallback_h=4872,
                            fallback_fx=1786.75, fallback_fy=1786.84,
-                           fallback_cx=2766.17, fallback_cy=2458.04):
+                           fallback_cx=2766.17, fallback_cy=2458.04, image_ext=".jpg"):
     """Bootstrap transforms.json with identity poses and real intrinsics
     read from each camera's undistorted (zero-distortion) calibration pkl.
     HLOC refines the poses; it just needs correct intrinsics to start from.
@@ -126,7 +126,7 @@ def build_init_transforms(undistorted_pkl_dir: Path, camera_ids, out_path: Path,
 
         init_tf["frames"].append({
             "camera_label": label,
-            "file_path": f"images/{label}/0000.jpg",
+            "file_path": f"images/{label}/0000{image_ext}",
             "w": w, "h": h,
             "fl_x": fx, "fl_y": fy, "cx": cx, "cy": cy,
             "transform_matrix": [
@@ -193,7 +193,7 @@ def main():
         add_extra_moments(args.undistorted_dir, args.extra_undistorted_dirs, camera_ids, args.image_ext)
 
         print("Building bootstrap init_transforms.json...")
-        build_init_transforms(args.undistorted_pkl_dir, camera_ids, init_transforms_path)
+        build_init_transforms(args.undistorted_pkl_dir, camera_ids, init_transforms_path, image_ext=args.image_ext)
     else:
         print("Skipping setup steps (--skip_setup); assuming already done.")
 

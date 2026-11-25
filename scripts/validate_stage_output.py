@@ -69,7 +69,7 @@ def validate_sync(L, real_cameras):
 def validate_production(L, real_cameras):
     # .jpg normally, .png when the run went through --pp3_dir color correction
     # (run_unified_pipeline.py's image_ext) -- accept either.
-    frames = {p.stem: p for ext in ("*.jpg", "*.png") for p in L["production_undist"].glob(ext)}
+    frames = {p.stem: p for ext in ("*.jpg", "*.png", "*.webp") for p in L["production_undist"].glob(ext)}
     found = sorted(frames)
     if found != sorted(real_cameras):
         raise ValidationError(
@@ -180,10 +180,12 @@ def validate_dataset4d(L, real_cameras):
                 f"transforms_train.json: {len(missing)} frames lack {key!r} "
                 f"(first at index {missing[0]})")
 
-    # file_path is extensionless. The image must exist and must be RGBA:
-    # the mask is baked into alpha, and an RGB image means the bake step
-    # silently failed while every file still exists.
-    probe = root / (frames[0]["file_path"] + ".png")
+    # file_path is extensionless for PNG and carries its extension for any other
+    # format (.webp). The image must exist and must be RGBA: the mask is baked
+    # into alpha, and an RGB image means the bake step silently failed while
+    # every file still exists.
+    file_path = frames[0]["file_path"]
+    probe = root / (file_path if Path(file_path).suffix.lower() in (".png", ".webp") else file_path + ".png")
     if not probe.is_file():
         raise ValidationError(f"{probe} referenced by transforms_train.json is missing")
     with Image.open(probe) as im:

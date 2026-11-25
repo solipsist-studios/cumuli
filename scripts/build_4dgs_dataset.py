@@ -49,6 +49,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+sys.path.insert(0, str(Path(__file__).parent))
+from image_formats import ImageQualityError, add_quality_argument, check_image_quality, save_image
+
 
 def load_rig(transforms_path):
     """Shared intrinsics + per-camera COLMAP-convention w2c/c2w matrices."""
@@ -145,7 +148,11 @@ def write_ply_with_time(path, pts, rgb, times):
             fp.write(rec.pack(p[0], p[1], p[2], c[0], c[1], c[2], t))
 
 
-def convert_image(src_img, src_mask, dst, downscale):
+def convert_image(src_img, src_mask, dst, downscale, quality=None):
+    """Write the RGBA training image: the source composited with its mask as alpha.
+
+    The format follows the extension of ``dst``. A ``.webp`` is lossless unless a
+    ``quality`` is given; the alpha channel is lossless either way."""
     with Image.open(src_img) as im:
         rgb = im.convert('RGB')
     with Image.open(src_mask) as mm:
@@ -155,7 +162,7 @@ def convert_image(src_img, src_mask, dst, downscale):
         rgb = rgb.resize(size, Image.LANCZOS)
         alpha = alpha.resize(size, Image.LANCZOS)
     rgb.putalpha(alpha)
-    rgb.save(dst, optimize=False)
+    save_image(rgb, dst, quality)
     return dst
 
 
@@ -181,8 +188,17 @@ def main():
                         help='total visual-hull init points across all frames (default: 300k)')
     parser.add_argument('--hull_min_views', type=int, default=14,
                         help='min cameras whose mask must contain a hull point (default: 14)')
+    parser.add_argument('--out_image_ext', default='.png', choices=('.png', '.webp'),
+                        help='extension of the RGBA training images (default .png). .webp is '
+                             'lossless unless --out_image_quality is set. --test_cameras stay '
+                             'lossless PNG. The input format is whatever --pattern names.')
+    add_quality_argument(parser, '--out_image_quality')
     parser.add_argument('--jobs', type=int, default=8)
     args = parser.parse_args()
+    try:
+        check_image_quality(args.out_image_ext, args.out_image_quality)
+    except ImageQualityError as e:
+        sys.exit(f'ERROR: --out_image_quality: {e}')
 
     root = Path(args.dataset_root)
     out = Path(args.out)
@@ -239,15 +255,17 @@ def main():
     print(f'  points3d.ply: {len(pts):,} points over [{times.min():.3f}, {times.max():.3f}]s')
 
     # ── RGBA images (parallel) ─────────────────────────────────────────────
+    cam_ext = {label: '.png' if label in args.test_cameras else args.out_image_ext for label in labels}
     jobs = []
     for label in labels:
         (out / 'images' / label).mkdir(parents=True, exist_ok=True)
         for f in frames:
             jobs.append((root / 'images' / label / args.pattern.format(frame=f),
                          root / 'fmasks' / label / args.pattern.format(frame=f),
-                         out / 'images' / label / f'{f:04d}.png'))
+                         out / 'images' / label / f'{f:04d}{cam_ext[label]}',
+                         None if cam_ext[label] == '.png' else args.out_image_quality))
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futs = [pool.submit(convert_image, s, m, d, args.downscale) for s, m, d in jobs]
+        futs = [pool.submit(convert_image, s, m, d, args.downscale, q) for s, m, d, q in jobs]
         for n_done, fut in enumerate(concurrent.futures.as_completed(futs), 1):
             fut.result()
             if n_done % 200 == 0 or n_done == len(jobs):
@@ -263,7 +281,8 @@ def main():
     }
     def entries(cam_labels):
         return [{
-            'file_path': f'images/{label}/{f:04d}',
+            # core finds a PNG without an extension; any other format names itself
+            'file_path': f'images/{label}/{f:04d}' + ('' if cam_ext[label] == '.png' else cam_ext[label]),
             'time': (f - args.start) / args.fps,
             'transform_matrix': cams[label]['c2w_gl'].tolist(),
         } for label in cam_labels for f in frames]
