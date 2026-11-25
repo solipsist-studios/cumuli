@@ -17,9 +17,17 @@
 #   ENV_NAME              env name (default: cumuli)
 #   TORCH_CUDA_ARCH_LIST  compute capability for gsplat's JIT build
 #                         (default: probed from nvidia-smi)
-#   MAX_JOBS              parallel build jobs (default: nproc)
+#   MAX_JOBS              parallel build jobs (default: nproc, at most 8: each
+#                         nvcc job is memory hungry and WSL2 runs out first)
 #   CUDA_HOME             CUDA toolkit for gsplat's JIT build (default: nvcc
 #                         on PATH); needs nvcc >= 12, same major as torch's CUDA
+#   CUMULI_NO_CONDA_CUDA  1 = never install a toolkit or compilers into the
+#                         env: fail when nvcc is missing (default: install
+#                         cuda-toolkit, and gcc/g++ if the machine has none,
+#                         from conda into the env)
+#
+# Safe to re-run: an existing env is reused, not recreated (remove it first
+# with `conda env remove -n cumuli` for a clean rebuild).
 set -euo pipefail
 
 # CONDA may arrive as the conda EXECUTABLE or (per setup-miniconda's
@@ -70,9 +78,23 @@ check_nvcc() {
     export CUDA_HOME="${CUDA_HOME:-$(dirname "$(dirname "$(readlink -f "$nvcc")")")}"
     echo "nvcc: $nvcc (CUDA $ver)"
 }
-if [ "$CPU_ONLY" = 0 ]; then check_nvcc; fi
+nvcc_on_hand() { [ -x "${CUDA_HOME:-/nonexistent}/bin/nvcc" ] || command -v nvcc >/dev/null 2>&1; }
+env_exists() { "$CONDA" env list | awk -v n="$ENV_NAME" '$1 == n { found = 1 } END { exit !found }'; }
+if [ "$CPU_ONLY" = 0 ]; then
+    if nvcc_on_hand || [ "${CUMULI_NO_CONDA_CUDA:-0}" = 1 ]; then
+        check_nvcc
+    else
+        echo "nvcc not found: the CUDA toolkit will be installed into the $ENV_NAME env once torch is there"
+        echo "  (CUMULI_NO_CONDA_CUDA=1 fails here instead; set CUDA_HOME to use a toolkit you have)"
+    fi
+fi
 
-if [ "$CPU_ONLY" = 1 ]; then
+# Everything below the gsplat build is the same on re-run, so an existing env is
+# reused as it is: `conda env create` on it would die with "prefix already exists".
+if env_exists; then
+    echo "=== $ENV_NAME exists: reusing it (conda env remove -n $ENV_NAME for a clean rebuild) ==="
+    PY="$("$CONDA" run -n "$ENV_NAME" python -c 'import sys; print(sys.executable)')"
+elif [ "$CPU_ONLY" = 1 ]; then
     echo "=== create $ENV_NAME (cpu): torch swapped BEFORE install ==="
     # The yml's cu130 torch is multi-GB and must never be downloaded on a
     # CPU runner at all. An install-then-replace would stack both wheel
@@ -146,15 +168,50 @@ TRAINER="$REPO_ROOT/deps/cumuli-trainer"
 
 if [ "$CPU_ONLY" = 0 ]; then
     echo "=== gsplat CUDA JIT build (once, against this env's torch) ==="
-    check_nvcc "$("$PY" -c 'import torch; print(torch.version.cuda)')"
+    TORCH_CUDA="$("$PY" -c 'import torch; print(torch.version.cuda)')"
+    ENV_PREFIX="$("$PY" -c 'import sys; print(sys.prefix)')"
+    TRIPLE="$(uname -m)-conda-linux-gnu"
+    if ! nvcc_on_hand && [ "${CUMULI_NO_CONDA_CUDA:-0}" != 1 ]; then
+        # The toolkit must match torch's CUDA (13.0 for torch 2.13+cu130).
+        echo "installing cuda-toolkit $TORCH_CUDA into $ENV_NAME (conda, nvidia channel)"
+        "$CONDA" install -y -n "$ENV_NAME" -c "nvidia/label/cuda-${TORCH_CUDA}.0" "cuda-toolkit=${TORCH_CUDA}"
+        export CUDA_HOME="$ENV_PREFIX" PATH="$ENV_PREFIX/bin:$PATH"
+    fi
+    # No system compiler (a bare WSL2 distro): nvcc and torch's extension build
+    # need a host gcc/g++, which conda can provide inside the env.
+    if ! { command -v cc && command -v c++; } >/dev/null 2>&1 && [ "${CUMULI_NO_CONDA_CUDA:-0}" != 1 ]; then
+        case "$(uname -m)" in x86_64) PKG_ARCH=linux-64 ;; aarch64) PKG_ARCH=linux-aarch64 ;; *) PKG_ARCH="" ;; esac
+        if [ -n "$PKG_ARCH" ]; then
+            echo "no C/C++ compiler on this machine: installing gcc/g++ into $ENV_NAME (conda-forge)"
+            "$CONDA" install -y -n "$ENV_NAME" -c conda-forge "gcc_${PKG_ARCH}" "gxx_${PKG_ARCH}"
+        fi
+    fi
+    if [ -x "$ENV_PREFIX/bin/$TRIPLE-cc" ] && ! command -v cc >/dev/null 2>&1; then
+        export CC="$ENV_PREFIX/bin/$TRIPLE-cc" CXX="$ENV_PREFIX/bin/$TRIPLE-c++"
+    fi
+    # Conda's CUDA 13 keeps headers and libraries under targets/<arch>-linux, not
+    # include/ and lib/, so the compiler and linker are told where they are.
+    if [ "${CUDA_HOME:-}" = "$ENV_PREFIX" ] && [ ! -f "$ENV_PREFIX/include/cuda_runtime.h" ]; then
+        TARGETS="$(ls -d "$ENV_PREFIX"/targets/*-linux 2>/dev/null | head -1 || true)"
+        if [ -n "$TARGETS" ]; then
+            export CPATH="$TARGETS/include${CPATH:+:$CPATH}"
+            export LIBRARY_PATH="$TARGETS/lib:$ENV_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+        fi
+    fi
+    check_nvcc "$TORCH_CUDA"
     if [ -z "${TORCH_CUDA_ARCH_LIST:-}" ]; then
         CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 || true)"
         TORCH_CUDA_ARCH_LIST="${CAP:-12.0}"
     fi
     export TORCH_CUDA_ARCH_LIST
-    export MAX_JOBS=${MAX_JOBS:-$(nproc)}
+    JOBS="$(nproc)"
+    if [ "$JOBS" -gt 8 ]; then JOBS=8; fi
+    export MAX_JOBS=${MAX_JOBS:-$JOBS}
     echo "TORCH_CUDA_ARCH_LIST=$TORCH_CUDA_ARCH_LIST MAX_JOBS=$MAX_JOBS"
-    "$PY" - <<'WARMUP'
+    WARMUP_LOG="$(mktemp)"
+    # The build's real error is buried in the middle of torch's traceback, so keep
+    # the whole output and, on failure, print the compiler's own lines first.
+    if ! "$PY" - >"$WARMUP_LOG" 2>&1 <<'WARMUP'
 import torch
 from gsplat import rasterization
 d = "cuda"
@@ -166,6 +223,15 @@ img, _, _ = rasterization(means, torch.tensor([[1.0, 0, 0, 0]], device=d),
                           64, 64)
 print("gsplat ok:", tuple(img.shape))
 WARMUP
+    then
+        echo "FAIL: the gsplat CUDA build failed. The compiler said:" >&2
+        grep -E "FAILED:|error:|fatal error|No CUDA toolkit|undefined reference|cannot find" "$WARMUP_LOG" | sort -u | head -20 >&2 || true
+        echo "  (full output: $WARMUP_LOG)" >&2
+        echo "  After fixing it, clear the failed build before re-running: rm -rf \"\${TORCH_EXTENSIONS_DIR:-\$HOME/.cache/torch_extensions}\"" >&2
+        exit 1
+    fi
+    cat "$WARMUP_LOG"
+    rm -f "$WARMUP_LOG"
 fi
 
 echo "=== verify ==="
