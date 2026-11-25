@@ -24,9 +24,12 @@ gsplat's one-time CUDA JIT build, then verifies every import.
   Comfortably tested on a single RTX 4090 (24GB VRAM). Smaller cards
   may need reduced `--hloc_max_keypoints` or `generate_masks.py
   --batch_size`.
-- No system-wide CUDA toolkit install is required. The env pulls its
-  own CUDA runtime via the `torch`/`torchvision` wheel (`+cuXXX` build
-  tag). Do not rely on a system `nvcc`.
+- The env pulls its own CUDA runtime via the `torch`/`torchvision` wheel
+  (`+cuXXX` build tag). GPU installs also need a system CUDA toolkit
+  (`nvcc`) of the same major version as that wheel and at least 12.0:
+  gsplat compiles its kernels once during setup. If `which -a nvcc`
+  shows an older one first, set `CUDA_HOME` and `PATH` to the right
+  toolkit; the script checks this and says what to change.
 - [Miniforge](https://github.com/conda-forge/miniforge) (or any
   conda/mamba distribution).
 
